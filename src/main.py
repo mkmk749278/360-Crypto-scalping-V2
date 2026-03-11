@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import numpy as np
 
@@ -27,6 +27,8 @@ from config import (
     CHANNEL_RANGE,
     CHANNEL_TAPE,
     SEED_TIMEFRAMES,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_SCALP_CHANNEL_ID,
 )
 from src.ai_engine import detect_whale_trade, detect_volume_delta_spike, get_ai_insight
 from src.channels.base import Signal
@@ -78,7 +80,7 @@ class CryptoSignalEngine:
             data_store=self.data_store,
             send_telegram=self.telegram.send_message,
             get_active_signals=lambda: self.router.active_signals,
-            remove_signal=self.router.remove_signal,
+            remove_signal=self._remove_and_archive,
             update_signal=self.router.update_signal,
         )
 
@@ -90,12 +92,62 @@ class CryptoSignalEngine:
         self._ws_futures: Optional[WebSocketManager] = None
         self._tasks: List[asyncio.Task] = []
 
+        # Command handler state
+        self._paused_channels: Set[str] = set()
+        self._confidence_overrides: Dict[str, float] = {}
+        self._force_scan: bool = False
+        self._signal_history: List[Signal] = []  # capped at 500 entries
+        self._boot_time: float = 0.0
+
+    def _remove_and_archive(self, signal_id: str) -> None:
+        """Remove a signal from active tracking and archive it in history."""
+        sig = self.router.active_signals.get(signal_id)
+        if sig is not None:
+            self._signal_history.append(sig)
+            self._signal_history = self._signal_history[-500:]
+        self.router.remove_signal(signal_id)
+
+    # ------------------------------------------------------------------
+    # Pre-flight checks
+    # ------------------------------------------------------------------
+
+    async def _preflight_check(self) -> bool:
+        """Run pre-flight checks and return True if all critical checks pass."""
+        ok = True
+
+        if not TELEGRAM_BOT_TOKEN:
+            log.warning("Pre-flight: TELEGRAM_BOT_TOKEN is not set")
+            ok = False
+
+        if not TELEGRAM_SCALP_CHANNEL_ID:
+            log.warning("Pre-flight: No Telegram channel IDs configured")
+
+        if not self.pair_mgr.pairs:
+            log.warning("Pre-flight: pair_mgr has no pairs loaded")
+            ok = False
+
+        if not self.data_store.has_data():
+            log.warning("Pre-flight: data_store has no seeded data")
+            ok = False
+
+        ws_healthy = (
+            (self._ws_spot.is_healthy if self._ws_spot else True)
+            and (self._ws_futures.is_healthy if self._ws_futures else True)
+        )
+        if not ws_healthy:
+            log.warning("Pre-flight: WebSocket managers are not all healthy")
+
+        if ok:
+            log.info("Pre-flight checks passed")
+        return ok
+
     # ------------------------------------------------------------------
     # Boot sequence
     # ------------------------------------------------------------------
 
     async def boot(self) -> None:
         log.info("=== 360-Crypto-Eye-Scalping Engine BOOTING ===")
+        self._boot_time = time.monotonic()
 
         # 1. Fetch pairs
         await self.pair_mgr.refresh_pairs()
@@ -105,6 +157,10 @@ class CryptoSignalEngine:
 
         # 3. Start WebSockets
         await self._start_websockets()
+
+        # 3.5 Pre-flight checks
+        if not await self._preflight_check():
+            log.warning("Pre-flight checks had warnings — engine will start but may be degraded")
 
         # 4. Launch async tasks
         self._tasks = [
@@ -222,7 +278,9 @@ class CryptoSignalEngine:
             )
             self.telemetry.set_ws_health(ws_ok, ws_conns)
 
-            await asyncio.sleep(1)  # scan cadence
+            if not self._force_scan:
+                await asyncio.sleep(1)  # scan cadence
+            self._force_scan = False
 
     async def _scan_symbol(self, symbol: str, volume_24h: float) -> None:
         """Run all channel evaluations for one symbol."""
@@ -394,6 +452,8 @@ class CryptoSignalEngine:
         parts = text.strip().split()
         cmd = parts[0].lower()
 
+        # --- Admin commands ---
+
         if cmd == "/view_dashboard":
             await self.telegram.send_message(chat_id, self.telemetry.dashboard_text())
 
@@ -406,10 +466,197 @@ class CryptoSignalEngine:
         elif cmd == "/subscribe_alerts":
             await self.telegram.send_message(chat_id, "✅ You are subscribed to admin alerts.")
 
+        elif cmd == "/view_pairs":
+            sorted_pairs = sorted(
+                self.pair_mgr.pairs.values(),
+                key=lambda p: p.volume_24h_usd,
+                reverse=True,
+            )
+            top = sorted_pairs[:10]
+            lines = [f"📊 Pairs: {len(self.pair_mgr.pairs)} active\n\nTop 10 by volume:"]
+            for i, p in enumerate(top, 1):
+                lines.append(f"{i}. {p.symbol} — ${p.volume_24h_usd:,.0f}")
+            await self.telegram.send_message(chat_id, "\n".join(lines))
+
+        elif cmd == "/force_scan":
+            self._force_scan = True
+            await self.telegram.send_message(chat_id, "⚡ Force scan triggered.")
+
+        elif cmd == "/pause_channel":
+            if len(parts) < 2:
+                await self.telegram.send_message(chat_id, "Usage: /pause\\_channel <name>")
+            else:
+                name = parts[1]
+                self._paused_channels.add(name)
+                await self.telegram.send_message(chat_id, f"⏸ Channel `{name}` paused.")
+
+        elif cmd == "/resume_channel":
+            if len(parts) < 2:
+                await self.telegram.send_message(chat_id, "Usage: /resume\\_channel <name>")
+            else:
+                name = parts[1]
+                self._paused_channels.discard(name)
+                await self.telegram.send_message(chat_id, f"▶️ Channel `{name}` resumed.")
+
+        elif cmd == "/set_confidence_threshold":
+            if len(parts) < 3:
+                await self.telegram.send_message(
+                    chat_id, "Usage: /set\\_confidence\\_threshold <channel> <value>"
+                )
+            else:
+                channel = parts[1]
+                try:
+                    value = float(parts[2])
+                except ValueError:
+                    await self.telegram.send_message(chat_id, "❌ Value must be a number.")
+                    return
+                self._confidence_overrides[channel] = value
+                await self.telegram.send_message(
+                    chat_id, f"✅ Confidence threshold for `{channel}` set to {value:.2f}"
+                )
+
+        elif cmd == "/engine_status":
+            uptime_s = time.monotonic() - self._boot_time
+            hours, rem = divmod(int(uptime_s), 3600)
+            minutes, secs = divmod(rem, 60)
+            ws_healthy = (
+                (self._ws_spot.is_healthy if self._ws_spot else True)
+                and (self._ws_futures.is_healthy if self._ws_futures else True)
+            )
+            lines = [
+                "🔧 Engine Status",
+                f"Uptime: {hours}h {minutes}m {secs}s",
+                f"Running tasks: {sum(1 for t in self._tasks if not t.done())}",
+                f"Queue size: {self._signal_queue.qsize()}",
+                f"Pairs: {len(self.pair_mgr.pairs)}",
+                f"Active signals: {len(self.router.active_signals)}",
+                f"WS healthy: {'✅' if ws_healthy else '❌'}",
+            ]
+            await self.telegram.send_message(chat_id, "\n".join(lines))
+
+        elif cmd == "/restart_engine":
+            await self.telegram.send_message(chat_id, "🔄 Restarting engine …")
+            await self.shutdown()
+            await self.boot()
+            await self.telegram.send_message(chat_id, "✅ Engine restarted.")
+
+        elif cmd == "/rollback_code":
+            await self.telegram.send_message(
+                chat_id,
+                "⚠️ Code rollback not supported in live environment. Deploy via CI/CD.",
+            )
+
+        # --- User commands ---
+
+        elif cmd == "/signals":
+            sigs = list(self.router.active_signals.values())[:5]
+            if not sigs:
+                await self.telegram.send_message(chat_id, "No active signals.")
+            else:
+                lines = ["📡 Active Signals (last 5):"]
+                for s in sigs:
+                    lines.append(
+                        f"• {s.symbol} {s.direction.value} | "
+                        f"Entry {s.entry:.4f} | Conf {s.confidence:.0f}% | {s.status}"
+                    )
+                await self.telegram.send_message(chat_id, "\n".join(lines))
+
+        elif cmd == "/free_signals":
+            sigs = [
+                s for s in self.router.active_signals.values()
+                if s.channel == "free"
+            ]
+            if not sigs:
+                await self.telegram.send_message(chat_id, "No free signals today.")
+            else:
+                lines = ["🆓 Today's Free Picks:"]
+                for s in sigs:
+                    lines.append(
+                        f"• {s.symbol} {s.direction.value} | "
+                        f"Entry {s.entry:.4f} | Conf {s.confidence:.0f}%"
+                    )
+                await self.telegram.send_message(chat_id, "\n".join(lines))
+
+        elif cmd == "/signal_info":
+            if len(parts) < 2:
+                await self.telegram.send_message(chat_id, "Usage: /signal\\_info <id>")
+            else:
+                sid = parts[1]
+                sig = self.router.active_signals.get(sid)
+                if sig is None:
+                    sig = next((s for s in self._signal_history if s.signal_id == sid), None)
+                if sig is None:
+                    await self.telegram.send_message(chat_id, f"❌ Signal `{sid}` not found.")
+                else:
+                    lines = [
+                        f"📋 Signal {sig.signal_id}",
+                        f"Channel: {sig.channel}",
+                        f"Symbol: {sig.symbol}",
+                        f"Direction: {sig.direction.value}",
+                        f"Entry: {sig.entry:.4f}",
+                        f"SL: {sig.stop_loss:.4f}",
+                        f"TP1: {sig.tp1:.4f} | TP2: {sig.tp2:.4f}"
+                        + (f" | TP3: {sig.tp3:.4f}" if sig.tp3 else ""),
+                        f"Confidence: {sig.confidence:.0f}%",
+                        f"Status: {sig.status}",
+                        f"PnL: {sig.pnl_pct:+.2f}%",
+                        f"AI: {sig.ai_sentiment_label}",
+                    ]
+                    await self.telegram.send_message(chat_id, "\n".join(lines))
+
+        elif cmd == "/last_update":
+            scan_ms = self.telemetry._scan_latency_ms
+            pairs = len(self.pair_mgr.pairs)
+            active = len(self.router.active_signals)
+            await self.telegram.send_message(
+                chat_id,
+                f"🕐 Last scan latency: {scan_ms:.0f}ms\n"
+                f"Pairs: {pairs} | Active signals: {active}",
+            )
+
+        elif cmd == "/subscribe":
+            await self.telegram.send_message(chat_id, "✅ Subscribed to premium signals.")
+
+        elif cmd == "/unsubscribe":
+            await self.telegram.send_message(chat_id, "✅ Unsubscribed.")
+
+        elif cmd == "/signal_history":
+            recent = self._signal_history[-10:]
+            if not recent:
+                await self.telegram.send_message(chat_id, "No completed signals yet.")
+            else:
+                lines = ["📜 Signal History (last 10):"]
+                for s in reversed(recent):
+                    lines.append(
+                        f"• {s.symbol} {s.direction.value} | "
+                        f"{s.status} | PnL {s.pnl_pct:+.2f}%"
+                    )
+                await self.telegram.send_message(chat_id, "\n".join(lines))
+
         else:
             await self.telegram.send_message(
                 chat_id,
-                "Available commands:\n/view\\_dashboard\n/update\\_pairs\n/subscribe\\_alerts",
+                "Available commands:\n"
+                "*Admin:*\n"
+                "/view\\_dashboard\n"
+                "/update\\_pairs\n"
+                "/subscribe\\_alerts\n"
+                "/view\\_pairs\n"
+                "/force\\_scan\n"
+                "/pause\\_channel <name>\n"
+                "/resume\\_channel <name>\n"
+                "/set\\_confidence\\_threshold <channel> <value>\n"
+                "/engine\\_status\n"
+                "/restart\\_engine\n"
+                "/rollback\\_code\n\n"
+                "*User:*\n"
+                "/signals\n"
+                "/free\\_signals\n"
+                "/signal\\_info <id>\n"
+                "/last\\_update\n"
+                "/subscribe\n"
+                "/unsubscribe\n"
+                "/signal\\_history",
             )
 
 

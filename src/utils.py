@@ -2,26 +2,34 @@
 
 from __future__ import annotations
 
-import logging
+import sys
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
+
+from loguru import logger as _loguru_logger
 
 from config import LOG_LEVEL
 
+# Configure loguru once
+_loguru_logger.remove()  # remove default handler
+_loguru_logger.add(
+    sys.stderr,
+    format="{time:YYYY-MM-DD HH:mm:ss} | {extra[name]:<24} | {level:<7} | {message}",
+    level=LOG_LEVEL.upper(),
+)
+_loguru_logger.add(
+    "logs/engine_{time}.log",
+    rotation="50 MB",
+    retention="30 days",
+    format="{time:YYYY-MM-DD HH:mm:ss} | {extra[name]:<24} | {level:<7} | {message}",
+    level="DEBUG",
+)
+_configured = True
 
-def get_logger(name: str) -> logging.Logger:
-    """Return a configured logger for *name*."""
-    logger = logging.getLogger(name)
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        fmt = logging.Formatter(
-            "%(asctime)s | %(name)-24s | %(levelname)-7s | %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-        handler.setFormatter(fmt)
-        logger.addHandler(handler)
-    logger.setLevel(getattr(logging, LOG_LEVEL.upper(), logging.INFO))
-    return logger
+
+def get_logger(name: str) -> Any:
+    """Return a loguru logger bound with *name* context."""
+    return _loguru_logger.bind(name=name)
 
 
 def utcnow() -> datetime:

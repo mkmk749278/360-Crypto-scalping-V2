@@ -16,7 +16,9 @@ from typing import Any, Callable, Coroutine, Dict, List, Optional, Set
 import aiohttp
 
 from config import (
+    BINANCE_FUTURES_REST_BASE,
     BINANCE_FUTURES_WS_BASE,
+    BINANCE_REST_BASE,
     BINANCE_WS_BASE,
     WS_HEARTBEAT_INTERVAL,
     WS_MAX_STREAMS_PER_CONN,
@@ -47,11 +49,15 @@ class WebSocketManager:
         self._on_message = on_message
         self._market = market
         self._base_url = BINANCE_WS_BASE if market == "spot" else BINANCE_FUTURES_WS_BASE
+        self._rest_base_url = BINANCE_REST_BASE if market == "spot" else BINANCE_FUTURES_REST_BASE
         self._connections: List[WSConnection] = []
         self._session: Optional[aiohttp.ClientSession] = None
         self._running = False
         self._buffer: asyncio.Queue[dict] = asyncio.Queue(maxsize=10_000)
         self._subscribed_streams: Set[str] = set()
+        self._rest_fallback_active: bool = False
+        self._critical_pairs: Set[str] = set()
+        self._fallback_task: Optional[asyncio.Task] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -75,6 +81,9 @@ class WebSocketManager:
 
     async def stop(self) -> None:
         self._running = False
+        self._rest_fallback_active = False
+        if self._fallback_task and not self._fallback_task.done():
+            self._fallback_task.cancel()
         for conn in self._connections:
             if conn.task:
                 conn.task.cancel()
@@ -85,6 +94,80 @@ class WebSocketManager:
         log.info("WS manager stopped (%s)", self._market)
 
     # ------------------------------------------------------------------
+    # REST fallback for critical pairs
+    # ------------------------------------------------------------------
+
+    def set_critical_pairs(self, pairs: List[str]) -> None:
+        """Define which symbols receive REST fallback during WS outages."""
+        self._critical_pairs = set(pairs)
+        log.info("Critical pairs set (%d): %s", len(self._critical_pairs), pairs)
+
+    async def _rest_fallback_loop(self) -> None:
+        """Poll REST klines for critical pairs while WS is down."""
+        assert self._session is not None
+        if self._market == "futures":
+            url_tpl = f"{self._rest_base_url}/fapi/v1/klines?symbol={{symbol}}&interval=1m&limit=1"
+        else:
+            url_tpl = f"{self._rest_base_url}/api/v3/klines?symbol={{symbol}}&interval=1m&limit=1"
+
+        log.info("REST fallback loop started for %d critical pairs", len(self._critical_pairs))
+        try:
+            while self._running and self._rest_fallback_active:
+                for symbol in list(self._critical_pairs):
+                    try:
+                        url = url_tpl.format(symbol=symbol)
+                        async with self._session.get(
+                            url, timeout=aiohttp.ClientTimeout(total=10),
+                        ) as resp:
+                            if resp.status != 200:
+                                log.debug("REST fallback %s status %s", symbol, resp.status)
+                                continue
+                            raw = await resp.json()
+                        if not raw:
+                            continue
+                        k = raw[0]
+                        msg: dict = {
+                            "e": "kline",
+                            "s": symbol,
+                            "k": {
+                                "i": "1m",
+                                "o": str(k[1]),
+                                "h": str(k[2]),
+                                "l": str(k[3]),
+                                "c": str(k[4]),
+                                "v": str(k[5]),
+                                "x": True,
+                            },
+                        }
+                        await self._on_message(msg)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        log.debug("REST fallback error for %s: %s", symbol, exc)
+                await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            pass
+        log.info("REST fallback loop stopped")
+
+    def _start_rest_fallback(self) -> None:
+        """Activate REST fallback if critical pairs are configured."""
+        if not self._critical_pairs:
+            return
+        if self._rest_fallback_active:
+            return
+        self._rest_fallback_active = True
+        self._fallback_task = asyncio.create_task(self._rest_fallback_loop())
+
+    def _stop_rest_fallback(self) -> None:
+        """Deactivate REST fallback once WS reconnects."""
+        if not self._rest_fallback_active:
+            return
+        self._rest_fallback_active = False
+        if self._fallback_task and not self._fallback_task.done():
+            self._fallback_task.cancel()
+        self._fallback_task = None
+
+    # ------------------------------------------------------------------
     # Connection loop
     # ------------------------------------------------------------------
 
@@ -92,12 +175,16 @@ class WebSocketManager:
         while self._running:
             try:
                 await self._connect(conn)
+                self._stop_rest_fallback()
                 await self._listen(conn)
             except asyncio.CancelledError:
                 return
             except Exception as exc:
                 log.warning("WS connection error: %s", exc)
             if self._running:
+                # Activate REST fallback for critical pairs during reconnect
+                if any(s in self._critical_pairs for s in conn.streams):
+                    self._start_rest_fallback()
                 delay = min(
                     WS_RECONNECT_BASE_DELAY * (2 ** conn.reconnect_attempts),
                     WS_RECONNECT_MAX_DELAY,

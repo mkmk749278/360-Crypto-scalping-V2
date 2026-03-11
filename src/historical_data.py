@@ -155,6 +155,10 @@ class HistoricalDataStore:
     def get_candles(self, symbol: str, interval: str) -> Optional[Dict[str, np.ndarray]]:
         return self.candles.get(symbol, {}).get(interval)
 
+    def has_data(self) -> bool:
+        """Return True if the store has any seeded candle data."""
+        return bool(self.candles)
+
     def update_candle(self, symbol: str, interval: str, candle: Dict[str, float]) -> None:
         """Append a single candle (from WebSocket) to the store."""
         bucket = self.candles.setdefault(symbol, {}).setdefault(

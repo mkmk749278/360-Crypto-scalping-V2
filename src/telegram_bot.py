@@ -103,9 +103,23 @@ class TelegramBot:
         lines.append(sentiment_line)
 
         lines.append(f"⚠️ Risk: {sig.risk_label}")
+        lines.append(f"📊 Market Phase: {sig.market_phase}")
+        lines.append(f"💧 Liquidity Pool: {sig.liquidity_info}")
         lines.append(f"⏰ Time: `{fmt_ts(sig.timestamp)}`")
 
         return "\n".join(lines)
+
+    @staticmethod
+    def format_free_signal(sig: Signal) -> str:
+        """Wrap a signal in the free-channel header/footer."""
+        header = "🆓 *FREE SIGNAL OF THE DAY* 🆓\n\n"
+        body = TelegramBot.format_signal(sig)
+        footer = (
+            "\n\n📚 _Tip: Scalping requires discipline. Always use a stop-loss"
+            " and manage risk._\n📊 _Market Phase helps gauge overall conditions."
+            " Premium gets all signals!_"
+        )
+        return header + body + footer
 
     # ------------------------------------------------------------------
     # Admin command polling

@@ -28,6 +28,8 @@ class Signal:
     ai_sentiment_label: str = "Neutral"
     ai_sentiment_summary: str = ""
     risk_label: str = "Medium"
+    market_phase: str = "N/A"
+    liquidity_info: str = "Standard"
     timestamp: datetime = field(default_factory=utcnow)
     # State for monitoring
     signal_id: str = ""
