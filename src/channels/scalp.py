@@ -89,6 +89,12 @@ class ScalpChannel(BaseChannel):
         sentiment_label = ai_insight.get("label", "Neutral")
         sentiment_summary = ai_insight.get("summary", "")
 
+        # Sanity check: SL must be on the correct side of entry
+        if direction == Direction.LONG and sl >= close:
+            return None
+        if direction == Direction.SHORT and sl <= close:
+            return None
+
         return Signal(
             channel=self.config.name,
             symbol=symbol,

@@ -17,6 +17,10 @@ from src.utils import fmt_price, fmt_ts, get_logger, utcnow
 
 log = get_logger("trade_monitor")
 
+# Minimum absolute PnL (%) before SL/TP evaluation is allowed.
+# Prevents false stops from stale prices or floating-point noise.
+_ZERO_PNL_THRESHOLD_PCT = 0.01
+
 
 class TradeMonitor:
     """Watches active signals and emits updates."""
@@ -62,12 +66,16 @@ class TradeMonitor:
             await self._evaluate_signal(sig)
 
     def _latest_price(self, symbol: str) -> Optional[float]:
+        # Prefer real-time tick data over (potentially stale) candle close
+        ticks = self._store.ticks.get(symbol)
+        if ticks:
+            tick_price = ticks[-1].get("price")
+            if tick_price is not None:
+                return float(tick_price)
+        # Fallback to last closed 1m candle
         candles = self._store.get_candles(symbol, "1m")
         if candles and len(candles.get("close", [])) > 0:
             return float(candles["close"][-1])
-        ticks = self._store.ticks.get(symbol)
-        if ticks:
-            return ticks[-1].get("price")
         return None
 
     async def _evaluate_signal(self, sig: Signal) -> None:
@@ -85,12 +93,41 @@ class TradeMonitor:
             )
             return
 
+        # SL direction sanity check – catch misconfigured signals
+        if is_long and sig.stop_loss >= sig.entry:
+            log.warning(
+                "Signal %s %s has invalid SL (LONG SL %.8f >= entry %.8f) – cancelling",
+                sig.symbol, sig.signal_id, sig.stop_loss, sig.entry,
+            )
+            sig.status = "CANCELLED"
+            await self._post_update(sig, "⚠️ CANCELLED (invalid SL)")
+            self._remove(sig.signal_id)
+            return
+        if not is_long and sig.stop_loss <= sig.entry:
+            log.warning(
+                "Signal %s %s has invalid SL (SHORT SL %.8f <= entry %.8f) – cancelling",
+                sig.symbol, sig.signal_id, sig.stop_loss, sig.entry,
+            )
+            sig.status = "CANCELLED"
+            await self._post_update(sig, "⚠️ CANCELLED (invalid SL)")
+            self._remove(sig.signal_id)
+            return
+
         # PnL
         if sig.entry != 0:
             if is_long:
                 sig.pnl_pct = (price - sig.entry) / sig.entry * 100
             else:
                 sig.pnl_pct = (sig.entry - price) / sig.entry * 100
+
+        # Zero-PnL guard – don't trigger SL when price hasn't moved from entry
+        # This prevents false stops from stale prices or floating-point noise
+        if abs(sig.pnl_pct) < _ZERO_PNL_THRESHOLD_PCT:
+            log.debug(
+                "Signal %s %s PnL near zero (%.4f%%) – skipping SL/TP eval",
+                sig.symbol, sig.signal_id, sig.pnl_pct,
+            )
+            return
 
         # Stop-loss hit
         if is_long and price <= sig.stop_loss:

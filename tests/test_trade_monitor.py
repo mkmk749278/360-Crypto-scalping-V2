@@ -90,13 +90,13 @@ class TestMinimumLifespan:
 
     @pytest.mark.asyncio
     async def test_sl_triggered_after_min_lifespan(self):
-        """A SCALP signal older than 10s whose price is below SL SHOULD be removed."""
+        """A SCALP signal older than 30s whose price is below SL SHOULD be removed."""
         sig = _make_signal(
             channel="360_SCALP",
             direction=Direction.LONG,
             entry=30000.0,
             stop_loss=29850.0,
-            age_seconds=15.0,  # past the 10s SCALP minimum
+            age_seconds=35.0,  # past the 30s SCALP minimum
         )
         sig.current_price = 29800.0  # below SL
 
@@ -110,13 +110,13 @@ class TestMinimumLifespan:
 
     @pytest.mark.asyncio
     async def test_swing_min_lifespan_is_longer(self):
-        """A SWING signal at age=15s (< 30s min) should NOT trigger SL."""
+        """A SWING signal at age=15s (< 60s min) should NOT trigger SL."""
         sig = _make_signal(
             channel="360_SWING",
             direction=Direction.LONG,
             entry=30000.0,
             stop_loss=29850.0,
-            age_seconds=15.0,  # below the 30s SWING minimum
+            age_seconds=15.0,  # below the 60s SWING minimum
         )
         sig.current_price = 29800.0  # below SL
 

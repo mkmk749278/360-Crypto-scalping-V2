@@ -188,10 +188,10 @@ CHANNEL_COOLDOWN_SECONDS: Dict[str, int] = {
 # Anti-noise: minimum signal lifespan before SL/TP checks are applied (secs)
 # ---------------------------------------------------------------------------
 MIN_SIGNAL_LIFESPAN_SECONDS: Dict[str, int] = {
-    "360_SCALP": 10,
-    "360_SWING": 30,
-    "360_RANGE": 20,
-    "360_THE_TAPE": 10,
+    "360_SCALP": 30,
+    "360_SWING": 60,
+    "360_RANGE": 30,
+    "360_THE_TAPE": 20,
 }
 
 # ---------------------------------------------------------------------------
