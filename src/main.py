@@ -638,6 +638,11 @@ class CryptoSignalEngine:
     async def _handle_command(self, text: str, chat_id: str) -> None:
         parts = text.strip().split()
         cmd = parts[0].lower()
+
+        # Command aliases
+        _aliases = {"/status": "/engine_status"}
+        cmd = _aliases.get(cmd, cmd)
+
         is_admin = bool(TELEGRAM_ADMIN_CHAT_ID and chat_id == TELEGRAM_ADMIN_CHAT_ID)
 
         # --- Admin-only commands ---
@@ -839,10 +844,34 @@ class CryptoSignalEngine:
                 await self.telegram.send_message(chat_id, f"❌ git pull error: {exc}")
 
         elif cmd == "/restart_engine":
-            await self.telegram.send_message(chat_id, "🔄 Restarting engine …")
-            await self.shutdown()
-            await self.boot()
-            await self.telegram.send_message(chat_id, "✅ Engine restarted.")
+            await self.telegram.send_message(chat_id, "🔄 Restarting engine tasks …")
+            try:
+                # Cancel running tasks (scan, router, monitor, telemetry, polling)
+                old_tasks = list(self._tasks)
+                for t in old_tasks:
+                    t.cancel()
+                # Wait briefly for tasks to finish
+                await asyncio.gather(*old_tasks, return_exceptions=True)
+                self._tasks = []
+                # Stop subsystems gracefully (also resets telegram polling state)
+                await self.router.stop()
+                await self.monitor.stop()
+                await self.telemetry.stop()
+                await self.telegram.stop()
+                # Re-launch tasks (skip pair fetch, data seed, WS — they're still alive)
+                self._tasks = [
+                    asyncio.create_task(self.router.start()),
+                    asyncio.create_task(self.monitor.start()),
+                    asyncio.create_task(self.telemetry.start()),
+                    asyncio.create_task(self._pair_refresh_loop()),
+                    asyncio.create_task(self._scan_loop()),
+                    asyncio.create_task(self.telegram.poll_commands(self._handle_command)),
+                    asyncio.create_task(self._free_channel_loop()),
+                ]
+                await self.telegram.send_message(chat_id, "✅ Engine tasks restarted.")
+            except Exception as exc:
+                log.error("Restart error: %s", exc)
+                await self.telegram.send_message(chat_id, f"❌ Restart error: {exc}")
 
         elif cmd == "/rollback_code":
             if len(parts) < 2:

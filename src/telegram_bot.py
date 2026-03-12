@@ -132,6 +132,21 @@ class TelegramBot:
         ``chat_id`` against ``TELEGRAM_ADMIN_CHAT_ID``.
         """
         self._running = True
+        # Clear stale updates before starting to poll so commands queued
+        # during a long boot (pair seeding, etc.) are not re-processed.
+        try:
+            session = await self._ensure_session()
+            url = f"{self._base}/getUpdates"
+            params = {"offset": -1, "timeout": 0}
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    results = data.get("result", [])
+                    if results:
+                        self._offset = results[-1]["update_id"] + 1
+                        log.info("Cleared %d stale Telegram updates", len(results))
+        except Exception as exc:
+            log.debug("Failed to clear stale updates: %s", exc)
         while self._running:
             try:
                 if not self._token:
