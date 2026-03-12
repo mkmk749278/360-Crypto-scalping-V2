@@ -1,98 +1,120 @@
 #!/usr/bin/env bash
-# 360-Crypto-Eye-Scalping – deployment script for VPS / Termux
-#
-# NOTE: For a fresh VPS installation (nukes old processes, installs
-#       prerequisites, clones the repo and sets up a systemd service),
-#       use clean_deploy.sh instead:
-#
-#   wget -O clean_deploy.sh https://raw.githubusercontent.com/kishore446/360-Crypto-scalping-V2/main/clean_deploy.sh \
-#     && chmod +x clean_deploy.sh && sudo bash clean_deploy.sh
-#
+# 360-Crypto-scalping-V2 — Docker deployment script
 set -euo pipefail
 
-echo "=== 360-Crypto-Eye-Scalping Deployment ==="
+echo "🚀 360-Crypto-scalping-V2 — Docker Deployment"
+echo "==============================================="
 
-# Detect environment
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+DO_CLEAN=false
+for arg in "$@"; do
+    case "$arg" in
+        --clean) DO_CLEAN=true ;;
+        *) echo "❌ Unknown argument: $arg"; echo "Usage: $0 [--clean]"; exit 1 ;;
+    esac
+done
+
+# ---------------------------------------------------------------------------
+# Termux is not supported for Docker deployment
+# ---------------------------------------------------------------------------
 if command -v termux-setup-storage &>/dev/null; then
-    ENV="termux"
-    echo "Detected: Termux"
-    pkg update -y && pkg install -y python git
-else
-    ENV="vps"
-    echo "Detected: VPS / Linux"
-fi
-
-# Create virtual environment
-if [ ! -d "venv" ]; then
-    echo "Creating virtual environment …"
-    python3 -m venv venv
-fi
-source venv/bin/activate
-
-# Python version check (3.11+ required)
-PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-if python3 -c "import sys; exit(0 if sys.version_info >= (3,11) else 1)" 2>/dev/null; then
-    echo "Python $PYTHON_VERSION ✅"
-else
-    echo "⚠️ Python 3.11+ required, found $PYTHON_VERSION"
+    echo "❌ Termux detected. Docker deployment is not supported on Termux."
+    echo "   Please deploy on a Linux VPS with Docker installed."
     exit 1
 fi
 
-# Install dependencies
-echo "Installing dependencies …"
-pip install --upgrade pip
-pip install -r requirements.txt
+# ---------------------------------------------------------------------------
+# Check prerequisites
+# ---------------------------------------------------------------------------
+command -v docker >/dev/null 2>&1 || {
+    echo "❌ Docker not installed. Install it with:"
+    echo "   curl -fsSL https://get.docker.com | sh"
+    exit 1
+}
+docker compose version >/dev/null 2>&1 || docker-compose version >/dev/null 2>&1 || {
+    echo "❌ Docker Compose not installed."
+    exit 1
+}
 
-# Create logs directory
+# ---------------------------------------------------------------------------
+# --clean: Docker-level cleanup before building
+# ---------------------------------------------------------------------------
+if [ "$DO_CLEAN" = true ]; then
+    echo ""
+    echo "🧹 --clean requested: performing Docker-level cleanup before build..."
+
+    if [ -f docker-compose.yml ]; then
+        echo "  Stopping existing services..."
+        docker compose down 2>/dev/null || true
+    fi
+
+    # Remove any orphaned named containers
+    if docker ps -a --format '{{.Names}}' | grep -q "^360scalp-v2-engine$"; then
+        echo "  Removing container: 360scalp-v2-engine"
+        docker stop 360scalp-v2-engine 2>/dev/null || true
+        docker rm   360scalp-v2-engine 2>/dev/null || true
+    fi
+
+    # Remove project-specific images
+    IMAGE_IDS=$(docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' \
+        | grep -iE "(^|/)(360scalp|360-crypto-scalping)" | awk '{print $2}' | sort -u || true)
+    if [ -n "$IMAGE_IDS" ]; then
+        echo "  Removing 360scalp-related images..."
+        echo "$IMAGE_IDS" | xargs -r docker rmi -f 2>/dev/null || true
+    fi
+
+    echo "  Pruning unused Docker resources..."
+    docker system prune -af 2>/dev/null || true
+    docker builder prune -af 2>/dev/null || true
+
+    echo "✅ Docker-level cleanup complete."
+    echo ""
+fi
+
+# ---------------------------------------------------------------------------
+# Check .env exists
+# ---------------------------------------------------------------------------
+if [ ! -f .env ]; then
+    echo "⚠️  No .env file found. Copying from .env.example..."
+    cp .env.example .env
+    echo "📝 Please edit .env with your credentials before continuing."
+    echo "   nano .env"
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Validate TELEGRAM_BOT_TOKEN is not still a placeholder
+# ---------------------------------------------------------------------------
+if grep -q "your_bot_token_here" .env 2>/dev/null; then
+    echo "⚠️  TELEGRAM_BOT_TOKEN is still a placeholder. Please edit .env first."
+    echo "   nano .env"
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Create logs directory (for bind-mount fallback / local testing)
+# ---------------------------------------------------------------------------
 mkdir -p logs
 
-# Create .env if not present
-if [ ! -f ".env" ]; then
-    cp .env.example .env
-    echo ""
-    echo "⚠️  .env created from .env.example — please edit it with your credentials:"
-    echo "    nano .env"
-    echo ""
-fi
+# ---------------------------------------------------------------------------
+# Build and start
+# ---------------------------------------------------------------------------
+echo "🔨 Building Docker image..."
+docker compose build --no-cache
 
-# Validate .env
-if grep -q "your_bot_token_here" .env 2>/dev/null; then
-    echo "⚠️  WARNING: TELEGRAM_BOT_TOKEN is not configured in .env"
-fi
-
-# Systemd service (VPS only)
-if [ "$ENV" = "vps" ] && command -v systemctl &>/dev/null; then
-    SERVICE_FILE="/etc/systemd/system/crypto-signal-engine.service"
-    if [ ! -f "$SERVICE_FILE" ]; then
-        echo "Creating systemd service …"
-        sudo tee "$SERVICE_FILE" > /dev/null << UNIT
-[Unit]
-Description=360 Crypto Eye Scalping Engine
-After=network.target redis-server.service
-Wants=redis-server.service
-
-[Service]
-Type=simple
-User=$USER
-WorkingDirectory=$(pwd)
-ExecStart=$(pwd)/venv/bin/python -m src.main
-Restart=on-failure
-RestartSec=10
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-        sudo systemctl daemon-reload
-        echo "Service created. Start with: sudo systemctl start crypto-signal-engine"
-    fi
-fi
+echo "🚀 Starting engine..."
+docker compose up -d
 
 echo ""
-echo "=== Deployment Complete ==="
-echo "  Start: python -m src.main"
-if [ "$ENV" = "vps" ]; then
-    echo "  Or:    sudo systemctl start crypto-signal-engine"
-fi
-echo "  Logs:  logs/"
+echo "✅ Deployment complete!"
 echo ""
+echo "📊 Status:"
+docker compose ps
+echo ""
+echo "📋 Useful commands:"
+echo "  docker compose logs -f engine      # Follow live logs"
+echo "  docker compose restart engine      # Restart the engine"
+echo "  docker compose down                # Stop the engine"
+echo "  docker compose up -d --build       # Rebuild and restart"

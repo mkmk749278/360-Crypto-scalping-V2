@@ -79,34 +79,46 @@ Binance WS ──► WebSocketManager (multi-conn, heartbeat, auto-reconnect)
 ## Quick VPS Deployment
 
 One-line fresh VPS deployment (Ubuntu 20.04 / 22.04 / 24.04).  
-This **nukes any old engine processes**, installs prerequisites, clones the repo, and sets up a systemd service automatically:
+Requires Docker — install it first if needed:
 
 ```bash
-# One-line fresh VPS deployment:
-wget -O clean_deploy.sh https://raw.githubusercontent.com/kishore446/360-Crypto-scalping-V2/main/clean_deploy.sh && chmod +x clean_deploy.sh && sudo bash clean_deploy.sh
+# Install Docker (if not already installed)
+curl -fsSL https://get.docker.com | sh
 ```
 
-After the script completes, edit your credentials:
+Then deploy the engine:
 
 ```bash
-nano ~/360-Crypto-scalping-V2/.env
-systemctl restart 360-crypto-engine
+# 1. Clone the repo
+git clone https://github.com/kishore446/360-Crypto-scalping-V2.git
+cd 360-Crypto-scalping-V2
+
+# 2. Configure credentials
+cp .env.example .env
+nano .env  # Set your TELEGRAM_BOT_TOKEN and channel IDs
+
+# 3. Deploy with Docker
+chmod +x deploy.sh
+bash deploy.sh
 ```
 
 ### Service Management
 
 ```bash
-# View live logs
-journalctl -u 360-crypto-engine -f
+# Follow live logs
+docker compose logs -f engine
 
 # Restart the engine
-systemctl restart 360-crypto-engine
+docker compose restart engine
 
 # Stop the engine
-systemctl stop 360-crypto-engine
+docker compose down
+
+# Rebuild and restart after code changes
+docker compose up -d --build
 
 # Check service status
-systemctl status 360-crypto-engine
+docker compose ps
 ```
 
 ---
@@ -114,17 +126,18 @@ systemctl status 360-crypto-engine
 ## Quick Start
 
 ```bash
-# 1. Clone and install
-pip install -r requirements.txt
-
-# 2. Configure environment
+# 1. Clone and configure
 cp .env.example .env
 # Edit .env with your Telegram bot token and channel IDs
 
-# 3. Run the engine
-python -m src.main
+# 2. Start with Docker
+docker compose up -d
 
-# 4. Run tests
+# 3. Follow logs
+docker compose logs -f engine
+
+# 4. Run tests (local)
+pip install -r requirements.txt
 python -m pytest tests/ -v
 ```
 

@@ -1,0 +1,43 @@
+networks:
+  360scalp-v2-net:
+    driver: bridge
+
+volumes:
+  360scalp-v2-logs:
+  # Uncomment to use Redis for signal queue persistence:
+  # 360scalp-v2-redis:
+
+services:
+  engine:
+    build: .
+    container_name: 360scalp-v2-engine
+    env_file: .env
+    restart: always
+    networks:
+      - 360scalp-v2-net
+    volumes:
+      - 360scalp-v2-logs:/app/logs
+    mem_limit: 1g
+    cpus: "1.5"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      # Longer than V1 — V2 needs time to seed 50 pairs × 5 timeframes
+      start_period: 60s
+      retries: 3
+
+  # Uncomment to use Redis for signal queue persistence:
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: 360scalp-v2-redis
+  #   restart: always
+  #   networks:
+  #     - 360scalp-v2-net
+  #   volumes:
+  #     - 360scalp-v2-redis:/data
