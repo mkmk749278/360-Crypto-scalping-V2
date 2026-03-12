@@ -476,6 +476,17 @@ class CryptoSignalEngine:
         for chan in self._channels:
             if chan.config.name in self._paused_channels:
                 continue
+            # Scanner-level dedup: skip if there is already an active signal
+            # for this exact (symbol, channel) combination
+            if any(
+                s.symbol == symbol and s.channel == chan.config.name
+                for s in self.router.active_signals.values()
+            ):
+                log.debug(
+                    "Skipping %s %s – active signal already exists",
+                    symbol, chan.config.name,
+                )
+                continue
             try:
                 sig = chan.evaluate(
                     symbol=symbol,

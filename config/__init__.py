@@ -175,6 +175,26 @@ MONITOR_POLL_INTERVAL: float = 5.0  # seconds
 TELEMETRY_INTERVAL: float = 60.0  # seconds
 
 # ---------------------------------------------------------------------------
+# Anti-duplicate: per-channel cooldown after a signal completes (seconds)
+# ---------------------------------------------------------------------------
+CHANNEL_COOLDOWN_SECONDS: Dict[str, int] = {
+    "360_SCALP": 60,
+    "360_SWING": 300,
+    "360_RANGE": 120,
+    "360_THE_TAPE": 30,
+}
+
+# ---------------------------------------------------------------------------
+# Anti-noise: minimum signal lifespan before SL/TP checks are applied (secs)
+# ---------------------------------------------------------------------------
+MIN_SIGNAL_LIFESPAN_SECONDS: Dict[str, int] = {
+    "360_SCALP": 10,
+    "360_SWING": 30,
+    "360_RANGE": 20,
+    "360_THE_TAPE": 10,
+}
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

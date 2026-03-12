@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from typing import Callable, Coroutine, Dict, Optional
 
-from config import CHANNEL_TELEGRAM_MAP, MONITOR_POLL_INTERVAL
+from config import CHANNEL_TELEGRAM_MAP, MIN_SIGNAL_LIFESPAN_SECONDS, MONITOR_POLL_INTERVAL
 from src.channels.base import Signal
 from src.historical_data import HistoricalDataStore
 from src.smc import Direction
@@ -73,6 +73,17 @@ class TradeMonitor:
     async def _evaluate_signal(self, sig: Signal) -> None:
         price = sig.current_price
         is_long = sig.direction == Direction.LONG
+
+        # Minimum lifespan guard – don't trigger SL/TP checks on very new
+        # signals to protect against noise-driven instant stops
+        min_lifespan = MIN_SIGNAL_LIFESPAN_SECONDS.get(sig.channel, 10)
+        age_secs = (utcnow() - sig.timestamp).total_seconds()
+        if age_secs < min_lifespan:
+            log.debug(
+                "Signal %s %s too new (%.1fs < %ds min lifespan) – skipping SL/TP eval",
+                sig.symbol, sig.channel, age_secs, min_lifespan,
+            )
+            return
 
         # PnL
         if sig.entry != 0:

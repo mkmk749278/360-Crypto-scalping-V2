@@ -15,10 +15,15 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections import defaultdict
-from datetime import datetime
-from typing import Any, Callable, Coroutine, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
 
-from config import ALL_CHANNELS, CHANNEL_TELEGRAM_MAP, TELEGRAM_FREE_CHANNEL_ID
+from config import (
+    ALL_CHANNELS,
+    CHANNEL_COOLDOWN_SECONDS,
+    CHANNEL_TELEGRAM_MAP,
+    TELEGRAM_FREE_CHANNEL_ID,
+)
 from src.channels.base import Signal
 from src.risk import RiskManager
 from src.smc import Direction
@@ -56,6 +61,8 @@ class SignalRouter:
         self._active_signals: Dict[str, Signal] = {}
         self._daily_best: List[Signal] = []  # for free channel
         self._position_lock: Dict[str, Direction] = {}  # symbol → direction
+        # (symbol, channel) → UTC timestamp of last signal completion
+        self._cooldown_timestamps: Dict[Tuple[str, str], datetime] = {}
         self._running = False
         self._free_limit: int = 2  # max daily free signals
         self._risk_mgr = RiskManager()
@@ -102,14 +109,29 @@ class SignalRouter:
     # ------------------------------------------------------------------
 
     async def _process(self, signal: Signal) -> None:
-        # Correlation lock
+        # Correlation lock – block any signal for a symbol that already has an
+        # open position (regardless of direction to prevent same-dir duplicates)
         existing_dir = self._position_lock.get(signal.symbol)
-        if existing_dir and existing_dir != signal.direction:
+        if existing_dir is not None:
             log.info(
-                "Blocked %s %s – opposing %s position open",
+                "Blocked %s %s – existing %s position open",
                 signal.symbol, signal.direction.value, existing_dir.value,
             )
             return
+
+        # Per-symbol + per-channel cooldown check
+        cooldown_key = (signal.symbol, signal.channel)
+        last_completed = self._cooldown_timestamps.get(cooldown_key)
+        if last_completed is not None:
+            cooldown_secs = CHANNEL_COOLDOWN_SECONDS.get(signal.channel, 60)
+            elapsed = (datetime.now(timezone.utc) - last_completed).total_seconds()
+            if elapsed < cooldown_secs:
+                log.info(
+                    "Cooldown active for %s %s – %.1fs remaining (%.0fs window)",
+                    signal.symbol, signal.channel,
+                    cooldown_secs - elapsed, cooldown_secs,
+                )
+                return
 
         # Channel min-confidence filter
         chan_cfg = next(
@@ -191,6 +213,8 @@ class SignalRouter:
         sig = self._active_signals.pop(signal_id, None)
         if sig:
             self._position_lock.pop(sig.symbol, None)
+            # Record cooldown timestamp so we suppress rapid re-entry
+            self._cooldown_timestamps[(sig.symbol, sig.channel)] = datetime.now(timezone.utc)
 
     def update_signal(self, signal_id: str, **kwargs) -> None:
         sig = self._active_signals.get(signal_id)
