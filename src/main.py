@@ -38,6 +38,7 @@ from src.performance_tracker import PerformanceTracker
 from src.predictive_ai import PredictiveEngine
 from src.regime import MarketRegimeDetector
 from src.scanner import Scanner
+from src.select_mode import SelectModeFilter
 from src.signal_router import SignalRouter
 from src.telegram_bot import TelegramBot
 from src.telemetry import TelemetryCollector
@@ -83,12 +84,28 @@ class CryptoSignalEngine:
             send_telegram=self.telegram.send_message,
             format_signal=TelegramBot.format_signal,
         )
+
+        # Circuit breaker (must be created before TradeMonitor)
+        self._circuit_breaker = CircuitBreaker(
+            max_consecutive_sl=CIRCUIT_BREAKER_MAX_CONSECUTIVE_SL,
+            max_hourly_sl=CIRCUIT_BREAKER_MAX_HOURLY_SL,
+            max_daily_drawdown_pct=CIRCUIT_BREAKER_MAX_DAILY_DRAWDOWN_PCT,
+            alert_callback=self.telegram.send_admin_alert,
+        )
+
+        # Performance tracker (must be created before TradeMonitor)
+        self._performance_tracker = PerformanceTracker(
+            storage_path=PERFORMANCE_TRACKER_PATH
+        )
+
         self.monitor = TradeMonitor(
             data_store=self.data_store,
             send_telegram=self.telegram.send_message,
             get_active_signals=lambda: self.router.active_signals,
             remove_signal=self._remove_and_archive,
             update_signal=self.router.update_signal,
+            performance_tracker=self._performance_tracker,
+            circuit_breaker=self._circuit_breaker,
         )
 
         # Channel strategies
@@ -119,19 +136,6 @@ class CryptoSignalEngine:
         self._free_channel_limit: int = 2  # max free signals published per day
         self._alert_subscribers: Set[str] = set()  # admin IDs subscribed to alerts
 
-        # Circuit breaker
-        self._circuit_breaker = CircuitBreaker(
-            max_consecutive_sl=CIRCUIT_BREAKER_MAX_CONSECUTIVE_SL,
-            max_hourly_sl=CIRCUIT_BREAKER_MAX_HOURLY_SL,
-            max_daily_drawdown_pct=CIRCUIT_BREAKER_MAX_DAILY_DRAWDOWN_PCT,
-            alert_callback=self.telegram.send_admin_alert,
-        )
-
-        # Performance tracker
-        self._performance_tracker = PerformanceTracker(
-            storage_path=PERFORMANCE_TRACKER_PATH
-        )
-
         # Scanner (dependency-injected)
         self._scanner = Scanner(
             pair_mgr=self.pair_mgr,
@@ -150,6 +154,10 @@ class CryptoSignalEngine:
         self._scanner.paused_channels = self._paused_channels
         self._scanner.confidence_overrides = self._confidence_overrides
         self._scanner.circuit_breaker = self._circuit_breaker
+
+        # Select mode filter (OFF by default – admin must run /select_mode on)
+        self._select_mode = SelectModeFilter()
+        self._scanner.select_mode_filter = self._select_mode
 
         # Command handler (delegates all Telegram commands)
         self._command_handler = CommandHandler(
@@ -174,6 +182,7 @@ class CryptoSignalEngine:
             symbols_fn=lambda: self.pair_mgr.symbols,
             performance_tracker=self._performance_tracker,
             circuit_breaker=self._circuit_breaker,
+            select_mode_filter=self._select_mode,
         )
 
         # Bootstrap coordinates the boot/shutdown/WS sequence

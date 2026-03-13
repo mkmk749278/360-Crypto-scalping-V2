@@ -8,6 +8,7 @@ and optional circuit-breaker integration.
 from __future__ import annotations
 
 import asyncio
+import copy
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -110,6 +111,9 @@ class Scanner:
 
         # Optional circuit breaker (set after construction)
         self.circuit_breaker: Optional[Any] = None
+
+        # Optional select-mode filter (set after construction)
+        self.select_mode_filter: Optional[Any] = None
 
         # Order book spread cache: symbol → (spread_pct, timestamp)
         self._order_book_cache: Dict[str, Tuple[float, float]] = {}
@@ -476,3 +480,44 @@ class Scanner:
                 self.signal_queue.put_nowait(sig)
             except asyncio.QueueFull:
                 log.warning("Signal queue full – dropping %s", sig.signal_id)
+
+            # Select-mode: if enabled and signal passes stricter filters,
+            # also enqueue a copy to 360_SELECT channel.
+            # The original signal is always published to its regular channel.
+            if (
+                self.select_mode_filter is not None
+                and self.select_mode_filter.enabled
+            ):
+                allowed, reason = self.select_mode_filter.should_publish(
+                    signal=sig,
+                    confidence=sig.confidence,
+                    indicators=indicators,
+                    smc_data=smc_data,
+                    ai_sentiment=ai,
+                    cross_exchange_verified=cross_verified,
+                    volume_24h=volume_24h,
+                    spread_pct=spread_pct,
+                )
+                if allowed:
+                    select_sig = copy.deepcopy(sig)
+                    select_sig.channel = "360_SELECT"
+                    select_sig.signal_id = f"SELECT-{sig.signal_id}"
+                    try:
+                        self.signal_queue.put_nowait(select_sig)
+                        log.info(
+                            "SELECT copy enqueued for %s (%s)",
+                            sig.symbol,
+                            select_sig.signal_id,
+                        )
+                    except asyncio.QueueFull:
+                        log.warning(
+                            "Signal queue full – dropping SELECT copy %s",
+                            select_sig.signal_id,
+                        )
+                else:
+                    log.debug(
+                        "SELECT filter rejected %s %s: %s",
+                        sig.symbol,
+                        chan_name,
+                        reason,
+                    )

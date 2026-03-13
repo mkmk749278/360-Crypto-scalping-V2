@@ -22,6 +22,7 @@ def _make_signal(
     stop_loss: float = 29850.0,
     tp1: float = 30150.0,
     tp2: float = 30300.0,
+    tp3: float = 30450.0,
     signal_id: str = "TEST-SIG-001",
     age_seconds: float = 0.0,
 ) -> Signal:
@@ -36,6 +37,7 @@ def _make_signal(
         confidence=85.0,
         signal_id=signal_id,
     )
+    sig.tp3 = tp3
     # Backdate the timestamp to simulate a signal of `age_seconds` old
     if age_seconds > 0:
         sig.timestamp = utcnow() - timedelta(seconds=age_seconds)
@@ -147,3 +149,186 @@ class TestMinimumLifespan:
         await monitor._evaluate_signal(sig)
 
         assert sig.status == "ACTIVE"
+
+
+class TestOutcomeRecording:
+    """TradeMonitor must call performance_tracker and circuit_breaker on final outcomes."""
+
+    def _build_monitor_with_mocks(self, active: Dict[str, Signal]):
+        """Build a TradeMonitor wired with mock performance_tracker and circuit_breaker."""
+        removed = []
+        sent = []
+
+        async def mock_send(chat_id, text):
+            sent.append((chat_id, text))
+
+        data_store = MagicMock()
+        data_store.get_candles.return_value = None
+        data_store.ticks = {}
+
+        performance_tracker = MagicMock()
+        circuit_breaker = MagicMock()
+
+        monitor = TradeMonitor(
+            data_store=data_store,
+            send_telegram=mock_send,
+            get_active_signals=lambda: dict(active),
+            remove_signal=lambda sid: removed.append(sid),
+            update_signal=MagicMock(),
+            performance_tracker=performance_tracker,
+            circuit_breaker=circuit_breaker,
+        )
+        return monitor, removed, sent, performance_tracker, circuit_breaker
+
+    @pytest.mark.asyncio
+    async def test_sl_hit_calls_performance_tracker(self):
+        """SL_HIT must call performance_tracker.record_outcome with hit_sl=True, hit_tp=0."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            age_seconds=35.0,
+        )
+        sig.current_price = 29800.0  # below SL
+
+        active = {sig.signal_id: sig}
+        monitor, removed, sent, pt, cb = self._build_monitor_with_mocks(active)
+
+        await monitor._evaluate_signal(sig)
+
+        assert sig.status == "SL_HIT"
+        pt.record_outcome.assert_called_once()
+        call_kwargs = pt.record_outcome.call_args.kwargs
+        assert call_kwargs["hit_sl"] is True
+        assert call_kwargs["hit_tp"] == 0
+        assert call_kwargs["signal_id"] == sig.signal_id
+
+    @pytest.mark.asyncio
+    async def test_sl_hit_calls_circuit_breaker(self):
+        """SL_HIT must also notify circuit_breaker.record_outcome."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            age_seconds=35.0,
+        )
+        sig.current_price = 29800.0  # below SL
+
+        active = {sig.signal_id: sig}
+        monitor, removed, sent, pt, cb = self._build_monitor_with_mocks(active)
+
+        await monitor._evaluate_signal(sig)
+
+        cb.record_outcome.assert_called_once()
+        call_kwargs = cb.record_outcome.call_args.kwargs
+        assert call_kwargs["hit_sl"] is True
+        assert call_kwargs["signal_id"] == sig.signal_id
+
+    @pytest.mark.asyncio
+    async def test_tp3_hit_calls_performance_tracker(self):
+        """TP3_HIT must call performance_tracker.record_outcome with hit_sl=False, hit_tp=3."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            tp1=30150.0,
+            tp2=30300.0,
+            tp3=30450.0,
+            age_seconds=35.0,
+        )
+        sig.current_price = 30500.0  # above TP3
+
+        active = {sig.signal_id: sig}
+        monitor, removed, sent, pt, cb = self._build_monitor_with_mocks(active)
+
+        await monitor._evaluate_signal(sig)
+
+        assert sig.status == "TP3_HIT"
+        pt.record_outcome.assert_called_once()
+        call_kwargs = pt.record_outcome.call_args.kwargs
+        assert call_kwargs["hit_sl"] is False
+        assert call_kwargs["hit_tp"] == 3
+
+    @pytest.mark.asyncio
+    async def test_tp1_hit_does_not_call_record_outcome(self):
+        """TP1_HIT must NOT call record_outcome — signal is still active."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            tp1=30150.0,
+            tp2=30300.0,
+            tp3=30450.0,
+            age_seconds=35.0,
+        )
+        sig.current_price = 30200.0  # above TP1 but below TP2
+
+        active = {sig.signal_id: sig}
+        monitor, removed, sent, pt, cb = self._build_monitor_with_mocks(active)
+
+        await monitor._evaluate_signal(sig)
+
+        assert sig.status == "TP1_HIT"
+        pt.record_outcome.assert_not_called()
+        cb.record_outcome.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_invalid_sl_does_not_call_record_outcome(self):
+        """CANCELLED (invalid SL) must NOT call record_outcome — not a real trade outcome."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=30100.0,  # invalid: SL above entry for LONG
+            age_seconds=35.0,
+        )
+        sig.current_price = 30000.0
+
+        active = {sig.signal_id: sig}
+        monitor, removed, sent, pt, cb = self._build_monitor_with_mocks(active)
+
+        await monitor._evaluate_signal(sig)
+
+        assert sig.status == "CANCELLED"
+        pt.record_outcome.assert_not_called()
+        cb.record_outcome.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_performance_tracker_does_not_raise(self):
+        """Monitor without performance_tracker/circuit_breaker must not raise on SL_HIT."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            age_seconds=35.0,
+        )
+        sig.current_price = 29800.0
+
+        removed = []
+        sent = []
+
+        async def mock_send(chat_id, text):
+            sent.append((chat_id, text))
+
+        data_store = MagicMock()
+        data_store.get_candles.return_value = None
+        data_store.ticks = {}
+
+        monitor = TradeMonitor(
+            data_store=data_store,
+            send_telegram=mock_send,
+            get_active_signals=lambda: {sig.signal_id: sig},
+            remove_signal=lambda sid: removed.append(sid),
+            update_signal=MagicMock(),
+            # No performance_tracker or circuit_breaker — must not raise
+        )
+
+        await monitor._evaluate_signal(sig)
+
+        assert sig.status == "SL_HIT"
+        assert sig.signal_id in removed

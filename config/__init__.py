@@ -33,6 +33,7 @@ TELEGRAM_RANGE_CHANNEL_ID: str = os.getenv("TELEGRAM_RANGE_CHANNEL_ID", "")
 TELEGRAM_TAPE_CHANNEL_ID: str = os.getenv("TELEGRAM_TAPE_CHANNEL_ID", "")
 TELEGRAM_FREE_CHANNEL_ID: str = os.getenv("TELEGRAM_FREE_CHANNEL_ID", "")
 TELEGRAM_ADMIN_CHAT_ID: str = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "")
+TELEGRAM_SELECT_CHANNEL_ID: str = os.getenv("TELEGRAM_SELECT_CHANNEL_ID", "")
 
 # ---------------------------------------------------------------------------
 # AI / Sentiment keys (optional)
@@ -142,11 +143,26 @@ CHANNEL_TAPE = ChannelConfig(
     min_volume=10_000_000.0,
 )
 
+CHANNEL_SELECT = ChannelConfig(
+    name="360_SELECT",
+    emoji="🌹",
+    timeframes=["5m", "15m", "1h"],
+    sl_pct_range=(0.05, 0.5),
+    tp_ratios=[1.0, 1.5, 2.0],
+    trailing_atr_mult=2.0,
+    adx_min=25,
+    adx_max=100,
+    spread_max=0.015,
+    min_confidence=80,
+    min_volume=10_000_000.0,
+)
+
 ALL_CHANNELS: List[ChannelConfig] = [
     CHANNEL_SCALP,
     CHANNEL_SWING,
     CHANNEL_RANGE,
     CHANNEL_TAPE,
+    CHANNEL_SELECT,
 ]
 
 CHANNEL_TELEGRAM_MAP: Dict[str, str] = {
@@ -154,6 +170,7 @@ CHANNEL_TELEGRAM_MAP: Dict[str, str] = {
     "360_SWING": TELEGRAM_SWING_CHANNEL_ID,
     "360_RANGE": TELEGRAM_RANGE_CHANNEL_ID,
     "360_THE_TAPE": TELEGRAM_TAPE_CHANNEL_ID,
+    "360_SELECT": TELEGRAM_SELECT_CHANNEL_ID,
 }
 
 # ---------------------------------------------------------------------------
@@ -182,6 +199,7 @@ CHANNEL_COOLDOWN_SECONDS: Dict[str, int] = {
     "360_SWING": 300,
     "360_RANGE": 120,
     "360_THE_TAPE": 30,
+    "360_SELECT": 300,
 }
 
 # ---------------------------------------------------------------------------
@@ -194,6 +212,7 @@ SIGNAL_SCAN_COOLDOWN_SECONDS: Dict[str, int] = {
     "360_SWING": int(os.getenv("SWING_SCAN_COOLDOWN", "1800")),     # 30 min
     "360_RANGE": int(os.getenv("RANGE_SCAN_COOLDOWN", "900")),      # 15 min
     "360_THE_TAPE": int(os.getenv("TAPE_SCAN_COOLDOWN", "300")),    # 5 min
+    "360_SELECT": int(os.getenv("SELECT_SCAN_COOLDOWN", "300")),    # 5 min
 }
 
 # ---------------------------------------------------------------------------
@@ -224,6 +243,7 @@ MAX_CONCURRENT_SIGNALS_PER_CHANNEL: Dict[str, int] = {
     "360_SWING": int(os.getenv("MAX_SWING_SIGNALS", "2")),
     "360_RANGE": int(os.getenv("MAX_RANGE_SIGNALS", "3")),
     "360_THE_TAPE": int(os.getenv("MAX_TAPE_SIGNALS", "2")),
+    "360_SELECT": int(os.getenv("MAX_SELECT_SIGNALS", "5")),
 }
 
 # ---------------------------------------------------------------------------
@@ -234,6 +254,7 @@ MIN_SIGNAL_LIFESPAN_SECONDS: Dict[str, int] = {
     "360_SWING": 60,
     "360_RANGE": 30,
     "360_THE_TAPE": 20,
+    "360_SELECT": 30,
 }
 
 # ---------------------------------------------------------------------------

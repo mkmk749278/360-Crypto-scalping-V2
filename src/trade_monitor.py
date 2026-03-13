@@ -7,7 +7,7 @@ updating status, PnL, trailing stop, and posting updates to Telegram.
 from __future__ import annotations
 
 import asyncio
-from typing import Callable, Coroutine, Dict, Optional
+from typing import Any, Callable, Coroutine, Dict, Optional
 
 from config import CHANNEL_TELEGRAM_MAP, MIN_SIGNAL_LIFESPAN_SECONDS, MONITOR_POLL_INTERVAL
 from src.channels.base import Signal
@@ -32,13 +32,52 @@ class TradeMonitor:
         get_active_signals: Callable[[], Dict[str, Signal]],
         remove_signal: Callable[[str], None],
         update_signal: Callable[[str], None],
+        performance_tracker: Optional[Any] = None,
+        circuit_breaker: Optional[Any] = None,
     ) -> None:
         self._store = data_store
         self._send = send_telegram
         self._get_signals = get_active_signals
         self._remove = remove_signal
         self._update = update_signal
+        self._performance_tracker = performance_tracker
+        self._circuit_breaker = circuit_breaker
         self._running = False
+
+    def _record_outcome(self, sig: Signal, hit_tp: int, hit_sl: bool) -> None:
+        """Notify performance tracker and circuit breaker of a completed signal.
+
+        Called only on final outcomes (SL_HIT or TP3_HIT).  Intermediate hits
+        (TP1/TP2) and configuration-error cancellations are intentionally
+        excluded because the signal is still active or was never a real trade.
+
+        Parameters
+        ----------
+        sig:
+            The completed :class:`src.channels.base.Signal`.
+        hit_tp:
+            Which TP was hit (0 if SL was hit, 3 if TP3 was hit).
+        hit_sl:
+            ``True`` when the stop-loss was triggered.
+        """
+        if self._performance_tracker is not None:
+            self._performance_tracker.record_outcome(
+                signal_id=sig.signal_id,
+                channel=sig.channel,
+                symbol=sig.symbol,
+                direction=sig.direction.value,
+                entry=sig.entry,
+                hit_tp=hit_tp,
+                hit_sl=hit_sl,
+                pnl_pct=sig.pnl_pct,
+                confidence=sig.confidence,
+            )
+        if self._circuit_breaker is not None:
+            self._circuit_breaker.record_outcome(
+                signal_id=sig.signal_id,
+                hit_sl=hit_sl,
+                pnl_pct=sig.pnl_pct,
+            )
 
     async def start(self) -> None:
         self._running = True
@@ -133,11 +172,13 @@ class TradeMonitor:
         if is_long and price <= sig.stop_loss:
             sig.status = "SL_HIT"
             await self._post_update(sig, "🔴 SL HIT")
+            self._record_outcome(sig, hit_tp=0, hit_sl=True)
             self._remove(sig.signal_id)
             return
         if not is_long and price >= sig.stop_loss:
             sig.status = "SL_HIT"
             await self._post_update(sig, "🔴 SL HIT")
+            self._record_outcome(sig, hit_tp=0, hit_sl=True)
             self._remove(sig.signal_id)
             return
 
@@ -146,6 +187,7 @@ class TradeMonitor:
             if sig.tp3 and price >= sig.tp3 and sig.status != "TP3_HIT":
                 sig.status = "TP3_HIT"
                 await self._post_update(sig, "🎯🎯🎯 TP3 HIT")
+                self._record_outcome(sig, hit_tp=3, hit_sl=False)
                 self._remove(sig.signal_id)
                 return
             if price >= sig.tp2 and sig.status not in ("TP2_HIT", "TP3_HIT"):
@@ -160,6 +202,7 @@ class TradeMonitor:
             if sig.tp3 and price <= sig.tp3 and sig.status != "TP3_HIT":
                 sig.status = "TP3_HIT"
                 await self._post_update(sig, "🎯🎯🎯 TP3 HIT")
+                self._record_outcome(sig, hit_tp=3, hit_sl=False)
                 self._remove(sig.signal_id)
                 return
             if price <= sig.tp2 and sig.status not in ("TP2_HIT", "TP3_HIT"):
@@ -197,6 +240,7 @@ class TradeMonitor:
             "360_SWING": "🏛️",
             "360_RANGE": "⚖️",
             "360_THE_TAPE": "🐋",
+            "360_SELECT": "🌹",
         }
         chan_emoji = chan_emojis.get(sig.channel, "📡")
         dir_emoji = "🚀" if sig.direction == Direction.LONG else "⬇️"

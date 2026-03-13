@@ -99,6 +99,7 @@ class CommandHandler:
         symbols_fn: Optional[Callable] = None,
         performance_tracker: Optional[Any] = None,
         circuit_breaker: Optional[Any] = None,
+        select_mode_filter: Optional[Any] = None,
     ) -> None:
         self._telegram = telegram
         self._telemetry = telemetry
@@ -121,6 +122,7 @@ class CommandHandler:
         self._symbols_fn = symbols_fn
         self._performance_tracker = performance_tracker
         self._circuit_breaker = circuit_breaker
+        self._select_mode = select_mode_filter
 
     # ------------------------------------------------------------------
     # Public API
@@ -145,6 +147,7 @@ class CommandHandler:
             "/set_free_channel_limit", "/force_update_ai", "/view_active_signals",
             "/view_logs", "/update_code", "/restart_engine", "/rollback_code",
             "/circuit_breaker_status", "/reset_circuit_breaker",
+            "/select_mode", "/select_config",
         }
         if cmd in admin_cmds and not is_admin:
             await self._telegram.send_message(
@@ -531,6 +534,46 @@ class CommandHandler:
                     )
                 await self._telegram.send_message(chat_id, "\n".join(lines))
 
+        elif cmd == "/select_mode":
+            if self._select_mode is None:
+                await self._telegram.send_message(
+                    chat_id, "❌ Select mode filter is not initialized."
+                )
+                return
+            sub = parts[1].lower() if len(parts) >= 2 else "status"
+            if sub == "on":
+                self._select_mode.enable()
+                await self._telegram.send_message(
+                    chat_id,
+                    "🌹 Select mode ON — signals will also publish to 360\\_SELECT channel",
+                )
+            elif sub == "off":
+                self._select_mode.disable()
+                await self._telegram.send_message(
+                    chat_id,
+                    "🔘 Select mode OFF — 360\\_SELECT channel paused",
+                )
+            else:
+                await self._telegram.send_message(
+                    chat_id, self._select_mode.status_text()
+                )
+
+        elif cmd == "/select_config":
+            if self._select_mode is None:
+                await self._telegram.send_message(
+                    chat_id, "❌ Select mode filter is not initialized."
+                )
+                return
+            if len(parts) < 3:
+                await self._telegram.send_message(
+                    chat_id, "Usage: /select\\_config <key> <value>"
+                )
+            else:
+                key = parts[1]
+                cfg_value = parts[2]
+                success, msg = self._select_mode.update_config(key, cfg_value)
+                await self._telegram.send_message(chat_id, msg)
+
         else:
             await self._telegram.send_message(
                 chat_id,
@@ -555,7 +598,9 @@ class CommandHandler:
                 "/rollback\\_code <commit>\n"
                 "/circuit\\_breaker\\_status\n"
                 "/reset\\_circuit\\_breaker\n"
-                "/stats [channel]\n\n"
+                "/stats [channel]\n"
+                "/select\\_mode [on|off|status]\n"
+                "/select\\_config <key> <value>\n\n"
                 "*User:*\n"
                 "/signals\n"
                 "/free\\_signals\n"
