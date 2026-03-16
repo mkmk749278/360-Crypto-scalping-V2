@@ -64,6 +64,7 @@ class WebSocketManager:
         self._fallback_task: Optional[asyncio.Task] = None
         self._watchdog_task: Optional[asyncio.Task] = None
         self._admin_alert = admin_alert_callback
+        self._last_alert_time: float = 0.0
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -227,15 +228,7 @@ class WebSocketManager:
             try:
                 await self._connect(conn)
                 self._set_connection_degraded(conn, False)
-                ping_task = asyncio.create_task(self._ping_loop(conn))
-                try:
-                    await self._listen(conn)
-                finally:
-                    ping_task.cancel()
-                    try:
-                        await ping_task
-                    except asyncio.CancelledError:
-                        pass
+                await self._listen(conn)
             except asyncio.CancelledError:
                 return
             except Exception as exc:
@@ -243,11 +236,14 @@ class WebSocketManager:
             if self._running:
                 self._set_connection_degraded(conn, True)
                 if self._admin_alert:
-                    asyncio.create_task(
-                        self._admin_alert(
-                            f"⚠️ WebSocket connection lost ({self._market}). Reconnecting…"
+                    now = time.monotonic()
+                    if now - self._last_alert_time > 300:
+                        self._last_alert_time = now
+                        asyncio.create_task(
+                            self._admin_alert(
+                                f"⚠️ WebSocket connection lost ({self._market}). Reconnecting…"
+                            )
                         )
-                    )
                 delay = min(
                     WS_RECONNECT_BASE_DELAY * (2 ** conn.reconnect_attempts),
                     WS_RECONNECT_MAX_DELAY,
@@ -290,26 +286,6 @@ class WebSocketManager:
                 break
 
     # ------------------------------------------------------------------
-    # Ping loop – keeps low-activity connections alive
-    # ------------------------------------------------------------------
-
-    async def _ping_loop(self, conn: WSConnection) -> None:
-        """Send periodic WebSocket pings so the server responds with PONG.
-
-        This keeps ``conn.last_pong`` updated on connections that receive
-        little or no market data, preventing the watchdog from force-closing
-        them due to apparent inactivity.
-        """
-        try:
-            while conn.ws and not conn.ws.closed:
-                await conn.ws.ping()
-                await asyncio.sleep(WS_HEARTBEAT_INTERVAL)
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:
-            log.debug("Ping loop exited with error: {}", exc)
-
-    # ------------------------------------------------------------------
     # Health watchdog
     # ------------------------------------------------------------------
 
@@ -321,7 +297,7 @@ class WebSocketManager:
                 now = time.monotonic()
                 for conn in self._connections:
                     if conn.ws and not conn.ws.closed:
-                        if (now - conn.last_pong) >= WS_HEARTBEAT_INTERVAL * 3:
+                        if (now - conn.last_pong) >= WS_HEARTBEAT_INTERVAL * 6:
                             log.warning(
                                 "Watchdog: stale WS connection ({:.0f}s since last data) — force-closing to trigger reconnect",
                                 now - conn.last_pong,
@@ -356,6 +332,6 @@ class WebSocketManager:
         if not open_connections or len(open_connections) != len(self._connections):
             return False
         return all(
-            (now - c.last_pong) < WS_HEARTBEAT_INTERVAL * 3
+            (now - c.last_pong) < WS_HEARTBEAT_INTERVAL * 6
             for c in open_connections
         )

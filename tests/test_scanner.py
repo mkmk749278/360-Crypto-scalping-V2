@@ -581,3 +581,40 @@ class TestSpreadCacheFailureTTL:
         """_SPREAD_FAIL_CACHE_TTL must be greater than _SPREAD_CACHE_TTL."""
         from src.scanner import _SPREAD_CACHE_TTL, _SPREAD_FAIL_CACHE_TTL
         assert _SPREAD_FAIL_CACHE_TTL > _SPREAD_CACHE_TTL
+
+    @pytest.mark.asyncio
+    async def test_futures_market_uses_futures_client(self):
+        """When market='futures', the futures client is used instead of spot."""
+        scanner = _make_scanner()
+        mock_futures = MagicMock()
+        mock_futures.fetch_order_book = AsyncMock(
+            return_value={"bids": [["2000.0", "1"]], "asks": [["2001.0", "1"]]}
+        )
+        mock_spot = MagicMock()
+        mock_spot.fetch_order_book = AsyncMock(return_value=None)
+        scanner.futures_client = mock_futures
+        scanner.spot_client = mock_spot
+
+        spread = await scanner._get_spread_pct("XAUUSDT", market="futures")
+        # Futures client must have been called, spot client must not
+        assert mock_futures.fetch_order_book.await_count == 1
+        assert mock_spot.fetch_order_book.await_count == 0
+        assert spread > 0
+
+    @pytest.mark.asyncio
+    async def test_spot_market_uses_spot_client(self):
+        """When market='spot' (default), the spot client is used."""
+        scanner = _make_scanner()
+        mock_spot = MagicMock()
+        mock_spot.fetch_order_book = AsyncMock(
+            return_value={"bids": [["100.0", "1"]], "asks": [["100.01", "1"]]}
+        )
+        mock_futures = MagicMock()
+        mock_futures.fetch_order_book = AsyncMock(return_value=None)
+        scanner.spot_client = mock_spot
+        scanner.futures_client = mock_futures
+
+        spread = await scanner._get_spread_pct("BTCUSDT", market="spot")
+        assert mock_spot.fetch_order_book.await_count == 1
+        assert mock_futures.fetch_order_book.await_count == 0
+        assert spread > 0

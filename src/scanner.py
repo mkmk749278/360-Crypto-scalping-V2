@@ -137,6 +137,7 @@ class Scanner:
         self.predictive = predictive
         self.exchange_mgr = exchange_mgr
         self.spot_client: Optional[Any] = spot_client
+        self.futures_client: Optional[Any] = None
         self.telemetry = telemetry
         self.signal_queue = signal_queue
         self.router = router
@@ -326,7 +327,7 @@ class Scanner:
             pass
         return ai
 
-    async def _get_spread_pct(self, symbol: str) -> float:
+    async def _get_spread_pct(self, symbol: str, market: str = "spot") -> float:
         spread_pct = 0.01  # fallback
         now = time.monotonic()
         cached = self._order_book_cache.get(symbol)
@@ -336,9 +337,15 @@ class Scanner:
             return spread_pct
         try:
             self._order_book_fetches_this_cycle += 1
-            if self.spot_client is None:
-                self.spot_client = BinanceClient("spot")
-            book = await self.spot_client.fetch_order_book(symbol, limit=5)
+            if market == "futures":
+                if self.futures_client is None:
+                    self.futures_client = BinanceClient("futures")
+                client = self.futures_client
+            else:
+                if self.spot_client is None:
+                    self.spot_client = BinanceClient("spot")
+                client = self.spot_client
+            book = await client.fetch_order_book(symbol, limit=5)
             if book and book.get("bids") and book.get("asks"):
                 best_bid = float(book["bids"][0][0])
                 best_ask = float(book["asks"][0][0])
@@ -410,9 +417,14 @@ class Scanner:
 
         ind_for_predict = indicators.get("5m", indicators.get("1m", {}))
         candle_total = sum(len(cd.get("close", [])) for cd in candles.values())
+        market = (
+            self.pair_mgr.pairs[symbol].market
+            if symbol in self.pair_mgr.pairs
+            else "spot"
+        )
         ai, spread_pct, onchain_data = await asyncio.gather(
             self._fetch_ai_context(symbol),
-            self._get_spread_pct(symbol),
+            self._get_spread_pct(symbol, market=market),
             self._fetch_onchain_data(symbol),
         )
         pair_quality = assess_pair_quality(

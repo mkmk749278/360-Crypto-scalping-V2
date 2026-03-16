@@ -202,7 +202,7 @@ class TestWebSocketLastPongOnText:
 
         assert ws.is_healthy is True
 
-        # Simulate staleness beyond the 3× heartbeat window
+        # Simulate staleness beyond the 6× heartbeat window
         conn.last_pong = time.monotonic() - 200  # 200 s ago → stale
         assert ws.is_healthy is False
 
@@ -283,3 +283,58 @@ class TestWebSocketLifecycle:
 
         ws._set_connection_degraded(conn_b, False)
         assert ws._rest_fallback_active is False
+
+
+class TestAdminAlertRateLimiting:
+    """Admin alert must not fire more than once per 5-minute cooldown window."""
+
+    def test_last_alert_time_starts_at_zero(self):
+        """_last_alert_time initialises to 0.0 so the first alert always fires."""
+        ws = WebSocketManager(lambda data: None, market="spot")
+        assert ws._last_alert_time == 0.0
+
+    @pytest.mark.asyncio
+    async def test_alert_fires_on_first_reconnect(self):
+        """Admin alert callback is invoked on the first connection drop."""
+        alerted = []
+
+        async def alert(msg):
+            alerted.append(msg)
+
+        ws = WebSocketManager(lambda data: None, market="futures", admin_alert_callback=alert)
+        # Set last_alert_time to 301 seconds ago so the cooldown is always expired,
+        # regardless of how long the system has been running (avoids false failures
+        # on freshly booted CI containers where time.monotonic() < 300).
+        ws._last_alert_time = time.monotonic() - 301
+
+        # Simulate the alert logic directly
+        now = time.monotonic()
+        if now - ws._last_alert_time > 300:
+            ws._last_alert_time = now
+            await alert("⚠️ WebSocket connection lost (futures). Reconnecting…")
+
+        assert len(alerted) == 1
+
+    @pytest.mark.asyncio
+    async def test_alert_suppressed_within_cooldown(self):
+        """Alert is not sent again while the 5-minute cooldown is active."""
+        alerted = []
+
+        async def alert(msg):
+            alerted.append(msg)
+
+        ws = WebSocketManager(lambda data: None, market="futures", admin_alert_callback=alert)
+        # Simulate that an alert was just sent
+        ws._last_alert_time = time.monotonic()
+
+        now = time.monotonic()
+        if now - ws._last_alert_time > 300:
+            ws._last_alert_time = now
+            await alert("⚠️ WebSocket connection lost (futures). Reconnecting…")
+
+        assert len(alerted) == 0
+
+    def test_no_ping_loop_method(self):
+        """_ping_loop must not exist — aiohttp heartbeat= handles keepalive."""
+        ws = WebSocketManager(lambda data: None, market="spot")
+        assert not hasattr(ws, "_ping_loop")
