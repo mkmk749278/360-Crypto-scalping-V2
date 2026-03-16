@@ -55,6 +55,11 @@ _FULL_FETCH_SENTINEL = 9_999
 # Extra candles fetched on top of the estimated gap to cover partial candles and clock skew
 _GAP_BUFFER_CANDLES = 5
 
+# Gap-fill concurrency settings
+_GAP_FILL_DELAY: float = 0.1          # shorter per-call sleep during gap-fill
+_GAP_FILL_CONCURRENT_SYMBOLS: int = 4  # symbols processed in parallel
+_TICK_REFRESH_AGE_SECS: int = 300      # skip tick refresh if cache is fresher than this
+
 
 class HistoricalDataStore:
     """In-memory store for OHLCV and tick data, keyed by symbol + timeframe."""
@@ -65,6 +70,7 @@ class HistoricalDataStore:
         # ticks[symbol] = [{"price": float, "qty": float, "isBuyerMaker": bool, "time": int}, …]
         self.ticks: Dict[str, List[Dict[str, Any]]] = {}
         self._client = BinanceClient("spot")
+        self._futures_client = BinanceClient("futures")
 
     # ------------------------------------------------------------------
     # OHLCV fetch
@@ -74,20 +80,12 @@ class HistoricalDataStore:
         self, symbol: str, interval: str, limit: int, market: str = "spot",
     ) -> Dict[str, np.ndarray]:
         """Fetch OHLCV candles for one symbol/interval."""
-        if market == "spot":
-            client = self._client
-            close_after = False
-        else:
-            client = BinanceClient(market)
-            close_after = True
+        client = self._futures_client if market == "futures" else self._client
         try:
             raw = await client.fetch_klines(symbol, interval, limit)
         except Exception as exc:
             log.error("Candle fetch error %s %s: %s", symbol, interval, exc)
             return {}
-        finally:
-            if close_after:
-                await client.close()
 
         if not raw:
             return {}
@@ -107,12 +105,7 @@ class HistoricalDataStore:
     async def fetch_recent_trades(
         self, symbol: str, limit: int = SEED_TICK_LIMIT, market: str = "spot",
     ) -> List[Dict[str, Any]]:
-        if market == "spot":
-            client = self._client
-            close_after = False
-        else:
-            client = BinanceClient(market)
-            close_after = True
+        client = self._futures_client if market == "futures" else self._client
         capped_limit = min(limit, 1000)
         try:
             if market == "futures":
@@ -130,9 +123,6 @@ class HistoricalDataStore:
         except Exception as exc:
             log.error("Trade fetch error %s: %s", symbol, exc)
             return []
-        finally:
-            if close_after:
-                await client.close()
 
         if not raw:
             return []
@@ -296,6 +286,9 @@ class HistoricalDataStore:
         candles are needed based on the elapsed time since ``saved_at``,
         then fetches and merges them.  For symbol+timeframe combos not in
         cache, a full seed is performed.
+
+        Uses concurrent processing (up to 4 symbols at a time) and skips
+        tick refresh when the cache is fresher than 5 minutes.
         """
         try:
             if not _META_FILE.exists():
@@ -311,54 +304,97 @@ class HistoricalDataStore:
             return
 
         log.info("Gap-filling %d pairs …", len(pair_mgr.pairs))
-        for sym, info in pair_mgr.pairs.items():
+
+        semaphore = asyncio.Semaphore(_GAP_FILL_CONCURRENT_SYMBOLS)
+
+        await asyncio.gather(*[
+            self._gap_fill_symbol(sym, info, meta, semaphore, pair_mgr)
+            for sym, info in pair_mgr.pairs.items()
+        ])
+        log.info("Gap-fill complete.")
+
+    async def _gap_fill_symbol(
+        self,
+        sym: str,
+        info: Any,
+        meta: Dict[str, Any],
+        semaphore: asyncio.Semaphore,
+        pair_mgr: PairManager,
+    ) -> None:
+        """Process gap-fill for a single symbol, bounded by *semaphore*."""
+        async with semaphore:
             self.candles.setdefault(sym, {})
 
+            # Collect timeframe fetch tasks
+            tasks = []
             for tf in SEED_TIMEFRAMES:
                 key = f"{sym}:{tf.interval}"
                 if key in meta and sym in self.candles and tf.interval in self.candles[sym]:
                     saved_at_iso = meta[key].get("saved_at", "")
                     gap = self._estimate_gap_candles(saved_at_iso, tf.interval)
-                    if gap >= tf.limit:
-                        # Cache is stale — do a full fetch for this timeframe
+                    if gap <= 0:
+                        log.debug("No gap needed for %s %s", sym, tf.interval)
+                        continue
+                    elif gap >= tf.limit:
                         log.debug(
                             "Cache stale for %s %s (gap=%d >= limit=%d) — full fetch",
                             sym, tf.interval, gap, tf.limit,
                         )
-                        data = await self.fetch_candles(sym, tf.interval, tf.limit, info.market)
-                        if data:
-                            self.candles[sym][tf.interval] = data
-                    elif gap > 0:
-                        new_data = await self.fetch_candles(sym, tf.interval, gap, info.market)
-                        if new_data:
-                            self.candles[sym][tf.interval] = self._merge_candles(
-                                self.candles[sym][tf.interval], new_data, tf.limit
-                            )
-                            log.debug(
-                                "Gap-filled %s %s: fetched %d, total %d",
-                                sym, tf.interval, len(new_data["close"]),
-                                len(self.candles[sym][tf.interval]["close"]),
-                            )
+                        tasks.append(self._fetch_and_store(sym, tf.interval, tf.limit, info.market))
                     else:
-                        log.debug("No gap needed for %s %s", sym, tf.interval)
+                        tasks.append(self._gap_fetch_and_merge(sym, tf.interval, gap, tf.limit, info.market))
                 else:
                     # Not in cache — full fetch
-                    data = await self.fetch_candles(sym, tf.interval, tf.limit, info.market)
-                    if data:
-                        self.candles[sym][tf.interval] = data
-                        log.debug("Full-seeded (no cache) %s %s: %d candles", sym, tf.interval, len(data["close"]))
-                await asyncio.sleep(BATCH_REQUEST_DELAY)
+                    tasks.append(self._fetch_and_store(sym, tf.interval, tf.limit, info.market))
 
-            # Always refresh ticks — they are cheap
-            ticks = await self.fetch_recent_trades(sym, SEED_TICK_LIMIT, info.market)
-            if ticks:
-                self.ticks[sym] = ticks
-            await asyncio.sleep(BATCH_REQUEST_DELAY)
+            if tasks:
+                await asyncio.gather(*tasks)
+                await asyncio.sleep(_GAP_FILL_DELAY)
+
+            # Only refresh ticks if cache is older than 5 minutes
+            should_refresh_ticks = True
+            any_key = f"{sym}:{SEED_TIMEFRAMES[0].interval}"
+            if any_key in meta:
+                saved_at_iso = meta[any_key].get("saved_at", "")
+                if saved_at_iso:
+                    try:
+                        saved_dt = datetime.fromisoformat(saved_at_iso)
+                        if saved_dt.tzinfo is None:
+                            saved_dt = saved_dt.replace(tzinfo=timezone.utc)
+                        elapsed = (datetime.now(timezone.utc) - saved_dt).total_seconds()
+                        should_refresh_ticks = elapsed > _TICK_REFRESH_AGE_SECS
+                    except Exception:
+                        pass
+
+            if should_refresh_ticks:
+                ticks = await self.fetch_recent_trades(sym, SEED_TICK_LIMIT, info.market)
+                if ticks:
+                    self.ticks[sym] = ticks
+                await asyncio.sleep(_GAP_FILL_DELAY)
 
             for tf_name, data in self.candles.get(sym, {}).items():
                 pair_mgr.record_candles(sym, tf_name, len(data.get("close", [])))
 
-        log.info("Gap-fill complete.")
+    async def _fetch_and_store(self, symbol: str, interval: str, limit: int, market: str) -> None:
+        """Fetch a full set of candles and store them in the cache."""
+        data = await self.fetch_candles(symbol, interval, limit, market)
+        if data:
+            self.candles.setdefault(symbol, {})[interval] = data
+            log.debug("Full-seeded (no cache) %s %s: %d candles", symbol, interval, len(data["close"]))
+
+    async def _gap_fetch_and_merge(
+        self, symbol: str, interval: str, gap: int, limit: int, market: str
+    ) -> None:
+        """Fetch gap candles and merge them into the existing cache."""
+        new_data = await self.fetch_candles(symbol, interval, gap, market)
+        if new_data:
+            existing = self.candles.get(symbol, {}).get(interval, {})
+            self.candles.setdefault(symbol, {})[interval] = self._merge_candles(existing, new_data, limit)
+            log.debug(
+                "Gap-filled %s %s: fetched %d, total %d",
+                symbol, interval, len(new_data["close"]),
+                len(self.candles[symbol][interval]["close"]),
+            )
 
     # ------------------------------------------------------------------
     # Disk-cache helpers
@@ -383,7 +419,10 @@ class HistoricalDataStore:
             if elapsed > _MAX_GAP_FILL_SECONDS:
                 return _FULL_FETCH_SENTINEL
             interval_secs = _INTERVAL_SECONDS.get(interval, 60)
-            return int(elapsed / interval_secs) + _GAP_BUFFER_CANDLES
+            raw_gap = int(elapsed / interval_secs)
+            if raw_gap == 0:
+                return 0
+            return raw_gap + _GAP_BUFFER_CANDLES
         except Exception:
             return _FULL_FETCH_SENTINEL
 
@@ -432,3 +471,4 @@ class HistoricalDataStore:
 
     async def close(self) -> None:
         await self._client.close()
+        await self._futures_client.close()
