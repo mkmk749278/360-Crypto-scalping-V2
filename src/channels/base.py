@@ -44,7 +44,7 @@ class Signal:
     timestamp: datetime = field(default_factory=utcnow)
     # State for monitoring
     signal_id: str = ""
-    status: str = "ACTIVE"  # ACTIVE, TP1_HIT, TP2_HIT, TP3_HIT, SL_HIT, CANCELLED
+    status: str = "ACTIVE"  # ACTIVE, TP1_HIT, TP2_HIT, SL_HIT, BREAKEVEN_EXIT, PROFIT_LOCKED, FULL_TP_HIT, CANCELLED
     current_price: float = 0.0
     pnl_pct: float = 0.0
     max_favorable_excursion_pct: float = 0.0

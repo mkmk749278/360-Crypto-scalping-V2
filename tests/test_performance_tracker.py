@@ -142,6 +142,23 @@ class TestPerformanceTrackerStats:
         stats = pt.get_stats(channel="360_SCALP")
         assert stats.win_count == 1
         assert stats.loss_count == 0
+        assert stats.breakeven_count == 1
+
+    def test_stats_keep_semantic_counts_consistent(self, tmp_path):
+        pt = PerformanceTracker(storage_path=str(tmp_path / "perf.json"))
+        pt.record_outcome("L1", "360_SCALP", "BTC", "LONG", 100.0, 0, True, -1.0)
+        pt.record_outcome("B1", "360_SCALP", "BTC", "LONG", 100.0, 0, True, 0.0)
+        pt.record_outcome("P1", "360_SCALP", "BTC", "LONG", 100.0, 0, True, 0.6)
+        pt.record_outcome("T1", "360_SCALP", "BTC", "LONG", 100.0, 3, False, 1.5)
+
+        stats = pt.get_stats(channel="360_SCALP")
+        assert stats.total_signals == 4
+        assert stats.win_count == 2
+        assert stats.loss_count == 1
+        assert stats.breakeven_count == 1
+        # 2 wins (P1, T1) / 3 non-breakeven trades (L1, P1, T1) = 66.67%
+        # because breakeven exits are excluded from the win-rate denominator.
+        assert stats.win_rate == pytest.approx(66.67, abs=0.01)
 
     def test_unrealistic_losses_are_clamped(self, tmp_path):
         pt = PerformanceTracker(storage_path=str(tmp_path / "perf.json"))
@@ -200,6 +217,7 @@ class TestPerformanceTrackerFormatting:
         assert "Total signals" in msg
         assert "Avg PnL" in msg
         assert "Max drawdown" in msg
+        assert "Breakeven" in msg
 
     def test_format_message_all_channels(self, tmp_path):
         pt = PerformanceTracker(storage_path=str(tmp_path / "perf.json"))
@@ -234,9 +252,22 @@ class TestPerformanceTrackerAnalyticsFields:
         record = pt._records[0]
         assert record.pre_ai_confidence == 88.0
         assert record.post_ai_confidence == 91.0
+        assert record.outcome_label == "FULL_TP_HIT"
         assert record.setup_class == "TREND_PULLBACK_CONTINUATION"
         assert record.market_phase == "STRONG_TREND"
         assert record.quality_tier == "A+"
         assert record.hold_duration_sec == 5400.0
         assert record.max_favorable_excursion_pct == 5.0
         assert record.max_adverse_excursion_pct == -0.8
+
+    def test_profit_lock_and_breakeven_outcomes_are_classified(self, tmp_path):
+        pt = PerformanceTracker(storage_path=str(tmp_path / "perf.json"))
+        pt.record_outcome("B1", "360_SCALP", "BTC", "LONG", 100.0, 0, True, 0.0)
+        pt.record_outcome("P1", "360_SCALP", "BTC", "LONG", 100.0, 0, True, 0.4)
+        pt.record_outcome("L1", "360_SCALP", "BTC", "LONG", 100.0, 0, True, -0.4)
+
+        assert [record.outcome_label for record in pt._records] == [
+            "BREAKEVEN_EXIT",
+            "PROFIT_LOCKED",
+            "SL_HIT",
+        ]

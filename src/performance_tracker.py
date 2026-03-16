@@ -12,7 +12,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.performance_metrics import calculate_drawdown_metrics, normalize_pnl_pct
+from src.performance_metrics import (
+    calculate_drawdown_metrics,
+    classify_trade_outcome,
+    is_breakeven_pnl,
+    normalize_pnl_pct,
+)
 from src.utils import get_logger
 
 log = get_logger("performance_tracker")
@@ -33,6 +38,7 @@ class SignalRecord:
     hit_sl: bool
     pnl_pct: float
     confidence: float
+    outcome_label: str = ""
     pre_ai_confidence: float = 0.0
     post_ai_confidence: float = 0.0
     setup_class: str = ""
@@ -53,6 +59,7 @@ class ChannelStats:
     channel: str
     win_count: int = 0
     loss_count: int = 0
+    breakeven_count: int = 0
     win_rate: float = 0.0
     avg_pnl_pct: float = 0.0
     max_drawdown: float = 0.0
@@ -89,6 +96,7 @@ class PerformanceTracker:
         hit_tp: int,
         hit_sl: bool,
         pnl_pct: float,
+        outcome_label: str = "",
         confidence: float = 0.0,
         pre_ai_confidence: float = 0.0,
         post_ai_confidence: float = 0.0,
@@ -111,6 +119,10 @@ class PerformanceTracker:
             hit_tp=hit_tp,
             hit_sl=hit_sl,
             pnl_pct=normalize_pnl_pct(pnl_pct),
+            outcome_label=(
+                outcome_label
+                or classify_trade_outcome(pnl_pct=pnl_pct, hit_tp=hit_tp, hit_sl=hit_sl)
+            ),
             confidence=confidence,
             pre_ai_confidence=pre_ai_confidence,
             post_ai_confidence=post_ai_confidence,
@@ -170,7 +182,8 @@ class PerformanceTracker:
         return (
             f"📊 *Performance Stats – {label}{window_label}*\n"
             f"Total signals: {stats.total_signals}\n"
-            f"Wins: {stats.win_count} | Losses: {stats.loss_count}\n"
+            f"Wins: {stats.win_count} | Losses: {stats.loss_count} | "
+            f"Breakeven: {stats.breakeven_count}\n"
             f"Win rate: {stats.win_rate:.1f}%\n"
             f"Avg PnL: {stats.avg_pnl_pct:+.2f}%\n"
             f"Best trade: {stats.best_trade:+.2f}%\n"
@@ -212,10 +225,13 @@ class PerformanceTracker:
             return stats
 
         stats.total_signals = len(records)
-        wins = [r for r in records if r.pnl_pct > 0]
-        losses = [r for r in records if r.pnl_pct < 0]
-        stats.win_count = len(wins)
-        stats.loss_count = len(losses)
+        for record in records:
+            if is_breakeven_pnl(record.pnl_pct):
+                stats.breakeven_count += 1
+            elif record.pnl_pct > 0:
+                stats.win_count += 1
+            else:
+                stats.loss_count += 1
         total = stats.win_count + stats.loss_count
         stats.win_rate = (stats.win_count / total * 100.0) if total > 0 else 0.0
 
@@ -248,6 +264,12 @@ class PerformanceTracker:
             self._records = [SignalRecord(**item) for item in data]
             for record in self._records:
                 record.pnl_pct = normalize_pnl_pct(record.pnl_pct)
+                if not record.outcome_label:
+                    record.outcome_label = classify_trade_outcome(
+                        pnl_pct=record.pnl_pct,
+                        hit_tp=record.hit_tp,
+                        hit_sl=record.hit_sl,
+                    )
             log.info("Loaded %d performance records from %s", len(self._records), self._path)
         except Exception as exc:
             log.warning("Failed to load performance data: %s", exc)

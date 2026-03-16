@@ -12,7 +12,7 @@ from typing import Any, Callable, Coroutine, Dict, Optional
 from config import CHANNEL_TELEGRAM_MAP, MIN_SIGNAL_LIFESPAN_SECONDS, MONITOR_POLL_INTERVAL
 from src.channels.base import Signal
 from src.historical_data import HistoricalDataStore
-from src.performance_metrics import calculate_trade_pnl_pct
+from src.performance_metrics import calculate_trade_pnl_pct, classify_trade_outcome
 from src.smc import Direction
 from src.utils import fmt_price, fmt_ts, get_logger, utcnow
 
@@ -21,6 +21,11 @@ log = get_logger("trade_monitor")
 # Minimum absolute PnL (%) before SL/TP evaluation is allowed.
 # Prevents false stops from stale prices or floating-point noise.
 _ZERO_PNL_THRESHOLD_PCT = 0.01
+_STOP_OUTCOME_MESSAGES = {
+    "SL_HIT": "🔴 SL HIT",
+    "BREAKEVEN_EXIT": "⚪ BREAKEVEN EXIT",
+    "PROFIT_LOCKED": "🟢 PROFIT LOCKED",
+}
 
 
 class TradeMonitor:
@@ -48,7 +53,7 @@ class TradeMonitor:
     def _record_outcome(self, sig: Signal, hit_tp: int, hit_sl: bool) -> None:
         """Notify performance tracker and circuit breaker of a completed signal.
 
-        Called only on final outcomes (SL_HIT or TP3_HIT).  Intermediate hits
+        Called only on final outcomes (semantic stop/TP completion). Intermediate hits
         (TP1/TP2) and configuration-error cancellations are intentionally
         excluded because the signal is still active or was never a real trade.
 
@@ -61,6 +66,11 @@ class TradeMonitor:
         hit_sl:
             ``True`` when the stop-loss was triggered.
         """
+        outcome_label = classify_trade_outcome(
+            pnl_pct=sig.pnl_pct,
+            hit_tp=hit_tp,
+            hit_sl=hit_sl,
+        )
         if self._performance_tracker is not None:
             hold_duration_sec = max((utcnow() - sig.timestamp).total_seconds(), 0.0)
             self._performance_tracker.record_outcome(
@@ -72,6 +82,7 @@ class TradeMonitor:
                 hit_tp=hit_tp,
                 hit_sl=hit_sl,
                 pnl_pct=sig.pnl_pct,
+                outcome_label=outcome_label,
                 confidence=sig.confidence,
                 pre_ai_confidence=sig.pre_ai_confidence,
                 post_ai_confidence=sig.post_ai_confidence,
@@ -100,6 +111,17 @@ class TradeMonitor:
             exit_price=exit_price,
             direction=sig.direction.value,
         )
+
+    @staticmethod
+    def _apply_final_outcome(sig: Signal, hit_tp: int, hit_sl: bool) -> str:
+        """Apply the semantic final outcome label to the signal and return it."""
+        outcome_label = classify_trade_outcome(
+            pnl_pct=sig.pnl_pct,
+            hit_tp=hit_tp,
+            hit_sl=hit_sl,
+        )
+        sig.status = outcome_label
+        return outcome_label
 
     async def start(self) -> None:
         self._running = True
@@ -155,7 +177,8 @@ class TradeMonitor:
             return
 
         # SL direction sanity check – catch misconfigured signals
-        if is_long and sig.stop_loss > sig.entry:
+        protective_stop_active = sig.status in ("TP1_HIT", "TP2_HIT")
+        if is_long and sig.stop_loss > sig.entry and not protective_stop_active:
             log.warning(
                 "Signal %s %s has invalid SL (LONG SL %.8f > entry %.8f) – cancelling",
                 sig.symbol, sig.signal_id, sig.stop_loss, sig.entry,
@@ -164,7 +187,7 @@ class TradeMonitor:
             await self._post_update(sig, "⚠️ CANCELLED (invalid SL)")
             self._remove(sig.signal_id)
             return
-        if not is_long and sig.stop_loss < sig.entry:
+        if not is_long and sig.stop_loss < sig.entry and not protective_stop_active:
             log.warning(
                 "Signal %s %s has invalid SL (SHORT SL %.8f < entry %.8f) – cancelling",
                 sig.symbol, sig.signal_id, sig.stop_loss, sig.entry,
@@ -196,15 +219,17 @@ class TradeMonitor:
         # Stop-loss hit
         if is_long and price <= sig.stop_loss:
             self._set_realized_pnl(sig, sig.stop_loss)
-            sig.status = "SL_HIT"
-            await self._post_update(sig, "🔴 SL HIT")
+            outcome_label = self._apply_final_outcome(sig, hit_tp=0, hit_sl=True)
+            outcome_event = _STOP_OUTCOME_MESSAGES.get(outcome_label, "🔴 EXIT")
+            await self._post_update(sig, outcome_event)
             self._record_outcome(sig, hit_tp=0, hit_sl=True)
             self._remove(sig.signal_id)
             return
         if not is_long and price >= sig.stop_loss:
             self._set_realized_pnl(sig, sig.stop_loss)
-            sig.status = "SL_HIT"
-            await self._post_update(sig, "🔴 SL HIT")
+            outcome_label = self._apply_final_outcome(sig, hit_tp=0, hit_sl=True)
+            outcome_event = _STOP_OUTCOME_MESSAGES.get(outcome_label, "🔴 EXIT")
+            await self._post_update(sig, outcome_event)
             self._record_outcome(sig, hit_tp=0, hit_sl=True)
             self._remove(sig.signal_id)
             return
@@ -213,8 +238,8 @@ class TradeMonitor:
         if is_long:
             if sig.tp3 and price >= sig.tp3 and sig.status != "TP3_HIT":
                 self._set_realized_pnl(sig, sig.tp3)
-                sig.status = "TP3_HIT"
-                await self._post_update(sig, "🎯🎯🎯 TP3 HIT")
+                self._apply_final_outcome(sig, hit_tp=3, hit_sl=False)
+                await self._post_update(sig, "🎯🎯🎯 FULL TP HIT")
                 self._record_outcome(sig, hit_tp=3, hit_sl=False)
                 self._remove(sig.signal_id)
                 return
@@ -229,8 +254,8 @@ class TradeMonitor:
         else:
             if sig.tp3 and price <= sig.tp3 and sig.status != "TP3_HIT":
                 self._set_realized_pnl(sig, sig.tp3)
-                sig.status = "TP3_HIT"
-                await self._post_update(sig, "🎯🎯🎯 TP3 HIT")
+                self._apply_final_outcome(sig, hit_tp=3, hit_sl=False)
+                await self._post_update(sig, "🎯🎯🎯 FULL TP HIT")
                 self._record_outcome(sig, hit_tp=3, hit_sl=False)
                 self._remove(sig.signal_id)
                 return

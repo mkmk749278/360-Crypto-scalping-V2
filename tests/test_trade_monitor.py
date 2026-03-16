@@ -108,6 +108,7 @@ class TestMinimumLifespan:
 
         assert sig.signal_id in removed
         assert sig.status == "SL_HIT"
+        assert sig.current_price == pytest.approx(29850.0)
 
     @pytest.mark.asyncio
     async def test_swing_min_lifespan_is_longer(self):
@@ -182,7 +183,7 @@ class TestOutcomeRecording:
 
     @pytest.mark.asyncio
     async def test_sl_hit_calls_performance_tracker(self):
-        """SL_HIT must call performance_tracker.record_outcome with hit_sl=True, hit_tp=0."""
+        """Losing stop exits must record a semantic SL_HIT outcome."""
         sig = _make_signal(
             channel="360_SCALP",
             direction=Direction.LONG,
@@ -211,6 +212,7 @@ class TestOutcomeRecording:
         assert call_kwargs["hit_tp"] == 0
         assert call_kwargs["signal_id"] == sig.signal_id
         assert call_kwargs["pnl_pct"] == pytest.approx(-0.5)
+        assert call_kwargs["outcome_label"] == "SL_HIT"
         assert call_kwargs["setup_class"] == "BREAKOUT_RETEST"
         assert call_kwargs["market_phase"] == "STRONG_TREND"
         assert call_kwargs["quality_tier"] == "A"
@@ -241,7 +243,7 @@ class TestOutcomeRecording:
 
     @pytest.mark.asyncio
     async def test_tp3_hit_calls_performance_tracker(self):
-        """TP3_HIT must call performance_tracker.record_outcome with hit_sl=False, hit_tp=3."""
+        """Full TP completion must record a semantic FULL_TP_HIT outcome."""
         sig = _make_signal(
             channel="360_SCALP",
             direction=Direction.LONG,
@@ -259,12 +261,14 @@ class TestOutcomeRecording:
 
         await monitor._evaluate_signal(sig)
 
-        assert sig.status == "TP3_HIT"
+        assert sig.status == "FULL_TP_HIT"
         pt.record_outcome.assert_called_once()
         call_kwargs = pt.record_outcome.call_args.kwargs
         assert call_kwargs["hit_sl"] is False
         assert call_kwargs["hit_tp"] == 3
         assert call_kwargs["pnl_pct"] == pytest.approx(1.5)
+        assert call_kwargs["outcome_label"] == "FULL_TP_HIT"
+        assert sig.current_price == pytest.approx(30450.0)
 
     @pytest.mark.asyncio
     async def test_tp1_hit_does_not_call_record_outcome(self):
@@ -369,6 +373,33 @@ class TestOutcomeRecording:
         call_kwargs = pt.record_outcome.call_args.kwargs
         assert call_kwargs["pnl_pct"] == pytest.approx(-0.5)
         assert sig.current_price == pytest.approx(30150.0)
+        assert sig.status == "SL_HIT"
+        assert call_kwargs["outcome_label"] == "SL_HIT"
+
+    @pytest.mark.asyncio
+    async def test_short_tp3_uses_take_profit_price_for_realized_pnl(self):
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.SHORT,
+            entry=30000.0,
+            stop_loss=30150.0,
+            tp1=29850.0,
+            tp2=29700.0,
+            tp3=29550.0,
+            age_seconds=35.0,
+        )
+        sig.current_price = 29400.0
+
+        active = {sig.signal_id: sig}
+        monitor, removed, sent, pt, cb = self._build_monitor_with_mocks(active)
+
+        await monitor._evaluate_signal(sig)
+
+        call_kwargs = pt.record_outcome.call_args.kwargs
+        assert call_kwargs["pnl_pct"] == pytest.approx(1.5)
+        assert call_kwargs["outcome_label"] == "FULL_TP_HIT"
+        assert sig.current_price == pytest.approx(29550.0)
+        assert sig.status == "FULL_TP_HIT"
 
     @pytest.mark.asyncio
     async def test_trailing_stop_break_even_records_zero_pnl(self):
@@ -391,3 +422,29 @@ class TestOutcomeRecording:
         call_kwargs = pt.record_outcome.call_args.kwargs
         assert call_kwargs["hit_sl"] is True
         assert call_kwargs["pnl_pct"] == pytest.approx(0.0)
+        assert call_kwargs["outcome_label"] == "BREAKEVEN_EXIT"
+        assert sig.status == "BREAKEVEN_EXIT"
+
+    @pytest.mark.asyncio
+    async def test_trailing_stop_profit_lock_is_not_reported_as_sl_hit(self):
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            age_seconds=35.0,
+        )
+        sig.status = "TP2_HIT"
+        sig.stop_loss = 30120.0
+        sig.current_price = 30090.0
+
+        active = {sig.signal_id: sig}
+        monitor, removed, sent, pt, cb = self._build_monitor_with_mocks(active)
+
+        await monitor._evaluate_signal(sig)
+
+        call_kwargs = pt.record_outcome.call_args.kwargs
+        assert call_kwargs["hit_sl"] is True
+        assert call_kwargs["pnl_pct"] == pytest.approx(0.4)
+        assert call_kwargs["outcome_label"] == "PROFIT_LOCKED"
+        assert sig.status == "PROFIT_LOCKED"

@@ -72,6 +72,7 @@ class CircuitBreaker:
         self._status_mode: str = "healthy"
         self._last_resume_time: Optional[float] = None
         self._last_resume_reason: str = ""
+        self._monitoring_started_at: float = time.monotonic()
 
     # ------------------------------------------------------------------
     # Public API
@@ -120,14 +121,18 @@ class CircuitBreaker:
 
     def reset(self) -> None:
         """Manually reset the circuit breaker and clear all rolling state."""
+        resumed_at = time.monotonic()
         self._outcomes.clear()
         self._tripped = False
         self._trip_reason = ""
         self._trip_time = None
         self._consecutive_sl = 0
-        self._status_mode = "healthy"
-        self._last_resume_time = time.monotonic()
-        self._last_resume_reason = "Manual reset cleared breaker history."
+        self._status_mode = "resumed"
+        self._last_resume_time = resumed_at
+        self._monitoring_started_at = resumed_at
+        self._last_resume_reason = (
+            "Manual reset cleared breaker history and restarted the monitoring window."
+        )
         log.info("Circuit breaker reset manually and rolling history cleared.")
 
     def status_text(self) -> str:
@@ -147,15 +152,19 @@ class CircuitBreaker:
                 "State: Cooling down\n"
                 f"Reason: {self._trip_reason}\n"
                 f"Cooldown remaining: {self._cooldown_remaining():.0f}s\n"
-                "Signal generation will resume automatically when conditions normalize."
+                "Automatic resume is blocked until the cooldown period completes "
+                "and rolling losses normalize."
             )
         if self._status_mode == "recovery_pending":
             return (
                 "🟡 *Circuit Breaker AUTO-RESUME PENDING*\n"
-                f"Reason: {self._trip_reason}\n"
-                "Cooldown finished, but rolling loss conditions are still elevated.\n"
-                f"Hourly SL hits: {hourly}/{self.max_hourly_sl}\n"
-                f"Daily drawdown: {daily_dd:.2f}% / {self.max_daily_drawdown_pct:.2f}%"
+                "State: Recovery pending\n"
+                f"Trip reason: {self._trip_reason}\n"
+                "Cooldown finished, but current rolling losses are still above safe limits.\n"
+                f"Hourly SL hits in active window: {hourly}/{self.max_hourly_sl}\n"
+                f"Daily drawdown in active window: "
+                f"{daily_dd:.2f}% / {self.max_daily_drawdown_pct:.2f}%\n"
+                "Signal generation stays paused until losses normalize or a manual reset is issued."
             )
 
         healthy_label = "✅ *Circuit Breaker: RESUMED & HEALTHY*" if self._last_resume_time else "✅ *Circuit Breaker: HEALTHY*"
@@ -167,9 +176,11 @@ class CircuitBreaker:
             )
         return (
             f"{healthy_label}\n"
+            "State: Resumed monitoring window active\n"
             f"Consecutive SL hits: {self._consecutive_sl}/{self.max_consecutive_sl}\n"
-            f"Hourly SL hits: {hourly}/{self.max_hourly_sl}\n"
-            f"Daily drawdown: {daily_dd:.2f}% / {self.max_daily_drawdown_pct:.2f}%"
+            f"Hourly SL hits in active window: {hourly}/{self.max_hourly_sl}\n"
+            f"Daily drawdown in active window: "
+            f"{daily_dd:.2f}% / {self.max_daily_drawdown_pct:.2f}%"
             f"{resume_line}"
         )
 
@@ -240,16 +251,21 @@ class CircuitBreaker:
             self._status_mode = "recovery_pending"
             return
 
-        self._resume("Automatic resume after cooldown and normalized rolling losses.")
+        self._resume(
+            "Automatic resume after cooldown; rolling losses normalized and "
+            "a fresh monitoring window was started."
+        )
 
     def _resume(self, reason: str) -> None:
         """Resume signal generation after a successful recovery check."""
+        resumed_at = time.monotonic()
         self._tripped = False
         self._trip_reason = ""
         self._trip_time = None
         self._consecutive_sl = 0
         self._status_mode = "resumed"
-        self._last_resume_time = time.monotonic()
+        self._last_resume_time = resumed_at
+        self._monitoring_started_at = resumed_at
         self._last_resume_reason = reason
         log.info("Circuit breaker resumed automatically: %s", reason)
         self._emit_alert(
@@ -293,12 +309,18 @@ class CircuitBreaker:
 
     def _hourly_sl_count(self) -> int:
         """Count SL hits in the last 3600 seconds."""
-        cutoff = time.monotonic() - _HOURLY_WINDOW_SECONDS
+        cutoff = max(
+            time.monotonic() - _HOURLY_WINDOW_SECONDS,
+            self._monitoring_started_at,
+        )
         return sum(1 for r in self._outcomes if r.hit_sl and r.timestamp >= cutoff)
 
     def _daily_drawdown_pct(self) -> float:
         """Current 24h drawdown (%) on a compounded equity curve."""
-        cutoff = time.monotonic() - _DAILY_WINDOW_SECONDS
+        cutoff = max(
+            time.monotonic() - _DAILY_WINDOW_SECONDS,
+            self._monitoring_started_at,
+        )
         pnls = [r.pnl_pct for r in self._outcomes if r.timestamp >= cutoff]
         current_drawdown, _ = calculate_drawdown_metrics(pnls)
         return current_drawdown

@@ -181,6 +181,29 @@ class TestCircuitBreakerAutoRecovery:
         assert cb.is_tripped() is False
         assert "RESUMED" in cb.status_text()
 
+    def test_resume_starts_fresh_monitoring_window_after_recovery(self, monkeypatch):
+        now = 30_000.0
+        monkeypatch.setattr("src.circuit_breaker.time.monotonic", lambda: now)
+        cb = CircuitBreaker(
+            max_consecutive_sl=100,
+            max_hourly_sl=100,
+            max_daily_drawdown_pct=2.5,
+            cooldown_seconds=30,
+        )
+        cb.record_outcome("loss", hit_sl=True, pnl_pct=-4.0)
+        assert cb.is_tripped() is True
+
+        now += 1.0
+        cb.record_outcome("recovery-win", hit_sl=False, pnl_pct=3.7)
+
+        now += 31.0
+        assert cb.is_tripped() is False
+        assert "fresh monitoring window" in cb.status_text().lower()
+
+        cb.record_outcome("post-resume-loss", hit_sl=True, pnl_pct=-2.2)
+        assert cb.is_tripped() is False
+        assert cb._daily_drawdown_pct() == pytest.approx(2.2, abs=0.01)
+
 
 class TestCircuitBreakerEdgeCases:
     def test_no_outcomes_not_tripped(self):
