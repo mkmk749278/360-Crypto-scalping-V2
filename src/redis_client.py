@@ -40,8 +40,28 @@ class RedisClient:
         return self._available and self._redis is not None
 
     @property
+    def mode(self) -> str:
+        return "redis" if self.available else "memory"
+
+    @property
     def client(self) -> Optional[redis.Redis]:
         return self._redis if self._available else None
+
+    def mark_unavailable(self, operation: str, exc: Optional[Exception] = None) -> None:
+        """Disable Redis usage after an operation failure.
+
+        The caller can continue in explicit in-memory mode until :meth:`connect`
+        is called again.
+        """
+        if exc is not None:
+            log.warning(
+                "Redis %s failed (%s) — switching to in-memory mode.",
+                operation,
+                exc,
+            )
+        elif self._available:
+            log.warning("Redis %s unavailable — switching to in-memory mode.", operation)
+        self._available = False
 
     async def close(self) -> None:
         if self._redis:

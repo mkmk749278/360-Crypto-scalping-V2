@@ -44,6 +44,7 @@ class WSConnection:
     last_pong: float = 0.0
     reconnect_attempts: int = 0
     task: Optional[asyncio.Task] = None
+    degraded: bool = False
 
 
 class WebSocketManager:
@@ -71,6 +72,9 @@ class WebSocketManager:
     async def start(self, streams: List[str]) -> None:
         """Subscribe to *streams* distributed across connections."""
         self._running = True
+        self._connections = []
+        self._subscribed_streams = set()
+        self._rest_fallback_active = False
         self._session = aiohttp.ClientSession()
 
         # Chunk streams across connections
@@ -88,17 +92,27 @@ class WebSocketManager:
     async def stop(self) -> None:
         self._running = False
         self._rest_fallback_active = False
+        tasks: List[asyncio.Task] = []
         if self._fallback_task and not self._fallback_task.done():
             self._fallback_task.cancel()
+            tasks.append(self._fallback_task)
         if self._watchdog_task and not self._watchdog_task.done():
             self._watchdog_task.cancel()
+            tasks.append(self._watchdog_task)
         for conn in self._connections:
-            if conn.task:
+            conn.degraded = False
+            if conn.task and not conn.task.done():
                 conn.task.cancel()
+                tasks.append(conn.task)
             if conn.ws and not conn.ws.closed:
                 await conn.ws.close()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._fallback_task = None
+        self._watchdog_task = None
         if self._session and not self._session.closed:
             await self._session.close()
+        self._session = None
         log.info("WS manager stopped (%s)", self._market)
 
     # ------------------------------------------------------------------
@@ -181,6 +195,28 @@ class WebSocketManager:
             self._fallback_task.cancel()
         self._fallback_task = None
 
+    def _connection_uses_fallback(self, conn: WSConnection) -> bool:
+        return any(
+            stream.split("@", 1)[0].upper() in self._critical_pairs
+            for stream in conn.streams
+        )
+
+    def _sync_rest_fallback_state(self) -> None:
+        should_run = any(
+            conn.degraded and self._connection_uses_fallback(conn)
+            for conn in self._connections
+        )
+        if should_run:
+            self._start_rest_fallback()
+        else:
+            self._stop_rest_fallback()
+
+    def _set_connection_degraded(self, conn: WSConnection, degraded: bool) -> None:
+        if conn.degraded == degraded:
+            return
+        conn.degraded = degraded
+        self._sync_rest_fallback_state()
+
     # ------------------------------------------------------------------
     # Connection loop
     # ------------------------------------------------------------------
@@ -189,16 +225,14 @@ class WebSocketManager:
         while self._running:
             try:
                 await self._connect(conn)
-                self._stop_rest_fallback()
+                self._set_connection_degraded(conn, False)
                 await self._listen(conn)
             except asyncio.CancelledError:
                 return
             except Exception as exc:
                 log.warning("WS connection error: %s", exc)
             if self._running:
-                # Activate REST fallback for critical pairs during reconnect
-                if any(s in self._critical_pairs for s in conn.streams):
-                    self._start_rest_fallback()
+                self._set_connection_degraded(conn, True)
                 if self._admin_alert:
                     asyncio.create_task(
                         self._admin_alert(
@@ -220,6 +254,7 @@ class WebSocketManager:
         conn.ws = await self._session.ws_connect(url, heartbeat=WS_HEARTBEAT_INTERVAL)
         conn.last_pong = time.monotonic()
         conn.reconnect_attempts = 0
+        conn.degraded = False
         self._subscribed_streams.update(conn.streams)
         log.info("Connected WS: %d streams", len(conn.streams))
 
@@ -282,8 +317,12 @@ class WebSocketManager:
     @property
     def is_healthy(self) -> bool:
         now = time.monotonic()
+        open_connections = [
+            c for c in self._connections if c.ws is not None and not c.ws.closed
+        ]
+        if not open_connections or len(open_connections) != len(self._connections):
+            return False
         return all(
             (now - c.last_pong) < WS_HEARTBEAT_INTERVAL * 3
-            for c in self._connections
-            if c.ws and not c.ws.closed
+            for c in open_connections
         )

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import time
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
@@ -47,6 +48,23 @@ _RANGING_RANGE_CONF_BOOST: float = 5.0
 
 # Maximum number of symbols scanned concurrently
 _MAX_CONCURRENT_SCANS: int = 10
+
+
+@dataclass
+class ScanContext:
+    candles: Dict[str, dict]
+    indicators: Dict[str, dict]
+    smc_result: Any
+    smc_data: dict
+    regime_result: Any
+    ai: Dict[str, Any]
+    spread_pct: float
+    ind_for_predict: Dict[str, Any]
+    is_ranging: bool
+    adx_val: float
+    onchain_data: Any
+    candle_total: int
+    cross_verified: Optional[bool]
 
 
 class Scanner:
@@ -229,18 +247,15 @@ class Scanner:
         async with sem:
             await self._scan_symbol(symbol, volume_24h)
 
-    async def _scan_symbol(self, symbol: str, volume_24h: float) -> None:
-        """Run all channel evaluations for one symbol."""
+    def _load_candles(self, symbol: str) -> Dict[str, dict]:
         candles: Dict[str, dict] = {}
         for tf in SEED_TIMEFRAMES:
             c = self.data_store.get_candles(symbol, tf.interval)
             if c:
                 candles[tf.interval] = c
+        return candles
 
-        if not candles:
-            return
-
-        # Compute indicators per timeframe
+    def _compute_indicators(self, candles: Dict[str, dict]) -> Dict[str, dict]:
         indicators: Dict[str, dict] = {}
         for tf_key, cd in candles.items():
             h, lo, c, _ = (
@@ -280,20 +295,10 @@ class Scanner:
                     float(mom[-1]) if not np.isnan(mom[-1]) else None
                 )
             indicators[tf_key] = ind
+        return indicators
 
-        # SMC detection
-        ticks = self.data_store.ticks.get(symbol, [])
-        smc_result = self.smc_detector.detect(symbol, candles, ticks)
-        smc_data = smc_result.as_dict()
-
-        # Market regime classification (primary timeframe: 5m with 1m fallback)
-        regime_ind = indicators.get("5m", indicators.get("1m", {}))
-        regime_candles = candles.get("5m", candles.get("1m"))
-        regime_result = self.regime_detector.classify(regime_ind, regime_candles)
-        log.debug("%s regime: %s", symbol, regime_result.regime.value)
-
-        # AI insight (lightweight, no blocking)
-        ai: Dict = {"label": "Neutral", "summary": "", "score": 0.0}
+    async def _fetch_ai_context(self, symbol: str) -> Dict[str, Any]:
+        ai: Dict[str, Any] = {"label": "Neutral", "summary": "", "score": 0.0}
         try:
             insight = await asyncio.wait_for(get_ai_insight(symbol), timeout=2)
             ai = {
@@ -303,272 +308,338 @@ class Scanner:
             }
         except Exception:
             pass
+        return ai
 
-        # Real order book spread with TTL cache and per-cycle fetch cap
+    async def _get_spread_pct(self, symbol: str) -> float:
         spread_pct = 0.01  # fallback
         now = time.monotonic()
         cached = self._order_book_cache.get(symbol)
         if cached and (now - cached[1]) < _SPREAD_CACHE_TTL:
-            spread_pct = cached[0]
-        elif self._order_book_fetches_this_cycle < _MAX_ORDER_BOOK_FETCHES_PER_CYCLE:
-            try:
-                self._order_book_fetches_this_cycle += 1
-                if self.spot_client is None:
-                    self.spot_client = BinanceClient("spot")
-                book = await self.spot_client.fetch_order_book(symbol, limit=5)
-                if book and book.get("bids") and book.get("asks"):
-                    best_bid = float(book["bids"][0][0])
-                    best_ask = float(book["asks"][0][0])
-                    mid = (best_bid + best_ask) / 2.0
-                    if mid > 0:
-                        spread_pct = (best_ask - best_bid) / mid * 100.0
-                self._order_book_cache[symbol] = (spread_pct, now)
-            except Exception:
-                pass  # keep fallback
+            return cached[0]
+        if self._order_book_fetches_this_cycle >= _MAX_ORDER_BOOK_FETCHES_PER_CYCLE:
+            return spread_pct
+        try:
+            self._order_book_fetches_this_cycle += 1
+            if self.spot_client is None:
+                self.spot_client = BinanceClient("spot")
+            book = await self.spot_client.fetch_order_book(symbol, limit=5)
+            if book and book.get("bids") and book.get("asks"):
+                best_bid = float(book["bids"][0][0])
+                best_ask = float(book["asks"][0][0])
+                mid = (best_bid + best_ask) / 2.0
+                if mid > 0:
+                    spread_pct = (best_ask - best_bid) / mid * 100.0
+            self._order_book_cache[symbol] = (spread_pct, now)
+        except Exception:
+            pass
+        return spread_pct
 
-        # TODO: migrate order book spread fetching to @bookTicker WebSocket stream
-        # for real-time spread data without REST API rate-limit cost.
-        # See: https://binance-docs.github.io/apidocs/spot/en/#individual-symbol-book-ticker-streams
-
-        is_ranging = regime_result.regime == MarketRegime.RANGING
-        adx_val = regime_ind.get("adx_last") or 0
-
-        # Evaluate each channel
-        for chan in self.channels:
-            chan_name = chan.config.name
-            if chan_name in self.paused_channels:
-                continue
-
-            # Cooldown check: skip if a signal was recently fired for this pair/channel
-            if self._is_in_cooldown(symbol, chan_name):
-                log.debug(
-                    "Cooldown active: skipping %s %s", symbol, chan_name
-                )
-                continue
-
-            # Scanner-level dedup: skip if there is already an active signal
-            if any(
-                s.symbol == symbol and s.channel == chan_name
-                for s in self.router.active_signals.values()
-            ):
-                log.debug(
-                    "Skipping %s %s – active signal already exists", symbol, chan_name
-                )
-                continue
-
-            # Market regime-aware gating
-            # Suppress SCALP signals during ranging markets with low ADX
-            if (
-                chan_name == "360_SCALP"
-                and is_ranging
-                and adx_val < _RANGING_ADX_SUPPRESS_THRESHOLD
-            ):
-                log.debug(
-                    "Suppressing SCALP signal for %s (RANGING, ADX=%.1f)",
-                    symbol,
-                    adx_val,
-                )
-                continue
-
-            try:
-                sig = chan.evaluate(
-                    symbol=symbol,
-                    candles=candles,
-                    indicators=indicators,
-                    smc_data=smc_data,
-                    ai_insight=ai,
-                    spread_pct=spread_pct,
-                    volume_24h_usd=volume_24h,
-                )
-            except Exception as exc:
-                log.debug(
-                    "Channel %s eval error for %s: %s", chan_name, symbol, exc
-                )
-                continue
-
-            if sig is None:
-                continue
-
-            # Boost RANGE confidence during ranging regime
-            if chan_name == "360_RANGE" and is_ranging:
-                sig.confidence = min(sig.confidence + _RANGING_RANGE_CONF_BOOST, 100.0)
-                log.debug(
-                    "RANGE confidence boosted for %s (RANGING): %.1f",
-                    symbol,
-                    sig.confidence,
-                )
-
-            # Predictive AI: adjust TP/SL and confidence
-            ind_for_predict = indicators.get("5m", indicators.get("1m", {}))
-            try:
-                prediction = await self.predictive.predict(
-                    symbol, candles, ind_for_predict
-                )
-                self.predictive.adjust_tp_sl(sig, prediction)
-                self.predictive.update_confidence(sig, prediction)
-            except Exception as exc:
-                log.debug("Predictive AI error for %s: %s", symbol, exc)
-
-            # On-chain intelligence: exchange flow confidence sub-score
-            onchain_data = None
-            try:
-                if self.onchain_client is not None:
-                    onchain_data = await asyncio.wait_for(
-                        self.onchain_client.get_exchange_flow(symbol),
-                        timeout=3,
-                    )
-            except Exception as exc:
-                log.debug("On-chain fetch error for %s: %s", symbol, exc)
-
-            # OpenAI GPT-4 evaluation (optional)
-            try:
-                if self.openai_evaluator and self.openai_evaluator.enabled:
-                    # Build SMC summary from already-computed smc_result
-                    smc_parts = []
-                    if smc_result.sweeps:
-                        sweep = smc_result.sweeps[0]
-                        smc_parts.append(
-                            f"Sweep {sweep.direction.value} at {sweep.sweep_level:.4f}"
-                        )
-                    if smc_result.fvg:
-                        fvg = smc_result.fvg[0]
-                        smc_parts.append(
-                            f"FVG {fvg.gap_high:.4f}-{fvg.gap_low:.4f}"
-                        )
-                    smc_summary = " | ".join(smc_parts) if smc_parts else "None detected"
-
-                    openai_eval = await asyncio.wait_for(
-                        self.openai_evaluator.evaluate(
-                            symbol=symbol,
-                            direction=sig.direction.value,
-                            channel=chan_name,
-                            entry_price=sig.entry,
-                            stop_loss=sig.stop_loss,
-                            tp1=sig.tp1,
-                            tp2=sig.tp2,
-                            indicators=ind_for_predict,
-                            smc_summary=smc_summary,
-                            ai_sentiment_summary=ai.get("summary", ""),
-                            market_phase=regime_result.regime.value,
-                            confidence_before=sig.confidence,
-                        ),
-                        timeout=6,
-                    )
-                    if openai_eval and not openai_eval.recommended:
-                        log.info(
-                            "OpenAI recommends SKIP for %s %s: %s",
-                            symbol, chan_name, openai_eval.reasoning,
-                        )
-                        continue  # Skip this signal entirely
-                    if openai_eval and openai_eval.adjustment != 0.0:
-                        sig.confidence = max(
-                            0.0, min(100.0, sig.confidence + openai_eval.adjustment)
-                        )
-                        log.debug(
-                            "OpenAI adjusted confidence for %s %s by %+.1f → %.1f (%s)",
-                            symbol, chan_name, openai_eval.adjustment,
-                            sig.confidence, openai_eval.reasoning,
-                        )
-            except Exception as exc:
-                log.debug("OpenAI evaluation error for %s: %s", symbol, exc)
-
-            # Confidence scoring
-            has_sweep = bool(smc_data["sweeps"])
-            has_mss = smc_data["mss"] is not None
-            has_fvg = bool(smc_data["fvg"])
-
-            ema_aligned = (
-                ind_for_predict.get("ema9_last") is not None
-                and ind_for_predict.get("ema21_last") is not None
-                and (
-                    (ind_for_predict["ema9_last"] > ind_for_predict["ema21_last"])
-                    if sig.direction.value == "LONG"
-                    else (ind_for_predict["ema9_last"] < ind_for_predict["ema21_last"])
-                )
-            )
-            adx_ok = (ind_for_predict.get("adx_last") or 0) >= 20
-            mom_positive = (
-                (ind_for_predict.get("momentum_last") or 0) > 0
-                if sig.direction.value == "LONG"
-                else (ind_for_predict.get("momentum_last") or 0) < 0
-            )
-
-            candle_total = sum(
-                len(cd.get("close", [])) for cd in candles.values()
-            )
-
-            # Cross-exchange verification
-            cross_verified: Optional[bool] = None
-            try:
-                cross_verified = await asyncio.wait_for(
-                    self.exchange_mgr.verify_signal_cross_exchange(
-                        symbol, sig.direction.value, sig.entry
-                    ),
+    async def _fetch_onchain_data(self, symbol: str) -> Any:
+        try:
+            if self.onchain_client is not None:
+                return await asyncio.wait_for(
+                    self.onchain_client.get_exchange_flow(symbol),
                     timeout=3,
                 )
-            except asyncio.TimeoutError:
-                log.debug(
-                    "Cross-exchange verification timed out for %s", symbol
-                )
-            except Exception as exc:
-                log.debug(
-                    "Cross-exchange verification error for %s: %s", symbol, exc
-                )
+        except Exception as exc:
+            log.debug("On-chain fetch error for %s: %s", symbol, exc)
+        return None
 
-            cinp = ConfidenceInput(
-                smc_score=score_smc(has_sweep, has_mss, has_fvg),
-                trend_score=score_trend(ema_aligned, adx_ok, mom_positive),
-                ai_sentiment_score=score_ai_sentiment(ai.get("score", 0)),
-                liquidity_score=score_liquidity(volume_24h),
-                spread_score=score_spread(spread_pct),
-                data_sufficiency=score_data_sufficiency(candle_total),
-                multi_exchange=score_multi_exchange(verified=cross_verified),
-                onchain_score=score_onchain(onchain_data),
-                has_enough_history=self.pair_mgr.has_enough_history(symbol),
-                opposing_position_open=False,
+    async def _verify_cross_exchange(
+        self, symbol: str, direction: str, entry: float
+    ) -> Optional[bool]:
+        try:
+            return await asyncio.wait_for(
+                self.exchange_mgr.verify_signal_cross_exchange(
+                    symbol, direction, entry
+                ),
+                timeout=3,
             )
-            result = compute_confidence(cinp)
-            if result.blocked:
-                continue
+        except asyncio.TimeoutError:
+            log.debug("Cross-exchange verification timed out for %s", symbol)
+        except Exception as exc:
+            log.debug("Cross-exchange verification error for %s: %s", symbol, exc)
+        return None
 
-            sig.confidence = result.total
-
-            # Apply channel confidence override if set
-            min_conf = self.confidence_overrides.get(
-                chan_name, chan.config.min_confidence
+    def _build_smc_summary(self, smc_result: Any) -> str:
+        smc_parts = []
+        if smc_result.sweeps:
+            sweep = smc_result.sweeps[0]
+            smc_parts.append(
+                f"Sweep {sweep.direction.value} at {sweep.sweep_level:.4f}"
             )
-            if sig.confidence < min_conf:
+        if smc_result.fvg:
+            fvg = smc_result.fvg[0]
+            smc_parts.append(f"FVG {fvg.gap_high:.4f}-{fvg.gap_low:.4f}")
+        return " | ".join(smc_parts) if smc_parts else "None detected"
+
+    async def _build_scan_context(self, symbol: str, volume_24h: float) -> Optional[ScanContext]:
+        candles = self._load_candles(symbol)
+        if not candles:
+            return None
+        indicators = self._compute_indicators(candles)
+        ticks = self.data_store.ticks.get(symbol, [])
+        smc_result = self.smc_detector.detect(symbol, candles, ticks)
+        smc_data = smc_result.as_dict()
+
+        regime_ind = indicators.get("5m", indicators.get("1m", {}))
+        regime_candles = candles.get("5m", candles.get("1m"))
+        regime_result = self.regime_detector.classify(regime_ind, regime_candles)
+        log.debug("%s regime: %s", symbol, regime_result.regime.value)
+
+        ind_for_predict = indicators.get("5m", indicators.get("1m", {}))
+        candle_total = sum(len(cd.get("close", [])) for cd in candles.values())
+        ai, spread_pct, onchain_data = await asyncio.gather(
+            self._fetch_ai_context(symbol),
+            self._get_spread_pct(symbol),
+            self._fetch_onchain_data(symbol),
+        )
+        return ScanContext(
+            candles=candles,
+            indicators=indicators,
+            smc_result=smc_result,
+            smc_data=smc_data,
+            regime_result=regime_result,
+            ai=ai,
+            spread_pct=spread_pct,
+            ind_for_predict=ind_for_predict,
+            is_ranging=regime_result.regime == MarketRegime.RANGING,
+            adx_val=regime_ind.get("adx_last") or 0,
+            onchain_data=onchain_data,
+            candle_total=candle_total,
+            cross_verified=None,
+        )
+
+    def _should_skip_channel(self, symbol: str, chan_name: str, ctx: ScanContext) -> bool:
+        if chan_name in self.paused_channels:
+            return True
+        if self._is_in_cooldown(symbol, chan_name):
+            log.debug("Cooldown active: skipping %s %s", symbol, chan_name)
+            return True
+        if any(
+            s.symbol == symbol and s.channel == chan_name
+            for s in self.router.active_signals.values()
+        ):
+            log.debug("Skipping %s %s – active signal already exists", symbol, chan_name)
+            return True
+        if (
+            chan_name == "360_SCALP"
+            and ctx.is_ranging
+            and ctx.adx_val < _RANGING_ADX_SUPPRESS_THRESHOLD
+        ):
+            log.debug(
+                "Suppressing SCALP signal for %s (RANGING, ADX=%.1f)",
+                symbol,
+                ctx.adx_val,
+            )
+            return True
+        return False
+
+    def _compute_base_confidence(
+        self,
+        symbol: str,
+        volume_24h: float,
+        sig: Any,
+        ctx: ScanContext,
+    ) -> Optional[float]:
+        has_sweep = bool(ctx.smc_data["sweeps"])
+        has_mss = ctx.smc_data["mss"] is not None
+        has_fvg = bool(ctx.smc_data["fvg"])
+        ema_aligned = (
+            ctx.ind_for_predict.get("ema9_last") is not None
+            and ctx.ind_for_predict.get("ema21_last") is not None
+            and (
+                (ctx.ind_for_predict["ema9_last"] > ctx.ind_for_predict["ema21_last"])
+                if sig.direction.value == "LONG"
+                else (ctx.ind_for_predict["ema9_last"] < ctx.ind_for_predict["ema21_last"])
+            )
+        )
+        adx_ok = (ctx.ind_for_predict.get("adx_last") or 0) >= 20
+        mom_positive = (
+            (ctx.ind_for_predict.get("momentum_last") or 0) > 0
+            if sig.direction.value == "LONG"
+            else (ctx.ind_for_predict.get("momentum_last") or 0) < 0
+        )
+        cinp = ConfidenceInput(
+            smc_score=score_smc(has_sweep, has_mss, has_fvg),
+            trend_score=score_trend(ema_aligned, adx_ok, mom_positive),
+            ai_sentiment_score=score_ai_sentiment(ctx.ai.get("score", 0)),
+            liquidity_score=score_liquidity(volume_24h),
+            spread_score=score_spread(ctx.spread_pct),
+            data_sufficiency=score_data_sufficiency(ctx.candle_total),
+            multi_exchange=score_multi_exchange(verified=ctx.cross_verified),
+            onchain_score=score_onchain(ctx.onchain_data),
+            has_enough_history=self.pair_mgr.has_enough_history(symbol),
+            opposing_position_open=False,
+        )
+        result = compute_confidence(cinp)
+        if result.blocked:
+            return None
+        return result.total
+
+    def _apply_regime_channel_adjustments(
+        self,
+        symbol: str,
+        chan_name: str,
+        sig: Any,
+        ctx: ScanContext,
+    ) -> None:
+        if chan_name == "360_RANGE" and ctx.is_ranging:
+            sig.confidence += _RANGING_RANGE_CONF_BOOST
+            log.debug(
+                "RANGE confidence boosted for %s (RANGING): %.1f",
+                symbol,
+                sig.confidence,
+            )
+
+    async def _apply_predictive_adjustments(
+        self,
+        symbol: str,
+        sig: Any,
+        ctx: ScanContext,
+    ) -> None:
+        try:
+            prediction = await self.predictive.predict(
+                symbol, ctx.candles, ctx.ind_for_predict
+            )
+            self.predictive.adjust_tp_sl(sig, prediction)
+            self.predictive.update_confidence(sig, prediction)
+        except Exception as exc:
+            log.debug("Predictive AI error for %s: %s", symbol, exc)
+
+    async def _apply_openai_adjustments(
+        self,
+        symbol: str,
+        chan_name: str,
+        sig: Any,
+        ctx: ScanContext,
+    ) -> bool:
+        if not (self.openai_evaluator and self.openai_evaluator.enabled):
+            return True
+        try:
+            openai_eval = await asyncio.wait_for(
+                self.openai_evaluator.evaluate(
+                    symbol=symbol,
+                    direction=sig.direction.value,
+                    channel=chan_name,
+                    entry_price=sig.entry,
+                    stop_loss=sig.stop_loss,
+                    tp1=sig.tp1,
+                    tp2=sig.tp2,
+                    indicators=ctx.ind_for_predict,
+                    smc_summary=self._build_smc_summary(ctx.smc_result),
+                    ai_sentiment_summary=ctx.ai.get("summary", ""),
+                    market_phase=ctx.regime_result.regime.value,
+                    confidence_before=sig.confidence,
+                ),
+                timeout=6,
+            )
+            if openai_eval and not openai_eval.recommended:
+                log.info(
+                    "OpenAI recommends SKIP for %s %s: %s",
+                    symbol,
+                    chan_name,
+                    openai_eval.reasoning,
+                )
+                return False
+            if openai_eval and openai_eval.adjustment != 0.0:
+                sig.confidence += openai_eval.adjustment
+                log.debug(
+                    "OpenAI adjusted confidence for %s %s by %+.1f → %.1f (%s)",
+                    symbol,
+                    chan_name,
+                    openai_eval.adjustment,
+                    sig.confidence,
+                    openai_eval.reasoning,
+                )
+        except Exception as exc:
+            log.debug("OpenAI evaluation error for %s: %s", symbol, exc)
+        return True
+
+    @staticmethod
+    def _clamp_confidence(value: float) -> float:
+        return max(0.0, min(100.0, round(value, 2)))
+
+    def _populate_signal_context(self, sig: Any, volume_24h: float, ctx: ScanContext) -> None:
+        sig.market_phase = ctx.regime_result.regime.value
+        liq_parts = []
+        if ctx.smc_result.sweeps:
+            sweep = ctx.smc_result.sweeps[0]
+            liq_parts.append(
+                f"Sweep {sweep.direction.value} at {sweep.sweep_level:.4f}"
+            )
+        if ctx.smc_result.fvg:
+            fvg = ctx.smc_result.fvg[0]
+            liq_parts.append(f"FVG {fvg.gap_high:.4f}-{fvg.gap_low:.4f}")
+        if liq_parts:
+            sig.liquidity_info = " | ".join(liq_parts)
+        sig.spread_pct = ctx.spread_pct
+        sig.volume_24h_usd = volume_24h
+
+    def _enqueue_signal(self, sig: Any, select_copy: bool = False) -> None:
+        if not self.signal_queue.put_nowait(sig):
+            log.warning(
+                "Signal queue full – dropping %s%s",
+                "SELECT copy " if select_copy else "",
+                sig.signal_id,
+            )
+
+    async def _prepare_signal(
+        self,
+        symbol: str,
+        volume_24h: float,
+        chan: Any,
+        ctx: ScanContext,
+    ) -> Optional[Any]:
+        chan_name = chan.config.name
+        try:
+            sig = chan.evaluate(
+                symbol=symbol,
+                candles=ctx.candles,
+                indicators=ctx.indicators,
+                smc_data=ctx.smc_data,
+                ai_insight=ctx.ai,
+                spread_pct=ctx.spread_pct,
+                volume_24h_usd=volume_24h,
+            )
+        except Exception as exc:
+            log.debug("Channel %s eval error for %s: %s", chan_name, symbol, exc)
+            return None
+        if sig is None:
+            return None
+
+        ctx.cross_verified = await self._verify_cross_exchange(
+            symbol, sig.direction.value, sig.entry
+        )
+        base_confidence = self._compute_base_confidence(symbol, volume_24h, sig, ctx)
+        if base_confidence is None:
+            return None
+        sig.confidence = base_confidence
+        self._apply_regime_channel_adjustments(symbol, chan_name, sig, ctx)
+        await self._apply_predictive_adjustments(symbol, sig, ctx)
+        if not await self._apply_openai_adjustments(symbol, chan_name, sig, ctx):
+            return None
+        sig.confidence = self._clamp_confidence(sig.confidence)
+        min_conf = self.confidence_overrides.get(chan_name, chan.config.min_confidence)
+        if sig.confidence < min_conf:
+            return None
+        self._populate_signal_context(sig, volume_24h, ctx)
+        return sig
+
+    async def _scan_symbol(self, symbol: str, volume_24h: float) -> None:
+        """Run all channel evaluations for one symbol."""
+        ctx = await self._build_scan_context(symbol, volume_24h)
+        if ctx is None:
+            return
+        for chan in self.channels:
+            chan_name = chan.config.name
+            if self._should_skip_channel(symbol, chan_name, ctx):
                 continue
-
-            # Attach regime info
-            sig.market_phase = regime_result.regime.value
-
-            # Populate liquidity info from SMC data
-            liq_parts = []
-            if smc_result.sweeps:
-                sweep = smc_result.sweeps[0]
-                liq_parts.append(
-                    f"Sweep {sweep.direction.value} at {sweep.sweep_level:.4f}"
-                )
-            if smc_result.fvg:
-                fvg = smc_result.fvg[0]
-                liq_parts.append(
-                    f"FVG {fvg.gap_high:.4f}-{fvg.gap_low:.4f}"
-                )
-            if liq_parts:
-                sig.liquidity_info = " | ".join(liq_parts)
-
-            # Attach market context for risk manager
-            sig.spread_pct = spread_pct
-            sig.volume_24h_usd = volume_24h
-
-            # Start cooldown timer for this (symbol, channel) pair
+            sig = await self._prepare_signal(symbol, volume_24h, chan, ctx)
+            if sig is None:
+                continue
             self._set_cooldown(symbol, chan_name)
-
-            try:
-                self.signal_queue.put_nowait(sig)
-            except asyncio.QueueFull:
-                log.warning("Signal queue full – dropping %s", sig.signal_id)
+            self._enqueue_signal(sig)
 
             # Select-mode: if enabled and signal passes stricter filters,
             # also enqueue a copy to 360_SELECT channel.
@@ -580,29 +651,23 @@ class Scanner:
                 allowed, reason = self.select_mode_filter.should_publish(
                     signal=sig,
                     confidence=sig.confidence,
-                    indicators=indicators,
-                    smc_data=smc_data,
-                    ai_sentiment=ai,
-                    cross_exchange_verified=cross_verified,
+                    indicators=ctx.indicators,
+                    smc_data=ctx.smc_data,
+                    ai_sentiment=ctx.ai,
+                    cross_exchange_verified=ctx.cross_verified,
                     volume_24h=volume_24h,
-                    spread_pct=spread_pct,
+                    spread_pct=ctx.spread_pct,
                 )
                 if allowed:
                     select_sig = copy.deepcopy(sig)
                     select_sig.channel = "360_SELECT"
                     select_sig.signal_id = f"SELECT-{sig.signal_id}"
-                    try:
-                        self.signal_queue.put_nowait(select_sig)
-                        log.info(
-                            "SELECT copy enqueued for %s (%s)",
-                            sig.symbol,
-                            select_sig.signal_id,
-                        )
-                    except asyncio.QueueFull:
-                        log.warning(
-                            "Signal queue full – dropping SELECT copy %s",
-                            select_sig.signal_id,
-                        )
+                    self._enqueue_signal(select_sig, select_copy=True)
+                    log.info(
+                        "SELECT copy enqueued for %s (%s)",
+                        sig.symbol,
+                        select_sig.signal_id,
+                    )
                 else:
                     log.debug(
                         "SELECT filter rejected %s %s: %s",

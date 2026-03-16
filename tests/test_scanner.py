@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import time
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.channels.base import Signal
+from src.regime import MarketRegime
 from src.scanner import Scanner, _RANGING_ADX_SUPPRESS_THRESHOLD
+from src.smc import Direction
+from src.utils import utcnow
 
 
 def _make_scanner(**kwargs) -> Scanner:
@@ -28,6 +33,16 @@ def _make_scanner(**kwargs) -> Scanner:
     )
     defaults.update(kwargs)
     return Scanner(**defaults)
+
+
+def _candles(length: int = 40) -> dict:
+    base = [float(i + 1) for i in range(length)]
+    return {
+        "high": base,
+        "low": [max(v - 0.5, 0.1) for v in base],
+        "close": base,
+        "volume": [100.0 for _ in base],
+    }
 
 
 class TestScannerCooldown:
@@ -146,3 +161,150 @@ class TestScannerAttributes:
     def test_ws_futures_starts_none(self):
         scanner = _make_scanner()
         assert scanner.ws_futures is None
+
+
+class TestScannerConfidencePipeline:
+    @pytest.mark.asyncio
+    async def test_adjustments_persist_and_threshold_applied_last(self):
+        channel = MagicMock()
+        channel.config = SimpleNamespace(name="360_RANGE", min_confidence=60.0)
+        channel.evaluate.return_value = Signal(
+            channel="360_RANGE",
+            symbol="BTCUSDT",
+            direction=Direction.LONG,
+            entry=100.0,
+            stop_loss=95.0,
+            tp1=105.0,
+            tp2=110.0,
+            confidence=10.0,
+            signal_id="SIG-001",
+            timestamp=utcnow(),
+        )
+
+        smc_result = SimpleNamespace(
+            sweeps=[],
+            fvg=[],
+            mss=None,
+            as_dict=lambda: {"sweeps": [], "fvg": [], "mss": None},
+        )
+        regime_result = SimpleNamespace(regime=MarketRegime.RANGING)
+        predictive = MagicMock()
+        predictive.predict = AsyncMock(
+            return_value=SimpleNamespace(
+                confidence_adjustment=7.0,
+                predicted_direction="UP",
+                suggested_tp_adjustment=1.0,
+                suggested_sl_adjustment=1.0,
+            )
+        )
+        predictive.adjust_tp_sl = MagicMock()
+        predictive.update_confidence = MagicMock(
+            side_effect=lambda signal, _prediction: setattr(
+                signal, "confidence", signal.confidence + 7.0
+            )
+        )
+        openai_evaluator = MagicMock()
+        openai_evaluator.enabled = True
+        openai_evaluator.evaluate = AsyncMock(
+            return_value=SimpleNamespace(
+                adjustment=3.0,
+                recommended=True,
+                reasoning="aligned",
+            )
+        )
+        signal_queue = MagicMock()
+        signal_queue.put_nowait.return_value = True
+        pair_mgr = MagicMock()
+        pair_mgr.has_enough_history.return_value = True
+        data_store = MagicMock()
+        data_store.get_candles.side_effect = lambda _symbol, _interval: _candles()
+        data_store.ticks = {"BTCUSDT": []}
+
+        scanner = _make_scanner(
+            pair_mgr=pair_mgr,
+            data_store=data_store,
+            channels=[channel],
+            smc_detector=MagicMock(detect=MagicMock(return_value=smc_result)),
+            regime_detector=MagicMock(classify=MagicMock(return_value=regime_result)),
+            predictive=predictive,
+            exchange_mgr=MagicMock(
+                verify_signal_cross_exchange=AsyncMock(return_value=True)
+            ),
+            signal_queue=signal_queue,
+            router=MagicMock(active_signals={}),
+            openai_evaluator=openai_evaluator,
+            onchain_client=MagicMock(get_exchange_flow=AsyncMock(return_value=None)),
+        )
+
+        with patch("src.scanner.get_ai_insight", AsyncMock(return_value=SimpleNamespace(label="Neutral", summary="", score=0.0))), \
+             patch("src.scanner.compute_confidence", return_value=SimpleNamespace(total=50.0, blocked=False)):
+            await scanner._scan_symbol("BTCUSDT", 10_000_000)
+
+        queued_signal = signal_queue.put_nowait.call_args[0][0]
+        assert queued_signal.confidence == 65.0
+        openai_evaluator.evaluate.assert_awaited_once()
+        assert openai_evaluator.evaluate.await_args.kwargs["confidence_before"] == 62.0
+
+    @pytest.mark.asyncio
+    async def test_openai_skip_prevents_enqueue(self):
+        channel = MagicMock()
+        channel.config = SimpleNamespace(name="360_SCALP", min_confidence=10.0)
+        channel.evaluate.return_value = Signal(
+            channel="360_SCALP",
+            symbol="BTCUSDT",
+            direction=Direction.LONG,
+            entry=100.0,
+            stop_loss=95.0,
+            tp1=105.0,
+            tp2=110.0,
+            confidence=10.0,
+            signal_id="SIG-002",
+            timestamp=utcnow(),
+        )
+        smc_result = SimpleNamespace(
+            sweeps=[],
+            fvg=[],
+            mss=None,
+            as_dict=lambda: {"sweeps": [], "fvg": [], "mss": None},
+        )
+        scanner = _make_scanner(
+            pair_mgr=MagicMock(has_enough_history=MagicMock(return_value=True)),
+            data_store=MagicMock(
+                get_candles=MagicMock(side_effect=lambda _symbol, _interval: _candles()),
+                ticks={"BTCUSDT": []},
+            ),
+            channels=[channel],
+            smc_detector=MagicMock(detect=MagicMock(return_value=smc_result)),
+            regime_detector=MagicMock(
+                classify=MagicMock(return_value=SimpleNamespace(regime=MarketRegime.TRENDING_UP))
+            ),
+            predictive=MagicMock(
+                predict=AsyncMock(return_value=SimpleNamespace(
+                    confidence_adjustment=0.0,
+                    predicted_direction="NEUTRAL",
+                    suggested_tp_adjustment=1.0,
+                    suggested_sl_adjustment=1.0,
+                )),
+                adjust_tp_sl=MagicMock(),
+                update_confidence=MagicMock(),
+            ),
+            exchange_mgr=MagicMock(
+                verify_signal_cross_exchange=AsyncMock(return_value=True)
+            ),
+            signal_queue=MagicMock(put_nowait=MagicMock(return_value=True)),
+            router=MagicMock(active_signals={}),
+            openai_evaluator=MagicMock(
+                enabled=True,
+                evaluate=AsyncMock(return_value=SimpleNamespace(
+                    adjustment=0.0,
+                    recommended=False,
+                    reasoning="reject",
+                )),
+            ),
+        )
+
+        with patch("src.scanner.get_ai_insight", AsyncMock(return_value=SimpleNamespace(label="Neutral", summary="", score=0.0))), \
+             patch("src.scanner.compute_confidence", return_value=SimpleNamespace(total=55.0, blocked=False)):
+            await scanner._scan_symbol("BTCUSDT", 10_000_000)
+
+        scanner.signal_queue.put_nowait.assert_not_called()

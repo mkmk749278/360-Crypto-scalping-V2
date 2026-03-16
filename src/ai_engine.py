@@ -29,6 +29,21 @@ log = get_logger("ai_engine")
 # ---------------------------------------------------------------------------
 
 _cache: Dict[str, Tuple[float, Any]] = {}
+_CACHE_MAX_AGE: float = 3600.0
+_CACHE_MAX_ITEMS: int = 256
+_shared_session: Optional[aiohttp.ClientSession] = None
+
+
+def _prune_cache(max_age: float = _CACHE_MAX_AGE) -> None:
+    """Drop stale cache entries and trim oversized caches."""
+    now = time.monotonic()
+    stale_keys = [key for key, (ts, _) in _cache.items() if (now - ts) >= max_age]
+    for key in stale_keys:
+        _cache.pop(key, None)
+    if len(_cache) <= _CACHE_MAX_ITEMS:
+        return
+    for key, _ in sorted(_cache.items(), key=lambda item: item[1][0])[: len(_cache) - _CACHE_MAX_ITEMS]:
+        _cache.pop(key, None)
 
 
 def _get_cached(key: str, ttl: float) -> Optional[Any]:
@@ -36,12 +51,29 @@ def _get_cached(key: str, ttl: float) -> Optional[Any]:
     entry = _cache.get(key)
     if entry and (time.monotonic() - entry[0]) < ttl:
         return entry[1]
+    if entry is not None:
+        _cache.pop(key, None)
     return None
 
 
 def _set_cached(key: str, value: Any) -> None:
     """Store *value* in the module-level cache under *key*."""
+    _prune_cache()
     _cache[key] = (time.monotonic(), value)
+
+
+async def _get_shared_session() -> aiohttp.ClientSession:
+    global _shared_session
+    if _shared_session is None or _shared_session.closed:
+        _shared_session = aiohttp.ClientSession()
+    return _shared_session
+
+
+async def close_shared_session() -> None:
+    global _shared_session
+    if _shared_session is not None and not _shared_session.closed:
+        await _shared_session.close()
+    _shared_session = None
 
 
 def _strip_quote_currency(symbol: str) -> str:
@@ -131,43 +163,36 @@ async def fetch_news_sentiment(
         return cached
 
     try:
-        own_session = session is None
-        if own_session:
-            session = aiohttp.ClientSession()
-        try:
-            url = (
-                f"https://cryptopanic.com/api/v1/posts/"
-                f"?auth_token={NEWS_API_KEY}&currencies={coin}&filter=hot&kind=news"
-            )
-            assert session is not None
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    results = data.get("results", [])
-                    bullish = sum(1 for r in results if r.get("kind") == "bullish")
-                    bearish = sum(1 for r in results if r.get("kind") == "bearish")
-                    total = max(len(results), 1)
-                    score = float(bullish - bearish) / total
-                    # Clamp to [-1, +1] just in case
-                    score = max(-1.0, min(1.0, score))
-                    label = _score_to_label(score)
-                    top_title = results[0].get("title", "") if results else ""
-                    sources = [
-                        r.get("source", {}).get("domain", "")
-                        for r in results
-                        if r.get("source", {}).get("domain")
-                    ]
-                    result = SentimentResult(
-                        score=score,
-                        label=label,
-                        summary=top_title,
-                        sources=sources,
-                    )
-                    _set_cached(cache_key, result)
-                    return result
-        finally:
-            if own_session and session is not None:
-                await session.close()
+        session = session or await _get_shared_session()
+        url = (
+            f"https://cryptopanic.com/api/v1/posts/"
+            f"?auth_token={NEWS_API_KEY}&currencies={coin}&filter=hot&kind=news"
+        )
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                results = data.get("results", [])
+                bullish = sum(1 for r in results if r.get("kind") == "bullish")
+                bearish = sum(1 for r in results if r.get("kind") == "bearish")
+                total = max(len(results), 1)
+                score = float(bullish - bearish) / total
+                # Clamp to [-1, +1] just in case
+                score = max(-1.0, min(1.0, score))
+                label = _score_to_label(score)
+                top_title = results[0].get("title", "") if results else ""
+                sources = [
+                    r.get("source", {}).get("domain", "")
+                    for r in results
+                    if r.get("source", {}).get("domain")
+                ]
+                result = SentimentResult(
+                    score=score,
+                    label=label,
+                    summary=top_title,
+                    sources=sources,
+                )
+                _set_cached(cache_key, result)
+                return result
     except Exception as exc:
         log.debug("News sentiment fetch failed for %s: %s", symbol, exc)
     return SentimentResult(score=0.0, label="Neutral", summary="Fetch failed")
@@ -210,48 +235,41 @@ async def fetch_social_sentiment(
         return cached
 
     try:
-        own_session = session is None
-        if own_session:
-            session = aiohttp.ClientSession()
-        try:
-            url = f"https://lunarcrush.com/api4/public/coins/{coin}/v1"
-            headers = {"Authorization": f"Bearer {SOCIAL_SENTIMENT_API_KEY}"}
-            assert session is not None
-            async with session.get(
-                url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    coin_data = data.get("data", {})
-                    raw_score: Optional[float] = coin_data.get("sentiment_score")
-                    if raw_score is None:
-                        raw_score = coin_data.get("galaxy_score")
-                    if raw_score is not None:
-                        # Normalise 0-100 → -1 to +1
-                        score = (float(raw_score) - 50.0) / 50.0
-                        score = max(-1.0, min(1.0, score))
-                    else:
-                        score = 0.0
-                    label = _score_to_label(score)
-                    social_volume = coin_data.get("social_volume")
-                    galaxy_score = coin_data.get("galaxy_score")
-                    parts = []
-                    if social_volume is not None:
-                        parts.append(f"social_volume={social_volume}")
-                    if galaxy_score is not None:
-                        parts.append(f"galaxy_score={galaxy_score}")
-                    summary = ", ".join(parts) if parts else ""
-                    result = SentimentResult(
-                        score=score,
-                        label=label,
-                        summary=summary,
-                        sources=["lunarcrush.com"],
-                    )
-                    _set_cached(cache_key, result)
-                    return result
-        finally:
-            if own_session and session is not None:
-                await session.close()
+        session = session or await _get_shared_session()
+        url = f"https://lunarcrush.com/api4/public/coins/{coin}/v1"
+        headers = {"Authorization": f"Bearer {SOCIAL_SENTIMENT_API_KEY}"}
+        async with session.get(
+            url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)
+        ) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                coin_data = data.get("data", {})
+                raw_score: Optional[float] = coin_data.get("sentiment_score")
+                if raw_score is None:
+                    raw_score = coin_data.get("galaxy_score")
+                if raw_score is not None:
+                    # Normalise 0-100 → -1 to +1
+                    score = (float(raw_score) - 50.0) / 50.0
+                    score = max(-1.0, min(1.0, score))
+                else:
+                    score = 0.0
+                label = _score_to_label(score)
+                social_volume = coin_data.get("social_volume")
+                galaxy_score = coin_data.get("galaxy_score")
+                parts = []
+                if social_volume is not None:
+                    parts.append(f"social_volume={social_volume}")
+                if galaxy_score is not None:
+                    parts.append(f"galaxy_score={galaxy_score}")
+                summary = ", ".join(parts) if parts else ""
+                result = SentimentResult(
+                    score=score,
+                    label=label,
+                    summary=summary,
+                    sources=["lunarcrush.com"],
+                )
+                _set_cached(cache_key, result)
+                return result
     except Exception as exc:
         log.debug("Social sentiment fetch failed for %s: %s", symbol, exc)
     return SentimentResult(score=0.0, label="Neutral", summary="Fetch failed")
@@ -289,27 +307,20 @@ async def fetch_fear_greed_index(
     _neutral: Dict[str, Any] = {"value": 50, "classification": "Neutral", "timestamp": ""}
 
     try:
-        own_session = session is None
-        if own_session:
-            session = aiohttp.ClientSession()
-        try:
-            assert session is not None
-            async with session.get(
-                FEAR_GREED_API_URL, timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json(content_type=None)
-                    entry = data.get("data", [{}])[0]
-                    result: Dict[str, Any] = {
-                        "value": int(entry.get("value", 50)),
-                        "classification": entry.get("value_classification", "Neutral"),
-                        "timestamp": entry.get("timestamp", ""),
-                    }
-                    _set_cached(cache_key, result)
-                    return result
-        finally:
-            if own_session and session is not None:
-                await session.close()
+        session = session or await _get_shared_session()
+        async with session.get(
+            FEAR_GREED_API_URL, timeout=aiohttp.ClientTimeout(total=10)
+        ) as resp:
+            if resp.status == 200:
+                data = await resp.json(content_type=None)
+                entry = data.get("data", [{}])[0]
+                result: Dict[str, Any] = {
+                    "value": int(entry.get("value", 50)),
+                    "classification": entry.get("value_classification", "Neutral"),
+                    "timestamp": entry.get("timestamp", ""),
+                }
+                _set_cached(cache_key, result)
+                return result
     except Exception as exc:
         log.debug("Fear & Greed fetch failed: %s", exc)
     return _neutral

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import src.signal_router as signal_router_module
 from src.channels.base import Signal
 from src.signal_router import SignalRouter
 from src.smc import Direction
@@ -23,9 +24,13 @@ def queue():
 
 
 @pytest.fixture
-def router(queue, sent_messages):
+def router(queue, sent_messages, monkeypatch):
+    for channel in ("360_SCALP", "360_RANGE", "360_SWING", "360_THE_TAPE", "360_SELECT"):
+        monkeypatch.setitem(signal_router_module.CHANNEL_TELEGRAM_MAP, channel, "premium")
+
     async def mock_send(chat_id: str, text: str):
         sent_messages.append((chat_id, text))
+        return True
 
     def mock_format(sig: Signal) -> str:
         return f"Signal: {sig.channel} {sig.symbol} {sig.direction.value}"
@@ -354,3 +359,57 @@ class TestSignalRouter:
         # The new signal must be blocked; cap must not be exceeded
         assert "TEST-NEW-CAP" not in router.active_signals
         assert len(router.active_signals) == MAX_CONCURRENT_SIGNALS
+
+    @pytest.mark.asyncio
+    async def test_failed_send_does_not_leave_active_signal_or_lock(self, queue, sent_messages, monkeypatch):
+        monkeypatch.setitem(signal_router_module.CHANNEL_TELEGRAM_MAP, "360_SCALP", "premium")
+
+        async def failed_send(_chat_id: str, _text: str):
+            sent_messages.append(("failed", "attempt"))
+            return False
+
+        router = SignalRouter(
+            queue=queue,
+            send_telegram=failed_send,
+            format_signal=lambda sig: f"Signal: {sig.signal_id}",
+        )
+        sig = _make_signal(confidence=90)
+        sig.signal_id = "TEST-SEND-FAIL"
+
+        await queue.put(sig)
+        task = asyncio.create_task(router.start())
+        await asyncio.sleep(0.2)
+        await router.stop()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert "TEST-SEND-FAIL" not in router.active_signals
+        assert sig.symbol not in router._position_lock
+
+    @pytest.mark.asyncio
+    async def test_set_free_limit_zero_discards_daily_best(self, router):
+        sig = _make_signal(confidence=95)
+        router._daily_best = [sig]
+        router.set_free_limit(0)
+        assert router._daily_best == []
+
+    @pytest.mark.asyncio
+    async def test_publish_free_signals_respects_zero_limit(self, sent_messages):
+        async def mock_send(chat_id: str, text: str):
+            sent_messages.append((chat_id, text))
+            return True
+
+        router = SignalRouter(
+            queue=asyncio.Queue(),
+            send_telegram=mock_send,
+            format_signal=lambda sig: f"Signal: {sig.signal_id}",
+        )
+        router._daily_best = [_make_signal(confidence=95)]
+        router.set_free_limit(0)
+
+        await router.publish_free_signals()
+
+        assert sent_messages == []

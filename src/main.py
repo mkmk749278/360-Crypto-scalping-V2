@@ -80,7 +80,10 @@ class CryptoSignalEngine:
         self.telemetry = TelemetryCollector()
 
         self._redis_client = RedisClient()
-        self._signal_queue = SignalQueue(self._redis_client)
+        self._signal_queue = SignalQueue(
+            self._redis_client,
+            alert_callback=self.telegram.send_admin_alert,
+        )
         self._state_cache = StateCache(self._redis_client)
         self.router = SignalRouter(
             queue=self._signal_queue,

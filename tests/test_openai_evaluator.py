@@ -203,6 +203,25 @@ class TestOpenAIEvaluatorEnabled:
         assert result.adjustment == 0.0
 
     @pytest.mark.asyncio
+    async def test_evaluate_parses_fenced_json_response(self, monkeypatch):
+        ev = self._make_evaluator(monkeypatch)
+        content = '```json\n{"confidence_adjustment": 4, "recommended": "true", "reasoning": "ok"}\n```'
+        mock_resp = self._mock_response(content)
+        mock_session = MagicMock()
+        mock_session.closed = False
+        mock_session.post = MagicMock(return_value=mock_resp)
+        ev._session = mock_session
+
+        result = await ev.evaluate(
+            "BTCUSDT", "LONG", "360_SCALP",
+            50000.0, 49000.0, 51000.0, 52000.0,
+            {}, "", "", "TRENDING_UP", 70.0,
+        )
+
+        assert result.adjustment == 4.0
+        assert result.recommended is True
+
+    @pytest.mark.asyncio
     async def test_evaluate_returns_neutral_on_non_200(self, monkeypatch):
         ev = self._make_evaluator(monkeypatch)
         mock_resp = self._mock_response("{}", status=429)
@@ -280,10 +299,47 @@ class TestOpenAIEvaluatorEnabled:
         ev._session = mock_session
 
         # Pre-seed cache with an expired entry
-        ev._cache["BTCUSDT:360_SCALP"] = (time.monotonic() - 200, EvalResult())
+        expired_key = ev._build_cache_key(
+            "BTCUSDT", "LONG", "360_SCALP",
+            50000.0, 49000.0, 51000.0, 52000.0,
+            {}, "", "", "T", 70.0,
+        )
+        ev._cache[expired_key] = (time.monotonic() - 200, EvalResult())
 
         await ev.evaluate("BTCUSDT", "LONG", "360_SCALP", 50000, 49000, 51000, 52000, {}, "", "", "T", 70)
         assert call_count == 1  # cache was expired, new call made
+
+    @pytest.mark.asyncio
+    async def test_distinct_signal_contexts_do_not_share_cache(self, monkeypatch):
+        ev = self._make_evaluator(monkeypatch)
+        import json
+        content = json.dumps({"confidence_adjustment": 3.0, "recommended": True, "reasoning": "ok"})
+        call_count = 0
+
+        def make_resp():
+            mock_resp = AsyncMock()
+            mock_resp.status = 200
+            mock_resp.json = AsyncMock(return_value={
+                "choices": [{"message": {"content": content}}]
+            })
+            mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+            mock_resp.__aexit__ = AsyncMock(return_value=False)
+            return mock_resp
+
+        def counting_post(*_args, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            return make_resp()
+
+        mock_session = MagicMock()
+        mock_session.closed = False
+        mock_session.post = counting_post
+        ev._session = mock_session
+
+        await ev.evaluate("BTCUSDT", "LONG", "360_SCALP", 50000, 49000, 51000, 52000, {"ema9_last": 1}, "", "", "T", 70)
+        await ev.evaluate("BTCUSDT", "LONG", "360_SCALP", 50010, 49000, 51000, 52000, {"ema9_last": 1}, "", "", "T", 70)
+
+        assert call_count == 2
 
     @pytest.mark.asyncio
     async def test_close_session(self, monkeypatch):

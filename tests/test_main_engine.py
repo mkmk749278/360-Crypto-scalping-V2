@@ -91,6 +91,26 @@ class TestCryptoSignalEngineInit:
         engine = self._make_engine()
         assert engine._tasks == []
 
+    def test_signal_queue_receives_admin_alert_callback(self):
+        with patch("src.main.TelegramBot") as telegram_cls, \
+             patch("src.main.TelemetryCollector"), \
+             patch("src.main.RedisClient"), \
+             patch("src.main.SignalQueue") as signal_queue_cls, \
+             patch("src.main.StateCache"), \
+             patch("src.main.SignalRouter"), \
+             patch("src.main.TradeMonitor"), \
+             patch("src.main.PairManager"), \
+             patch("src.main.HistoricalDataStore"), \
+             patch("src.main.PredictiveEngine"), \
+             patch("src.main.ExchangeManager"), \
+             patch("src.main.SMCDetector"), \
+             patch("src.main.MarketRegimeDetector"):
+            from src.main import CryptoSignalEngine
+            engine = CryptoSignalEngine()
+
+        assert engine is not None
+        assert signal_queue_cls.call_args.kwargs["alert_callback"] is telegram_cls.return_value.send_admin_alert
+
 
 class TestBootstrapInterface:
     def test_bootstrap_has_preflight_check(self):

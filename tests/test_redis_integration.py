@@ -6,6 +6,7 @@ Redis instance.
 
 import asyncio
 import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
@@ -75,6 +76,13 @@ class TestRedisClient:
     async def test_client_property_none_when_unavailable(self):
         client = RedisClient(url="")
         assert client.client is None
+
+    def test_mark_unavailable_switches_mode_to_memory(self):
+        client = RedisClient(url="redis://example")
+        client._available = True
+        client.mark_unavailable("test")
+        assert client.available is False
+        assert client.mode == "memory"
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +170,40 @@ class TestSignalQueue:
         assert r1.signal_id == "ID-001"
         assert r2.signal_id == "ID-002"
 
+    @pytest.mark.asyncio
+    async def test_put_failure_disables_redis_and_falls_back(self):
+        redis_client = RedisClient(url="redis://example")
+        redis_client._available = True
+        redis_client._redis = MagicMock()
+        redis_client._redis.rpush = AsyncMock(side_effect=RuntimeError("down"))
+        queue = SignalQueue(redis_client)
+        sig = _make_signal()
+
+        ok = await queue.put(sig)
+        result = await queue.get(timeout=0.5)
+
+        assert ok is True
+        assert redis_client.available is False
+        assert isinstance(result, Signal)
+        assert result.signal_id == sig.signal_id
+
+    @pytest.mark.asyncio
+    async def test_queue_stats_track_drops(self, queue):
+        for i in range(QUEUE_MAXSIZE):
+            sig = _make_signal()
+            sig.signal_id = f"FULL-{i}"
+            queue._fallback.put_nowait(sig)
+
+        overflow = _make_signal()
+        overflow.signal_id = "OVERFLOW-STATS"
+        ok = queue.put_nowait(overflow)
+
+        assert ok is False
+        stats = queue.stats()
+        assert stats["dropped_signals"] == 1
+        assert stats["overflow_events"] == 1
+        assert stats["last_dropped_signal_id"] == "OVERFLOW-STATS"
+
 
 # ---------------------------------------------------------------------------
 # StateCache tests (fallback mode)
@@ -216,7 +258,7 @@ class TestStateCache:
 
     @pytest.mark.asyncio
     async def test_set_with_ttl_uses_local_fallback(self, cache):
-        """TTL is a no-op in memory fallback but should not raise."""
+        """TTL should behave predictably in memory fallback too."""
         await cache.set("ttl_key", "data", ttl=60)
         val = await cache.get("ttl_key")
         assert val == "data"
@@ -226,3 +268,24 @@ class TestStateCache:
         await cache.set("int_key", 42)
         val = await cache.get("int_key")
         assert json.loads(val) == 42
+
+    @pytest.mark.asyncio
+    async def test_local_ttl_expiry_is_enforced(self, cache):
+        with patch("src.state_cache.time.monotonic", side_effect=[100.0, 100.5, 102.0]):
+            await cache.set("ttl_key", "data", ttl=1)
+            assert await cache.get("ttl_key") == "data"
+            assert await cache.get("ttl_key") is None
+
+    @pytest.mark.asyncio
+    async def test_redis_get_failure_switches_to_local_mode(self):
+        redis_client = RedisClient(url="redis://example")
+        redis_client._available = True
+        redis_client._redis = MagicMock()
+        redis_client._redis.get = AsyncMock(side_effect=RuntimeError("down"))
+        cache = StateCache(redis_client)
+        cache._set_local("fallback", "value")
+
+        value = await cache.get("fallback")
+
+        assert value == "value"
+        assert redis_client.available is False

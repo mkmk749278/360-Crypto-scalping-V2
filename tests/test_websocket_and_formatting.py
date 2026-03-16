@@ -1,6 +1,9 @@
 """Tests for WebSocket REST fallback and enhanced signal formatting."""
 
+import asyncio
 import time
+
+import pytest
 
 
 from src.channels.base import Signal
@@ -206,3 +209,75 @@ class TestWebSocketLastPongOnText:
         # Simulate a TEXT message arriving and updating last_pong
         conn.last_pong = time.monotonic()
         assert ws.is_healthy is True
+
+    def test_closed_connections_are_not_reported_healthy(self):
+        async def handler(data):
+            return None
+
+        ws = WebSocketManager(handler, market="spot")
+        closed_ws = type("FakeWS", (), {"closed": True})()
+        ws._connections = [WSConnection(ws=closed_ws, last_pong=time.monotonic())]
+
+        assert ws.is_healthy is False
+
+
+class TestWebSocketLifecycle:
+    @pytest.mark.asyncio
+    async def test_stop_awaits_cancelled_tasks(self):
+        cancelled = []
+
+        async def handler(data):
+            return None
+
+        async def sleeper(name: str):
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                cancelled.append(name)
+                raise
+
+        ws = WebSocketManager(handler, market="spot")
+        conn_task = asyncio.create_task(sleeper("conn"))
+        fallback_task = asyncio.create_task(sleeper("fallback"))
+        watchdog_task = asyncio.create_task(sleeper("watchdog"))
+        fake_ws = type(
+            "FakeWS",
+            (),
+            {"closed": False, "close": lambda self: asyncio.sleep(0)},
+        )()
+        ws._connections = [WSConnection(ws=fake_ws, streams=["btcusdt@kline_1m"], task=conn_task)]
+        ws._fallback_task = fallback_task
+        ws._watchdog_task = watchdog_task
+        ws._session = type(
+            "FakeSession",
+            (),
+            {"closed": False, "close": lambda self: asyncio.sleep(0)},
+        )()
+        await asyncio.sleep(0)
+
+        await ws.stop()
+
+        assert {"conn", "fallback", "watchdog"} <= set(cancelled)
+        assert conn_task.done() and fallback_task.done() and watchdog_task.done()
+
+    def test_fallback_stays_active_until_all_degraded_connections_recover(self):
+        async def handler(data):
+            return None
+
+        ws = WebSocketManager(handler, market="spot")
+        ws.set_critical_pairs(["BTCUSDT", "ETHUSDT"])
+        conn_a = WSConnection(streams=["btcusdt@kline_1m"])
+        conn_b = WSConnection(streams=["ethusdt@kline_1m"])
+        ws._connections = [conn_a, conn_b]
+        ws._start_rest_fallback = lambda: setattr(ws, "_rest_fallback_active", True)
+        ws._stop_rest_fallback = lambda: setattr(ws, "_rest_fallback_active", False)
+
+        ws._set_connection_degraded(conn_a, True)
+        ws._set_connection_degraded(conn_b, True)
+        assert ws._rest_fallback_active is True
+
+        ws._set_connection_degraded(conn_a, False)
+        assert ws._rest_fallback_active is True
+
+        ws._set_connection_degraded(conn_b, False)
+        assert ws._rest_fallback_active is False

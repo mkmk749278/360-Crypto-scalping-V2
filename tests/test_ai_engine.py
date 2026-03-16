@@ -12,8 +12,10 @@ from src.ai_engine import (
     SentimentResult,
     _cache,
     _get_cached,
+    _prune_cache,
     _set_cached,
     _strip_quote_currency,
+    close_shared_session,
     detect_volume_delta_spike,
     detect_whale_trade,
     fetch_fear_greed_index,
@@ -80,6 +82,11 @@ class TestTTLCache:
         _set_cached("test_key", "first")
         _set_cached("test_key", "second")
         assert _get_cached("test_key", ttl=60.0) == "second"
+
+    def test_prune_removes_stale_entries(self):
+        _cache["test_key"] = (time.monotonic() - 7200.0, "stale")
+        _prune_cache(max_age=60.0)
+        assert "test_key" not in _cache
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +243,31 @@ class TestFetchNewsSentiment:
         assert len(captured_url) == 1
         assert "currencies=BTC" in captured_url[0]
         assert "USDT" not in captured_url[0]
+
+    @pytest.mark.asyncio
+    async def test_shared_session_reused_when_session_not_provided(self):
+        await close_shared_session()
+        _clear_cache("news:BTC", "news:ETH")
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"results": []})
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.closed = False
+        mock_session.get = MagicMock(return_value=mock_resp)
+        mock_session.close = AsyncMock()
+
+        with patch("src.ai_engine.NEWS_API_KEY", "test-key"), patch(
+            "src.ai_engine.aiohttp.ClientSession", return_value=mock_session
+        ) as session_ctor:
+            await fetch_news_sentiment("BTCUSDT")
+            await fetch_news_sentiment("ETHUSDT")
+
+        assert session_ctor.call_count == 1
+        await close_shared_session()
 
 
 # ---------------------------------------------------------------------------

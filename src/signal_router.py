@@ -195,16 +195,35 @@ class SignalRouter:
             return
         signal.risk_label = risk.risk_label
 
-        # Register
-        self._active_signals[signal.signal_id] = signal
-        self._position_lock[signal.symbol] = signal.direction
-
         # Format and send to premium channel
         text = self._format_signal(signal)
         channel_id = CHANNEL_TELEGRAM_MAP.get(signal.channel, "")
         if channel_id:
-            await self._send_telegram(channel_id, text)
+            try:
+                delivered = await self._send_telegram(channel_id, text)
+            except Exception as exc:
+                log.warning(
+                    "Signal delivery failed for %s %s: %s",
+                    signal.channel,
+                    signal.signal_id,
+                    exc,
+                )
+                return
+            if delivered is False:
+                log.warning(
+                    "Signal delivery was not confirmed for %s %s",
+                    signal.channel,
+                    signal.signal_id,
+                )
+                return
             log.info("Signal posted → %s | %s %s", signal.channel, signal.symbol, signal.direction.value)
+        else:
+            log.warning("No Telegram channel configured for %s", signal.channel)
+            return
+
+        # Register only after confirmed delivery
+        self._active_signals[signal.signal_id] = signal
+        self._position_lock[signal.symbol] = signal.direction
 
         # Track for daily free-channel picks
         self._daily_best.append(signal)
@@ -217,7 +236,7 @@ class SignalRouter:
 
     def _trim_daily_best(self) -> None:
         """Trim ``_daily_best`` to the current free-signal limit."""
-        self._daily_best = self._daily_best[:max(self._free_limit, 1)]
+        self._daily_best = self._daily_best[:self._free_limit]
 
     def set_free_limit(self, limit: int) -> None:
         """Update the maximum number of daily free signals."""

@@ -9,8 +9,10 @@ disabled and every call returns a neutral :class:`EvalResult` immediately.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
@@ -25,6 +27,7 @@ _OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 _CACHE_TTL: float = 120.0  # seconds
 _TIMEOUT: float = 5.0       # HTTP timeout
 _MAX_ADJUSTMENT: float = 15.0
+_CACHE_MAX_ITEMS: int = 256
 
 
 @dataclass
@@ -42,8 +45,8 @@ class OpenAIEvaluator:
     Sends a structured prompt describing the current signal and returns a
     :class:`EvalResult` with a confidence adjustment and trade recommendation.
 
-    All calls are cached per ``(symbol, channel)`` for :data:`_CACHE_TTL`
-    seconds to avoid spamming the API on every scan cycle.
+        All calls are cached per evaluation fingerprint for :data:`_CACHE_TTL`
+        seconds to avoid spamming the API on every scan cycle.
     """
 
     def __init__(self) -> None:
@@ -112,7 +115,21 @@ class OpenAIEvaluator:
                 recommended=True,
             )
 
-        cache_key = f"{symbol}:{channel}"
+        self._prune_cache()
+        cache_key = self._build_cache_key(
+            symbol=symbol,
+            direction=direction,
+            channel=channel,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            tp1=tp1,
+            tp2=tp2,
+            indicators=indicators,
+            smc_summary=smc_summary,
+            ai_sentiment_summary=ai_sentiment_summary,
+            market_phase=market_phase,
+            confidence_before=confidence_before,
+        )
         cached = self._cache.get(cache_key)
         if cached is not None and (time.monotonic() - cached[0]) < _CACHE_TTL:
             return cached[1]
@@ -135,7 +152,7 @@ class OpenAIEvaluator:
         try:
             result = await self._call_api(prompt)
         except Exception as exc:
-            log.warning("OpenAI evaluation failed for %s: %s", symbol, exc)
+            log.debug("OpenAI evaluation failed for %s: %s", symbol, exc)
             return EvalResult(adjustment=0.0, reasoning="OpenAI error", recommended=True)
 
         self._cache[cache_key] = (time.monotonic(), result)
@@ -150,6 +167,78 @@ class OpenAIEvaluator:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _prune_cache(self) -> None:
+        now = time.monotonic()
+        stale_keys = [
+            key for key, (ts, _) in self._cache.items()
+            if (now - ts) >= _CACHE_TTL
+        ]
+        for key in stale_keys:
+            self._cache.pop(key, None)
+        if len(self._cache) <= _CACHE_MAX_ITEMS:
+            return
+        for key, _ in sorted(self._cache.items(), key=lambda item: item[1][0])[: len(self._cache) - _CACHE_MAX_ITEMS]:
+            self._cache.pop(key, None)
+
+    def _build_cache_key(
+        self,
+        symbol: str,
+        direction: str,
+        channel: str,
+        entry_price: float,
+        stop_loss: float,
+        tp1: float,
+        tp2: float,
+        indicators: Dict[str, Any],
+        smc_summary: str,
+        ai_sentiment_summary: str,
+        market_phase: str,
+        confidence_before: float,
+    ) -> str:
+        payload = {
+            "symbol": symbol,
+            "direction": direction,
+            "channel": channel,
+            "entry_price": round(entry_price, 8),
+            "stop_loss": round(stop_loss, 8),
+            "tp1": round(tp1, 8),
+            "tp2": round(tp2, 8),
+            "market_phase": market_phase,
+            "confidence_before": round(confidence_before, 4),
+            "smc_summary": smc_summary.strip(),
+            "ai_sentiment_summary": ai_sentiment_summary.strip(),
+            "indicators": {
+                key: indicators.get(key)
+                for key in sorted(indicators)
+            },
+        }
+        serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha1(serialized.encode("utf-8")).hexdigest()
+        return f"{symbol}:{channel}:{digest}"
+
+    def _parse_response_content(self, content: str) -> Dict[str, Any]:
+        raw = content.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                raise
+            parsed = json.loads(raw[start: end + 1])
+        if not isinstance(parsed, dict):
+            raise ValueError("OpenAI response must be a JSON object")
+        return parsed
+
+    @staticmethod
+    def _coerce_recommended(value: Any) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() not in {"false", "0", "no", "skip"}
+        return bool(value)
 
     def _build_prompt(
         self,
@@ -222,21 +311,30 @@ class OpenAIEvaluator:
             _OPENAI_CHAT_URL, headers=headers, json=body, timeout=timeout
         ) as resp:
             if resp.status != 200:
-                text = await resp.text()
-                log.warning(
-                    "OpenAI API returned %d: %s", resp.status, text[:200]
-                )
+                log.warning("OpenAI API returned status %d", resp.status)
                 return EvalResult(
                     adjustment=0.0, reasoning="OpenAI API error", recommended=True
                 )
-            data = await resp.json()
+            data = await resp.json(content_type=None)
 
-        content = data["choices"][0]["message"]["content"].strip()
-        parsed = json.loads(content)
+        try:
+            content = data["choices"][0]["message"]["content"]
+            parsed = self._parse_response_content(str(content))
+        except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            log.debug("Failed to parse OpenAI response: %s", exc)
+            return EvalResult(
+                adjustment=0.0,
+                reasoning="Invalid OpenAI response",
+                recommended=True,
+                model=self._model,
+            )
 
-        raw_adj = float(parsed.get("confidence_adjustment", 0.0))
+        try:
+            raw_adj = float(parsed.get("confidence_adjustment", 0.0))
+        except (TypeError, ValueError):
+            raw_adj = 0.0
         adjustment = max(-_MAX_ADJUSTMENT, min(_MAX_ADJUSTMENT, raw_adj))
-        recommended = bool(parsed.get("recommended", True))
+        recommended = self._coerce_recommended(parsed.get("recommended", True))
         reasoning = str(parsed.get("reasoning", ""))
 
         return EvalResult(
