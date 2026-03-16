@@ -42,7 +42,7 @@ def _signal_from_dict(data: dict) -> Optional[Signal]:
             d["timestamp"] = datetime.fromisoformat(d["timestamp"])
         return Signal(**d)
     except Exception as exc:
-        log.warning("Failed to reconstruct Signal from dict: %s", exc)
+        log.warning("Failed to reconstruct Signal from dict: {}", exc)
         return None
 
 
@@ -89,7 +89,7 @@ class SignalRouter:
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                log.error("Router error: %s", exc)
+                log.error("Router error: {}", exc)
                 continue
 
             # Reconstruct Signal from dict (Redis deserialization path)
@@ -114,7 +114,7 @@ class SignalRouter:
         existing_dir = self._position_lock.get(signal.symbol)
         if existing_dir is not None:
             log.info(
-                "Blocked %s %s – existing %s position open",
+                "Blocked {} {} – existing {} position open",
                 signal.symbol, signal.direction.value, existing_dir.value,
             )
             return
@@ -127,7 +127,7 @@ class SignalRouter:
             elapsed = (datetime.now(timezone.utc) - last_completed).total_seconds()
             if elapsed < cooldown_secs:
                 log.info(
-                    "Cooldown active for %s %s – %.1fs remaining (%.0fs window)",
+                    "Cooldown active for {} {} – {:.1f}s remaining ({:.0f}s window)",
                     signal.symbol, signal.channel,
                     cooldown_secs - elapsed, cooldown_secs,
                 )
@@ -136,7 +136,7 @@ class SignalRouter:
         # Global concurrent position cap
         if len(self._active_signals) >= MAX_CONCURRENT_SIGNALS:
             log.info(
-                "Global position cap reached (%d/%d) – %s %s blocked",
+                "Global position cap reached ({}/{}) – {} {} blocked",
                 len(self._active_signals), MAX_CONCURRENT_SIGNALS,
                 signal.symbol, signal.direction.value,
             )
@@ -145,13 +145,13 @@ class SignalRouter:
         # TP direction sanity – reject signals where TP1 is on wrong side of entry
         if signal.direction == Direction.LONG and signal.tp1 <= signal.entry:
             log.warning(
-                "Signal %s %s LONG has TP1 %.8f <= entry %.8f – rejected",
+                "Signal {} {} LONG has TP1 {:.8f} <= entry {:.8f} – rejected",
                 signal.symbol, signal.channel, signal.tp1, signal.entry,
             )
             return
         if signal.direction == Direction.SHORT and signal.tp1 >= signal.entry:
             log.warning(
-                "Signal %s %s SHORT has TP1 %.8f >= entry %.8f – rejected",
+                "Signal {} {} SHORT has TP1 {:.8f} >= entry {:.8f} – rejected",
                 signal.symbol, signal.channel, signal.tp1, signal.entry,
             )
             return
@@ -159,13 +159,13 @@ class SignalRouter:
         # SL direction sanity – reject signals where SL is on wrong side of entry
         if signal.direction == Direction.LONG and signal.stop_loss >= signal.entry:
             log.warning(
-                "Signal %s %s LONG has SL %.8f >= entry %.8f – rejected",
+                "Signal {} {} LONG has SL {:.8f} >= entry {:.8f} – rejected",
                 signal.symbol, signal.channel, signal.stop_loss, signal.entry,
             )
             return
         if signal.direction == Direction.SHORT and signal.stop_loss <= signal.entry:
             log.warning(
-                "Signal %s %s SHORT has SL %.8f <= entry %.8f – rejected",
+                "Signal {} {} SHORT has SL {:.8f} <= entry {:.8f} – rejected",
                 signal.symbol, signal.channel, signal.stop_loss, signal.entry,
             )
             return
@@ -176,7 +176,7 @@ class SignalRouter:
         )
         if chan_cfg and signal.confidence < chan_cfg.min_confidence:
             log.debug(
-                "Signal %s %s confidence %.1f < min %.1f – skipped",
+                "Signal {} {} confidence {:.1f} < min {:.1f} – skipped",
                 signal.channel, signal.symbol,
                 signal.confidence, chan_cfg.min_confidence,
             )
@@ -189,7 +189,7 @@ class SignalRouter:
         )
         if not risk.allowed:
             log.warning(
-                "Signal %s %s blocked by risk manager: %s",
+                "Signal {} {} blocked by risk manager: {}",
                 signal.symbol, signal.direction.value, risk.reason,
             )
             return
@@ -203,7 +203,7 @@ class SignalRouter:
                 delivered = await self._send_telegram(channel_id, text)
             except Exception as exc:
                 log.warning(
-                    "Signal delivery failed for %s %s: %s",
+                    "Signal delivery failed for {} {}: {}",
                     signal.channel,
                     signal.signal_id,
                     exc,
@@ -211,14 +211,19 @@ class SignalRouter:
                 return
             if delivered is False:
                 log.warning(
-                    "Signal delivery was not confirmed for %s %s",
+                    "Signal delivery was not confirmed for {} {}",
                     signal.channel,
                     signal.signal_id,
                 )
                 return
-            log.info("Signal posted → %s | %s %s", signal.channel, signal.symbol, signal.direction.value)
+            log.info(
+                "Signal posted → {} | {} {}",
+                signal.channel,
+                signal.symbol,
+                signal.direction.value,
+            )
         else:
-            log.warning("No Telegram channel configured for %s", signal.channel)
+            log.warning("No Telegram channel configured for {}", signal.channel)
             return
 
         # Register only after confirmed delivery

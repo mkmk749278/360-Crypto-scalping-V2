@@ -149,7 +149,8 @@ class Bootstrap:
         """Gracefully shut down all engine components."""
         engine = self._engine
         log.info("Shutting down …")
-        for t in engine._tasks:
+        tasks = list(engine._tasks)
+        for t in tasks:
             t.cancel()
         await engine.router.stop()
         await engine.monitor.stop()
@@ -176,8 +177,16 @@ class Bootstrap:
                 await engine._openai_evaluator.close()
             except Exception as exc:
                 log.warning("Failed to close OpenAI evaluator session: {}", exc)
+        if getattr(engine, "_onchain_client", None) is not None:
+            try:
+                await engine._onchain_client.close()
+            except Exception as exc:
+                log.warning("Failed to close on-chain client session: {}", exc)
         await engine._redis_client.close()
         await engine.telegram.stop()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        engine._tasks = []
         log.info("Shutdown complete.")
 
     async def start_websockets(self) -> None:

@@ -351,6 +351,7 @@ class TestOpenAIEvaluatorEnabled:
 
         await ev.close()
         mock_session.close.assert_called_once()
+        assert ev._session is None
 
 
 # ---------------------------------------------------------------------------

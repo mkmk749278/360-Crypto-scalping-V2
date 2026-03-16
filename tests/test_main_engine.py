@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import patch
@@ -132,8 +133,12 @@ class TestBootstrapInterface:
     @pytest.mark.asyncio
     @patch("src.bootstrap.close_shared_session", new_callable=AsyncMock)
     async def test_shutdown_closes_shared_ai_sessions(self, close_shared_session_mock):
+        async def wait_forever() -> None:
+            await asyncio.sleep(60)
+
+        task = asyncio.create_task(wait_forever())
         engine = SimpleNamespace(
-            _tasks=[],
+            _tasks=[task],
             router=SimpleNamespace(stop=AsyncMock()),
             monitor=SimpleNamespace(stop=AsyncMock()),
             telemetry=SimpleNamespace(stop=AsyncMock()),
@@ -147,6 +152,7 @@ class TestBootstrapInterface:
             _exchange_mgr=SimpleNamespace(close=AsyncMock()),
             _scanner=SimpleNamespace(spot_client=None),
             _openai_evaluator=SimpleNamespace(close=AsyncMock()),
+            _onchain_client=SimpleNamespace(close=AsyncMock()),
             _redis_client=SimpleNamespace(close=AsyncMock()),
             telegram=SimpleNamespace(stop=AsyncMock()),
         )
@@ -154,10 +160,13 @@ class TestBootstrapInterface:
         bootstrap = Bootstrap(engine)
         await bootstrap.shutdown()
 
+        assert task.cancelled()
         close_shared_session_mock.assert_awaited_once()
         engine._openai_evaluator.close.assert_awaited_once()
+        engine._onchain_client.close.assert_awaited_once()
         engine._redis_client.close.assert_awaited_once()
         engine.telegram.stop.assert_awaited_once()
+        assert engine._tasks == []
 
 
 class TestScannerInterface:

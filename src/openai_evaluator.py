@@ -45,8 +45,8 @@ class OpenAIEvaluator:
     Sends a structured prompt describing the current signal and returns a
     :class:`EvalResult` with a confidence adjustment and trade recommendation.
 
-        All calls are cached per evaluation fingerprint for :data:`_CACHE_TTL`
-        seconds to avoid spamming the API on every scan cycle.
+    All calls are cached per evaluation fingerprint for :data:`_CACHE_TTL`
+    seconds to avoid spamming the API on every scan cycle.
     """
 
     def __init__(self) -> None:
@@ -152,7 +152,7 @@ class OpenAIEvaluator:
         try:
             result = await self._call_api(prompt)
         except Exception as exc:
-            log.debug("OpenAI evaluation failed for %s: %s", symbol, exc)
+            log.debug("OpenAI evaluation failed for {}: {}", symbol, exc)
             return EvalResult(adjustment=0.0, reasoning="OpenAI error", recommended=True)
 
         self._cache[cache_key] = (time.monotonic(), result)
@@ -311,7 +311,7 @@ class OpenAIEvaluator:
             _OPENAI_CHAT_URL, headers=headers, json=body, timeout=timeout
         ) as resp:
             if resp.status != 200:
-                log.warning("OpenAI API returned status %d", resp.status)
+                log.warning("OpenAI API returned status {}", resp.status)
                 return EvalResult(
                     adjustment=0.0, reasoning="OpenAI API error", recommended=True
                 )
@@ -321,7 +321,7 @@ class OpenAIEvaluator:
             content = data["choices"][0]["message"]["content"]
             parsed = self._parse_response_content(str(content))
         except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            log.debug("Failed to parse OpenAI response: %s", exc)
+            log.debug("Failed to parse OpenAI response: {}", exc)
             return EvalResult(
                 adjustment=0.0,
                 reasoning="Invalid OpenAI response",

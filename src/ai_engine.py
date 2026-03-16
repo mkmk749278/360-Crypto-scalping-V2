@@ -194,7 +194,7 @@ async def fetch_news_sentiment(
                 _set_cached(cache_key, result)
                 return result
     except Exception as exc:
-        log.debug("News sentiment fetch failed for %s: %s", symbol, exc)
+        log.debug("News sentiment fetch failed for {}: {}", symbol, exc)
     return SentimentResult(score=0.0, label="Neutral", summary="Fetch failed")
 
 
@@ -271,7 +271,7 @@ async def fetch_social_sentiment(
                 _set_cached(cache_key, result)
                 return result
     except Exception as exc:
-        log.debug("Social sentiment fetch failed for %s: %s", symbol, exc)
+        log.debug("Social sentiment fetch failed for {}: {}", symbol, exc)
     return SentimentResult(score=0.0, label="Neutral", summary="Fetch failed")
 
 
@@ -322,7 +322,7 @@ async def fetch_fear_greed_index(
                 _set_cached(cache_key, result)
                 return result
     except Exception as exc:
-        log.debug("Fear & Greed fetch failed: %s", exc)
+        log.debug("Fear & Greed fetch failed: {}", exc)
     return _neutral
 
 

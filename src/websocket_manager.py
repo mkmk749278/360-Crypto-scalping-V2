@@ -84,7 +84,7 @@ class WebSocketManager:
             self._connections.append(conn)
             conn.task = asyncio.create_task(self._run_connection(conn))
         log.info(
-            "WS manager started: %d streams across %d connections (%s)",
+            "WS manager started: {} streams across {} connections ({})",
             len(streams), len(self._connections), self._market,
         )
         self._watchdog_task = asyncio.create_task(self._health_watchdog())
@@ -113,7 +113,8 @@ class WebSocketManager:
         if self._session and not self._session.closed:
             await self._session.close()
         self._session = None
-        log.info("WS manager stopped (%s)", self._market)
+        self._connections = []
+        log.info("WS manager stopped ({})", self._market)
 
     # ------------------------------------------------------------------
     # REST fallback for critical pairs
@@ -122,7 +123,7 @@ class WebSocketManager:
     def set_critical_pairs(self, pairs: List[str]) -> None:
         """Define which symbols receive REST fallback during WS outages."""
         self._critical_pairs = set(pairs)
-        log.info("Critical pairs set (%d): %s", len(self._critical_pairs), pairs)
+        log.info("Critical pairs set ({}): {}", len(self._critical_pairs), pairs)
 
     async def _rest_fallback_loop(self) -> None:
         """Poll REST klines for critical pairs while WS is down."""
@@ -132,7 +133,7 @@ class WebSocketManager:
         else:
             url_tpl = f"{self._rest_base_url}/api/v3/klines?symbol={{symbol}}&interval=1m&limit=1"
 
-        log.info("REST fallback loop started for %d critical pairs", len(self._critical_pairs))
+        log.info("REST fallback loop started for {} critical pairs", len(self._critical_pairs))
         try:
             while self._running and self._rest_fallback_active:
                 for symbol in list(self._critical_pairs):
@@ -142,7 +143,7 @@ class WebSocketManager:
                             url, timeout=aiohttp.ClientTimeout(total=10),
                         ) as resp:
                             if resp.status != 200:
-                                log.debug("REST fallback %s status %s", symbol, resp.status)
+                                log.debug("REST fallback {} status {}", symbol, resp.status)
                                 continue
                             raw = await resp.json()
                         if not raw:
@@ -165,7 +166,7 @@ class WebSocketManager:
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
-                        log.debug("REST fallback error for %s: %s", symbol, exc)
+                        log.debug("REST fallback error for {}: {}", symbol, exc)
                 await asyncio.sleep(5)
         except asyncio.CancelledError:
             pass
@@ -230,7 +231,7 @@ class WebSocketManager:
             except asyncio.CancelledError:
                 return
             except Exception as exc:
-                log.warning("WS connection error: %s", exc)
+                log.warning("WS connection error: {}", exc)
             if self._running:
                 self._set_connection_degraded(conn, True)
                 if self._admin_alert:
@@ -244,7 +245,11 @@ class WebSocketManager:
                     WS_RECONNECT_MAX_DELAY,
                 )
                 conn.reconnect_attempts += 1
-                log.info("Reconnecting in %.1fs (attempt %d) …", delay, conn.reconnect_attempts)
+                log.info(
+                    "Reconnecting in {:.1f}s (attempt {}) …",
+                    delay,
+                    conn.reconnect_attempts,
+                )
                 await asyncio.sleep(delay)
 
     async def _connect(self, conn: WSConnection) -> None:
@@ -256,7 +261,7 @@ class WebSocketManager:
         conn.reconnect_attempts = 0
         conn.degraded = False
         self._subscribed_streams.update(conn.streams)
-        log.info("Connected WS: %d streams", len(conn.streams))
+        log.info("Connected WS: {} streams", len(conn.streams))
 
     async def _listen(self, conn: WSConnection) -> None:
         assert conn.ws is not None
@@ -269,7 +274,7 @@ class WebSocketManager:
                     data = json.loads(msg.data)
                     await self._on_message(data)
                 except Exception as exc:
-                    log.debug("Message parse error: %s", exc)
+                    log.debug("Message parse error: {}", exc)
             elif msg.type == aiohttp.WSMsgType.PONG:
                 conn.last_pong = time.monotonic()
             elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
@@ -290,7 +295,7 @@ class WebSocketManager:
                     if conn.ws and not conn.ws.closed:
                         if (now - conn.last_pong) >= WS_HEARTBEAT_INTERVAL * 3:
                             log.warning(
-                                "Watchdog: stale WS connection (%.0fs since last data) — force-closing to trigger reconnect",
+                                "Watchdog: stale WS connection ({:.0f}s since last data) — force-closing to trigger reconnect",
                                 now - conn.last_pong,
                             )
                             await conn.ws.close()

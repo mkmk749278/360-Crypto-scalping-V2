@@ -8,10 +8,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import src.ai_engine as ai_engine
 from src.ai_engine import (
     SentimentResult,
     _cache,
     _get_cached,
+    _get_shared_session,
     _prune_cache,
     _set_cached,
     _strip_quote_currency,
@@ -268,6 +270,24 @@ class TestFetchNewsSentiment:
 
         assert session_ctor.call_count == 1
         await close_shared_session()
+
+    @pytest.mark.asyncio
+    async def test_close_shared_session_clears_cached_session_reference(self):
+        await close_shared_session()
+
+        mock_session = MagicMock()
+        mock_session.closed = False
+        mock_session.close = AsyncMock()
+
+        with patch("src.ai_engine.aiohttp.ClientSession", return_value=mock_session):
+            session = await _get_shared_session()
+
+        assert session is mock_session
+
+        await close_shared_session()
+
+        mock_session.close.assert_awaited_once()
+        assert ai_engine._shared_session is None
 
 
 # ---------------------------------------------------------------------------

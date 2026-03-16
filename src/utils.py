@@ -28,11 +28,12 @@ _configured = True
 
 
 class _LoguroBridge:
-    """Thin wrapper that accepts %-style format strings and forwards to loguru.
+    """Thin wrapper that accepts ``%``- or ``{}``-style format strings.
 
-    Loguru uses ``{}`` (str.format) style by default.  Most callers in this
-    codebase use the stdlib ``%s`` / ``%d`` convention, so this bridge
-    pre-formats the message before handing it to loguru.
+    Loguru uses ``{}`` (``str.format``) style by default, while parts of this
+    codebase still use stdlib ``%s`` / ``%d`` placeholders. This bridge
+    pre-formats either style before handing the message to Loguru so touched
+    modules can be standardized incrementally without breaking older callers.
     """
 
     __slots__ = ("_logger",)
@@ -45,11 +46,14 @@ class _LoguroBridge:
         if args:
             try:
                 return msg % args
-            except (TypeError, ValueError) as exc:
-                _loguru_logger.warning(
-                    "Log format error ({}) for message: {!r}", exc, msg
-                )
-                return str(msg)
+            except (TypeError, ValueError):
+                try:
+                    return msg.format(*args)
+                except (IndexError, KeyError, ValueError, AttributeError) as exc:
+                    _loguru_logger.warning(
+                        "Log format error ({}) for message: {!r}", exc, msg
+                    )
+                    return str(msg)
         return msg
 
     def debug(self, msg: str, *args: Any, **kwargs: Any) -> None:
@@ -72,7 +76,7 @@ class _LoguroBridge:
 
 
 def get_logger(name: str) -> _LoguroBridge:
-    """Return a logger bound with *name* context, accepting %-style format strings."""
+    """Return a logger bound with *name* context, accepting ``%`` and ``{}`` formatting."""
     return _LoguroBridge(_loguru_logger.bind(name=name))
 
 

@@ -64,7 +64,6 @@ class ScanContext:
     adx_val: float
     onchain_data: Any
     candle_total: int
-    cross_verified: Optional[bool]
 
 
 class Scanner:
@@ -407,7 +406,6 @@ class Scanner:
             adx_val=regime_ind.get("adx_last") or 0,
             onchain_data=onchain_data,
             candle_total=candle_total,
-            cross_verified=None,
         )
 
     def _should_skip_channel(self, symbol: str, chan_name: str, ctx: ScanContext) -> bool:
@@ -441,6 +439,7 @@ class Scanner:
         volume_24h: float,
         sig: Any,
         ctx: ScanContext,
+        cross_verified: Optional[bool],
     ) -> Optional[float]:
         has_sweep = bool(ctx.smc_data["sweeps"])
         has_mss = ctx.smc_data["mss"] is not None
@@ -467,7 +466,7 @@ class Scanner:
             liquidity_score=score_liquidity(volume_24h),
             spread_score=score_spread(ctx.spread_pct),
             data_sufficiency=score_data_sufficiency(ctx.candle_total),
-            multi_exchange=score_multi_exchange(verified=ctx.cross_verified),
+            multi_exchange=score_multi_exchange(verified=cross_verified),
             onchain_score=score_onchain(ctx.onchain_data),
             has_enough_history=self.pair_mgr.has_enough_history(symbol),
             opposing_position_open=False,
@@ -585,7 +584,7 @@ class Scanner:
         volume_24h: float,
         chan: Any,
         ctx: ScanContext,
-    ) -> Optional[Any]:
+    ) -> Tuple[Optional[Any], Optional[bool]]:
         chan_name = chan.config.name
         try:
             sig = chan.evaluate(
@@ -599,27 +598,33 @@ class Scanner:
             )
         except Exception as exc:
             log.debug("Channel {} eval error for {}: {}", chan_name, symbol, exc)
-            return None
+            return None, None
         if sig is None:
-            return None
+            return None, None
 
-        ctx.cross_verified = await self._verify_cross_exchange(
+        cross_verified = await self._verify_cross_exchange(
             symbol, sig.direction.value, sig.entry
         )
-        base_confidence = self._compute_base_confidence(symbol, volume_24h, sig, ctx)
+        base_confidence = self._compute_base_confidence(
+            symbol,
+            volume_24h,
+            sig,
+            ctx,
+            cross_verified,
+        )
         if base_confidence is None:
-            return None
+            return None, cross_verified
         sig.confidence = base_confidence
         self._apply_regime_channel_adjustments(symbol, chan_name, sig, ctx)
         await self._apply_predictive_adjustments(symbol, sig, ctx)
         if not await self._apply_openai_adjustments(symbol, chan_name, sig, ctx):
-            return None
+            return None, cross_verified
         sig.confidence = self._clamp_confidence(sig.confidence)
         min_conf = self.confidence_overrides.get(chan_name, chan.config.min_confidence)
         if sig.confidence < min_conf:
-            return None
+            return None, cross_verified
         self._populate_signal_context(sig, volume_24h, ctx)
-        return sig
+        return sig, cross_verified
 
     async def _scan_symbol(self, symbol: str, volume_24h: float) -> None:
         """Run all channel evaluations for one symbol."""
@@ -630,7 +635,7 @@ class Scanner:
             chan_name = chan.config.name
             if self._should_skip_channel(symbol, chan_name, ctx):
                 continue
-            sig = await self._prepare_signal(symbol, volume_24h, chan, ctx)
+            sig, cross_verified = await self._prepare_signal(symbol, volume_24h, chan, ctx)
             if sig is None:
                 continue
             # Only start scan cooldown after the signal has been accepted by the
@@ -652,7 +657,7 @@ class Scanner:
                     indicators=ctx.indicators,
                     smc_data=ctx.smc_data,
                     ai_sentiment=ctx.ai,
-                    cross_exchange_verified=ctx.cross_verified,
+                    cross_exchange_verified=cross_verified,
                     volume_24h=volume_24h,
                     spread_pct=ctx.spread_pct,
                 )

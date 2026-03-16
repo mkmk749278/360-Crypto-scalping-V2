@@ -259,6 +259,8 @@ class TestWebSocketLifecycle:
 
         assert {"conn", "fallback", "watchdog"} <= set(cancelled)
         assert conn_task.done() and fallback_task.done() and watchdog_task.done()
+        assert ws._connections == []
+        assert ws._session is None
 
     def test_fallback_stays_active_until_all_degraded_connections_recover(self):
         async def handler(data):
