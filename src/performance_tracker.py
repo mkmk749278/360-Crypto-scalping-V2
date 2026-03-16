@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from src.performance_metrics import calculate_drawdown_metrics, normalize_pnl_pct
 from src.utils import get_logger
 
 log = get_logger("performance_tracker")
@@ -109,7 +110,7 @@ class PerformanceTracker:
             entry=entry,
             hit_tp=hit_tp,
             hit_sl=hit_sl,
-            pnl_pct=pnl_pct,
+            pnl_pct=normalize_pnl_pct(pnl_pct),
             confidence=confidence,
             pre_ai_confidence=pre_ai_confidence,
             post_ai_confidence=post_ai_confidence,
@@ -211,8 +212,8 @@ class PerformanceTracker:
             return stats
 
         stats.total_signals = len(records)
-        wins = [r for r in records if not r.hit_sl and r.hit_tp >= 1]
-        losses = [r for r in records if r.hit_sl]
+        wins = [r for r in records if r.pnl_pct > 0]
+        losses = [r for r in records if r.pnl_pct < 0]
         stats.win_count = len(wins)
         stats.loss_count = len(losses)
         total = stats.win_count + stats.loss_count
@@ -223,18 +224,7 @@ class PerformanceTracker:
         stats.best_trade = max(pnls) if pnls else 0.0
         stats.worst_trade = min(pnls) if pnls else 0.0
 
-        # Max drawdown: largest peak-to-trough decline in cumulative PnL
-        cum_pnl = 0.0
-        peak = 0.0
-        max_dd = 0.0
-        for p in pnls:
-            cum_pnl += p
-            if cum_pnl > peak:
-                peak = cum_pnl
-            dd = peak - cum_pnl
-            if dd > max_dd:
-                max_dd = dd
-        stats.max_drawdown = max_dd
+        _, stats.max_drawdown = calculate_drawdown_metrics(pnls)
 
         return stats
 
@@ -256,6 +246,8 @@ class PerformanceTracker:
             with open(self._path, "r", encoding="utf-8") as fh:
                 data: List[Dict[str, Any]] = json.load(fh)
             self._records = [SignalRecord(**item) for item in data]
+            for record in self._records:
+                record.pnl_pct = normalize_pnl_pct(record.pnl_pct)
             log.info("Loaded %d performance records from %s", len(self._records), self._path)
         except Exception as exc:
             log.warning("Failed to load performance data: %s", exc)

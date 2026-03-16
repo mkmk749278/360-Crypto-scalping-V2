@@ -12,6 +12,7 @@ from typing import Any, Callable, Coroutine, Dict, Optional
 from config import CHANNEL_TELEGRAM_MAP, MIN_SIGNAL_LIFESPAN_SECONDS, MONITOR_POLL_INTERVAL
 from src.channels.base import Signal
 from src.historical_data import HistoricalDataStore
+from src.performance_metrics import calculate_trade_pnl_pct
 from src.smc import Direction
 from src.utils import fmt_price, fmt_ts, get_logger, utcnow
 
@@ -90,6 +91,16 @@ class TradeMonitor:
                 pnl_pct=sig.pnl_pct,
             )
 
+    @staticmethod
+    def _set_realized_pnl(sig: Signal, exit_price: float) -> None:
+        """Freeze final trade PnL at the executed exit level."""
+        sig.current_price = exit_price
+        sig.pnl_pct = calculate_trade_pnl_pct(
+            entry_price=sig.entry,
+            exit_price=exit_price,
+            direction=sig.direction.value,
+        )
+
     async def start(self) -> None:
         self._running = True
         log.info("Trade monitor started")
@@ -144,18 +155,18 @@ class TradeMonitor:
             return
 
         # SL direction sanity check – catch misconfigured signals
-        if is_long and sig.stop_loss >= sig.entry:
+        if is_long and sig.stop_loss > sig.entry:
             log.warning(
-                "Signal %s %s has invalid SL (LONG SL %.8f >= entry %.8f) – cancelling",
+                "Signal %s %s has invalid SL (LONG SL %.8f > entry %.8f) – cancelling",
                 sig.symbol, sig.signal_id, sig.stop_loss, sig.entry,
             )
             sig.status = "CANCELLED"
             await self._post_update(sig, "⚠️ CANCELLED (invalid SL)")
             self._remove(sig.signal_id)
             return
-        if not is_long and sig.stop_loss <= sig.entry:
+        if not is_long and sig.stop_loss < sig.entry:
             log.warning(
-                "Signal %s %s has invalid SL (SHORT SL %.8f <= entry %.8f) – cancelling",
+                "Signal %s %s has invalid SL (SHORT SL %.8f < entry %.8f) – cancelling",
                 sig.symbol, sig.signal_id, sig.stop_loss, sig.entry,
             )
             sig.status = "CANCELLED"
@@ -165,10 +176,11 @@ class TradeMonitor:
 
         # PnL
         if sig.entry != 0:
-            if is_long:
-                sig.pnl_pct = (price - sig.entry) / sig.entry * 100
-            else:
-                sig.pnl_pct = (sig.entry - price) / sig.entry * 100
+            sig.pnl_pct = calculate_trade_pnl_pct(
+                entry_price=sig.entry,
+                exit_price=price,
+                direction=sig.direction.value,
+            )
         sig.max_favorable_excursion_pct = max(sig.max_favorable_excursion_pct, sig.pnl_pct)
         sig.max_adverse_excursion_pct = min(sig.max_adverse_excursion_pct, sig.pnl_pct)
 
@@ -183,12 +195,14 @@ class TradeMonitor:
 
         # Stop-loss hit
         if is_long and price <= sig.stop_loss:
+            self._set_realized_pnl(sig, sig.stop_loss)
             sig.status = "SL_HIT"
             await self._post_update(sig, "🔴 SL HIT")
             self._record_outcome(sig, hit_tp=0, hit_sl=True)
             self._remove(sig.signal_id)
             return
         if not is_long and price >= sig.stop_loss:
+            self._set_realized_pnl(sig, sig.stop_loss)
             sig.status = "SL_HIT"
             await self._post_update(sig, "🔴 SL HIT")
             self._record_outcome(sig, hit_tp=0, hit_sl=True)
@@ -198,6 +212,7 @@ class TradeMonitor:
         # TP hits (progressive)
         if is_long:
             if sig.tp3 and price >= sig.tp3 and sig.status != "TP3_HIT":
+                self._set_realized_pnl(sig, sig.tp3)
                 sig.status = "TP3_HIT"
                 await self._post_update(sig, "🎯🎯🎯 TP3 HIT")
                 self._record_outcome(sig, hit_tp=3, hit_sl=False)
@@ -213,6 +228,7 @@ class TradeMonitor:
                 await self._post_update(sig, "🎯 TP1 HIT ✅")
         else:
             if sig.tp3 and price <= sig.tp3 and sig.status != "TP3_HIT":
+                self._set_realized_pnl(sig, sig.tp3)
                 sig.status = "TP3_HIT"
                 await self._post_update(sig, "🎯🎯🎯 TP3 HIT")
                 self._record_outcome(sig, hit_tp=3, hit_sl=False)

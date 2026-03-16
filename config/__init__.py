@@ -239,6 +239,9 @@ CIRCUIT_BREAKER_MAX_HOURLY_SL: int = int(
 CIRCUIT_BREAKER_MAX_DAILY_DRAWDOWN_PCT: float = float(
     os.getenv("CIRCUIT_BREAKER_MAX_DAILY_DRAWDOWN_PCT", "10.0")
 )
+CIRCUIT_BREAKER_COOLDOWN_SECONDS: int = int(
+    os.getenv("CIRCUIT_BREAKER_COOLDOWN_SECONDS", "900")
+)
 
 # ---------------------------------------------------------------------------
 # Performance Tracker persistence path

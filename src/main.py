@@ -54,6 +54,7 @@ from config import (
     CIRCUIT_BREAKER_MAX_CONSECUTIVE_SL,
     CIRCUIT_BREAKER_MAX_HOURLY_SL,
     CIRCUIT_BREAKER_MAX_DAILY_DRAWDOWN_PCT,
+    CIRCUIT_BREAKER_COOLDOWN_SECONDS,
     ONCHAIN_API_KEY,
     PERFORMANCE_TRACKER_PATH,
 )
@@ -97,6 +98,7 @@ class CryptoSignalEngine:
             max_consecutive_sl=CIRCUIT_BREAKER_MAX_CONSECUTIVE_SL,
             max_hourly_sl=CIRCUIT_BREAKER_MAX_HOURLY_SL,
             max_daily_drawdown_pct=CIRCUIT_BREAKER_MAX_DAILY_DRAWDOWN_PCT,
+            cooldown_seconds=CIRCUIT_BREAKER_COOLDOWN_SECONDS,
             alert_callback=self.telegram.send_admin_alert,
         )
 

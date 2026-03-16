@@ -417,7 +417,8 @@ class CommandHandler:
             if self._circuit_breaker:
                 self._circuit_breaker.reset()
                 await self._telegram.send_message(
-                    chat_id, "✅ Circuit breaker reset. Signal generation resumed."
+                    chat_id,
+                    "✅ Circuit breaker reset. Rolling breaker history cleared and signal generation resumed.",
                 )
             else:
                 await self._telegram.send_message(

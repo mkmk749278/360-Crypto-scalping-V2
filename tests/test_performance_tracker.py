@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 
+import pytest
 
 from src.performance_tracker import PerformanceTracker
 
@@ -128,8 +129,26 @@ class TestPerformanceTrackerStats:
         ]
         pt = self._make_tracker(tmp_path, records)
         stats = pt.get_stats(channel="360_SCALP")
-        # Peak at 5.0, trough at -1.0 → drawdown = 6.0
-        assert stats.max_drawdown > 0
+        # Equity curve: 1.00 -> 1.05 -> 1.0185 -> 0.987945, so max drawdown
+        # is (1.05 - 0.987945) / 1.05 = 5.91%.
+        assert stats.max_drawdown == pytest.approx(5.91, abs=0.01)
+
+    def test_break_even_exit_is_not_counted_as_loss(self, tmp_path):
+        records = [
+            ("S1", "360_SCALP", "BTC", "LONG", 100.0, 0, True, 0.0),
+            ("S2", "360_SCALP", "BTC", "LONG", 100.0, 1, False, 2.0),
+        ]
+        pt = self._make_tracker(tmp_path, records)
+        stats = pt.get_stats(channel="360_SCALP")
+        assert stats.win_count == 1
+        assert stats.loss_count == 0
+
+    def test_unrealistic_losses_are_clamped(self, tmp_path):
+        pt = PerformanceTracker(storage_path=str(tmp_path / "perf.json"))
+        pt.record_outcome("S1", "360_SCALP", "BTC", "LONG", 100.0, 0, True, -150.0)
+        stats = pt.get_stats(channel="360_SCALP")
+        assert stats.worst_trade == -99.99
+        assert stats.max_drawdown == pytest.approx(99.99, abs=0.01)
 
     def test_no_records_returns_zero_stats(self, tmp_path):
         pt = PerformanceTracker(storage_path=str(tmp_path / "perf.json"))
@@ -180,6 +199,7 @@ class TestPerformanceTrackerFormatting:
         assert "Win rate" in msg
         assert "Total signals" in msg
         assert "Avg PnL" in msg
+        assert "Max drawdown" in msg
 
     def test_format_message_all_channels(self, tmp_path):
         pt = PerformanceTracker(storage_path=str(tmp_path / "perf.json"))

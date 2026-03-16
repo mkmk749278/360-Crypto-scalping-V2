@@ -210,6 +210,7 @@ class TestOutcomeRecording:
         assert call_kwargs["hit_sl"] is True
         assert call_kwargs["hit_tp"] == 0
         assert call_kwargs["signal_id"] == sig.signal_id
+        assert call_kwargs["pnl_pct"] == pytest.approx(-0.5)
         assert call_kwargs["setup_class"] == "BREAKOUT_RETEST"
         assert call_kwargs["market_phase"] == "STRONG_TREND"
         assert call_kwargs["quality_tier"] == "A"
@@ -263,6 +264,7 @@ class TestOutcomeRecording:
         call_kwargs = pt.record_outcome.call_args.kwargs
         assert call_kwargs["hit_sl"] is False
         assert call_kwargs["hit_tp"] == 3
+        assert call_kwargs["pnl_pct"] == pytest.approx(1.5)
 
     @pytest.mark.asyncio
     async def test_tp1_hit_does_not_call_record_outcome(self):
@@ -344,3 +346,48 @@ class TestOutcomeRecording:
 
         assert sig.status == "SL_HIT"
         assert sig.signal_id in removed
+
+    @pytest.mark.asyncio
+    async def test_short_sl_uses_stop_price_for_realized_pnl(self):
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.SHORT,
+            entry=30000.0,
+            stop_loss=30150.0,
+            tp1=29850.0,
+            tp2=29700.0,
+            tp3=29550.0,
+            age_seconds=35.0,
+        )
+        sig.current_price = 30250.0
+
+        active = {sig.signal_id: sig}
+        monitor, removed, sent, pt, cb = self._build_monitor_with_mocks(active)
+
+        await monitor._evaluate_signal(sig)
+
+        call_kwargs = pt.record_outcome.call_args.kwargs
+        assert call_kwargs["pnl_pct"] == pytest.approx(-0.5)
+        assert sig.current_price == pytest.approx(30150.0)
+
+    @pytest.mark.asyncio
+    async def test_trailing_stop_break_even_records_zero_pnl(self):
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            age_seconds=35.0,
+        )
+        sig.status = "TP2_HIT"
+        sig.stop_loss = sig.entry
+        sig.current_price = 29900.0
+
+        active = {sig.signal_id: sig}
+        monitor, removed, sent, pt, cb = self._build_monitor_with_mocks(active)
+
+        await monitor._evaluate_signal(sig)
+
+        call_kwargs = pt.record_outcome.call_args.kwargs
+        assert call_kwargs["hit_sl"] is True
+        assert call_kwargs["pnl_pct"] == pytest.approx(0.0)
