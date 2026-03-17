@@ -301,3 +301,65 @@ class TestOnChainClientEnabled:
 
         await client.close()
         mock_session.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Fix 6: On-chain score skips unsupported assets
+# ---------------------------------------------------------------------------
+
+
+class TestUnsupportedAssetSkip:
+    """Non-BTC/ETH assets must immediately return 0.0 without any API call."""
+
+    @pytest.mark.asyncio
+    async def test_sol_returns_zero_score(self):
+        client = OnChainClient(api_key="test_key")
+        # Patch _fetch_glassnode so we can verify it's NOT called
+        called = []
+
+        async def _fake_fetch(coin):
+            called.append(coin)
+            return OnChainData(symbol=coin, score=3.0)
+
+        client._fetch_glassnode = _fake_fetch
+        result = await client.get_exchange_flow("SOLUSDT")
+        assert result.score == 0.0
+        assert called == [], "Glassnode must NOT be called for unsupported assets"
+
+    @pytest.mark.asyncio
+    async def test_btc_proceeds_to_fetch(self):
+        """BTC is supported – the fetch path must be reached."""
+        client = OnChainClient(api_key="test_key")
+        called = []
+
+        async def _fake_fetch(coin):
+            called.append(coin)
+            return OnChainData(symbol=coin, score=4.0, source="glassnode")
+
+        client._fetch_glassnode = _fake_fetch
+        result = await client.get_exchange_flow("BTCUSDT")
+        assert result.score == 4.0
+        assert "BTC" in called
+
+    @pytest.mark.asyncio
+    async def test_eth_proceeds_to_fetch(self):
+        """ETH is supported – the fetch path must be reached."""
+        client = OnChainClient(api_key="test_key")
+        called = []
+
+        async def _fake_fetch(coin):
+            called.append(coin)
+            return OnChainData(symbol=coin, score=2.0, source="glassnode")
+
+        client._fetch_glassnode = _fake_fetch
+        result = await client.get_exchange_flow("ETHUSDT")
+        assert result.score == 2.0
+        assert "ETH" in called
+
+    @pytest.mark.asyncio
+    async def test_unsupported_returns_source_unsupported(self):
+        """Unsupported assets should have source='unsupported'."""
+        client = OnChainClient(api_key="test_key")
+        result = await client.get_exchange_flow("DOGEUSDT")
+        assert result.source == "unsupported"
+        assert result.score == 0.0

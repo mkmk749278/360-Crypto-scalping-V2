@@ -60,45 +60,96 @@ def detect_liquidity_sweeps(
     close: NDArray,
     lookback: int = 50,
     tolerance_pct: float = 0.05,
+    scan_window: int = 5,
+    volume: Optional[NDArray] = None,
+    volume_multiplier: float = 1.2,
 ) -> List[LiquiditySweep]:
-    """Detect liquidity sweeps on the last candle relative to recent range."""
+    """Detect liquidity sweeps over the last *scan_window* candles.
+
+    Parameters
+    ----------
+    high, low, close:
+        OHLCV price arrays.
+    lookback:
+        Number of prior candles used to establish the recent high/low range.
+    tolerance_pct:
+        Wick must close back within this percentage of the swept level.
+    scan_window:
+        Number of recent candles to scan for sweeps (default 5).  Previously
+        only the last candle (scan_window=1) was checked; expanding to 5 catches
+        sweeps that occurred 2–4 candles ago.
+    volume:
+        Optional volume array.  When provided, a sweep candle must have volume
+        >= ``volume_multiplier`` × the recent average volume to be counted.
+        Low-volume wicks that barely pierce a level are filtered out.
+    volume_multiplier:
+        Minimum ratio of sweep-candle volume to recent average volume.
+        Defaults to 1.2 (sweep candle must be at least 20 % above average).
+    """
     h = np.asarray(high, dtype=np.float64).ravel()
     l = np.asarray(low, dtype=np.float64).ravel()
     c = np.asarray(close, dtype=np.float64).ravel()
+
+    vol: Optional[NDArray] = None
+    if volume is not None:
+        vol = np.asarray(volume, dtype=np.float64).ravel()
 
     sweeps: List[LiquiditySweep] = []
     n = len(c)
     if n < lookback + 1:
         return sweeps
 
-    idx = n - 1
-    recent_high = np.max(h[idx - lookback: idx])
-    recent_low = np.min(l[idx - lookback: idx])
+    seen: set = set()  # deduplicate by (index, direction)
 
-    tol_high = recent_high * tolerance_pct / 100.0
-    tol_low = recent_low * tolerance_pct / 100.0
+    # Scan the last `scan_window` candles instead of just the last one
+    for offset in range(scan_window):
+        idx = n - 1 - offset
+        if idx < lookback:
+            break
 
-    # Bearish sweep (wick above recent high, close back inside)
-    if h[idx] > recent_high and c[idx] <= recent_high + tol_high:
-        sweeps.append(LiquiditySweep(
-            index=idx,
-            direction=Direction.SHORT,
-            sweep_level=recent_high,
-            close_price=c[idx],
-            wick_high=h[idx],
-            wick_low=l[idx],
-        ))
+        # Recent range is always measured relative to the *current* last candle
+        # window so that repeated detections for the same event are consistent.
+        recent_high = np.max(h[idx - lookback: idx])
+        recent_low = np.min(l[idx - lookback: idx])
 
-    # Bullish sweep (wick below recent low, close back inside)
-    if l[idx] < recent_low and c[idx] >= recent_low - tol_low:
-        sweeps.append(LiquiditySweep(
-            index=idx,
-            direction=Direction.LONG,
-            sweep_level=recent_low,
-            close_price=c[idx],
-            wick_high=h[idx],
-            wick_low=l[idx],
-        ))
+        tol_high = recent_high * tolerance_pct / 100.0
+        tol_low = recent_low * tolerance_pct / 100.0
+
+        # Volume confirmation: skip low-volume wicks when volume data is available
+        volume_ok = True
+        if vol is not None and idx >= lookback:
+            avg_vol = np.mean(vol[idx - lookback: idx])
+            if avg_vol > 0 and vol[idx] < volume_multiplier * avg_vol:
+                volume_ok = False
+
+        if not volume_ok:
+            continue
+
+        # Bearish sweep (wick above recent high, close back inside)
+        key_short = (idx, "SHORT")
+        if key_short not in seen and h[idx] > recent_high and c[idx] <= recent_high + tol_high:
+            seen.add(key_short)
+            sweeps.append(LiquiditySweep(
+                index=idx,
+                direction=Direction.SHORT,
+                sweep_level=recent_high,
+                close_price=c[idx],
+                wick_high=h[idx],
+                wick_low=l[idx],
+            ))
+
+        # Bullish sweep (wick below recent low, close back inside)
+        key_long = (idx, "LONG")
+        if key_long not in seen and l[idx] < recent_low and c[idx] >= recent_low - tol_low:
+            seen.add(key_long)
+            sweeps.append(LiquiditySweep(
+                index=idx,
+                direction=Direction.LONG,
+                sweep_level=recent_low,
+                close_price=c[idx],
+                wick_high=h[idx],
+                wick_low=l[idx],
+            ))
 
     return sweeps
 

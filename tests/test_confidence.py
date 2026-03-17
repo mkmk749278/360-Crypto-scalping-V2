@@ -1,10 +1,12 @@
 """Tests for src.confidence – multi-layer confidence scoring."""
 
 import pytest
+from datetime import datetime, timezone
 
 from src.confidence import (
     ConfidenceInput,
     compute_confidence,
+    get_session_multiplier,
     score_ai_sentiment,
     score_data_sufficiency,
     score_liquidity,
@@ -141,6 +143,11 @@ class TestScoreMultiExchange:
 
 
 class TestComputeConfidence:
+    # Use a fixed EU-session datetime so the session multiplier is always 1.0×,
+    # keeping existing behavioural assertions stable regardless of when the
+    # tests are run.
+    _EU_SESSION = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+
     def test_basic(self):
         inp = ConfidenceInput(
             smc_score=25,
@@ -151,7 +158,7 @@ class TestComputeConfidence:
             data_sufficiency=10,
             multi_exchange=5,
         )
-        result = compute_confidence(inp)
+        result = compute_confidence(inp, session_now=self._EU_SESSION)
         assert result.total == 100.0
 
     def test_cap_for_new_pair(self):
@@ -165,7 +172,7 @@ class TestComputeConfidence:
             multi_exchange=5,
             has_enough_history=False,
         )
-        result = compute_confidence(inp)
+        result = compute_confidence(inp, session_now=self._EU_SESSION)
         assert result.total == 50.0
         assert result.capped is True
 
@@ -175,9 +182,62 @@ class TestComputeConfidence:
             trend_score=20,
             opposing_position_open=True,
         )
-        result = compute_confidence(inp)
+        result = compute_confidence(inp, session_now=self._EU_SESSION)
         assert result.blocked is True
 
     def test_zero_inputs(self):
-        result = compute_confidence(ConfidenceInput())
+        result = compute_confidence(ConfidenceInput(), session_now=self._EU_SESSION)
         assert result.total == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Fix 9: Session-aware confidence multiplier
+# ---------------------------------------------------------------------------
+
+
+class TestGetSessionMultiplier:
+    def test_asian_session(self):
+        """Hours 0–7 UTC → 0.9× multiplier."""
+        for hour in (0, 3, 7):
+            t = datetime(2024, 1, 15, hour, 0, 0, tzinfo=timezone.utc)
+            assert get_session_multiplier(t) == pytest.approx(0.9), f"hour={hour}"
+
+    def test_eu_session(self):
+        """Hours 8–15 UTC → 1.0× multiplier."""
+        for hour in (8, 12, 15):
+            t = datetime(2024, 1, 15, hour, 0, 0, tzinfo=timezone.utc)
+            assert get_session_multiplier(t) == pytest.approx(1.0), f"hour={hour}"
+
+    def test_us_session(self):
+        """Hours 16–23 UTC → 1.05× multiplier."""
+        for hour in (16, 20, 23):
+            t = datetime(2024, 1, 15, hour, 0, 0, tzinfo=timezone.utc)
+            assert get_session_multiplier(t) == pytest.approx(1.05), f"hour={hour}"
+
+    def test_compute_confidence_asian_reduces_total(self):
+        """Session multiplier 0.9× must reduce total confidence in Asian session."""
+        inp = ConfidenceInput(smc_score=20, trend_score=15, liquidity_score=10)
+        asian_t = datetime(2024, 1, 15, 3, 0, 0, tzinfo=timezone.utc)
+        eu_t = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+        result_asian = compute_confidence(inp, session_now=asian_t)
+        result_eu = compute_confidence(inp, session_now=eu_t)
+        assert result_asian.total < result_eu.total
+
+    def test_compute_confidence_us_increases_total(self):
+        """Session multiplier 1.05× must increase total confidence in US session."""
+        inp = ConfidenceInput(smc_score=20, trend_score=15, liquidity_score=10)
+        us_t = datetime(2024, 1, 15, 18, 0, 0, tzinfo=timezone.utc)
+        eu_t = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+        result_us = compute_confidence(inp, session_now=us_t)
+        result_eu = compute_confidence(inp, session_now=eu_t)
+        assert result_us.total > result_eu.total
+
+    def test_compute_confidence_caps_at_100(self):
+        """Even with the 1.05× US multiplier, total must be capped at 100."""
+        inp = ConfidenceInput(
+            smc_score=25, trend_score=20, ai_sentiment_score=15,
+            liquidity_score=15, spread_score=10, data_sufficiency=10, multi_exchange=5,
+        )
+        us_t = datetime(2024, 1, 15, 18, 0, 0, tzinfo=timezone.utc)
+        result = compute_confidence(inp, session_now=us_t)
+        assert result.total <= 100.0

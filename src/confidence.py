@@ -8,11 +8,13 @@ Factors:
   * Historical data sufficiency
   * Multi-exchange verification
   * Correlation / position lock
+  * Trading-session multiplier (Asian / EU / US)
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from config import NEW_PAIR_MIN_CONFIDENCE
@@ -168,10 +170,53 @@ def score_multi_exchange(verified: Optional[bool] = None) -> float:
     return 2.5  # None → neutral
 
 
-def compute_confidence(inp: ConfidenceInput) -> ConfidenceResult:
+def get_session_multiplier(now: Optional[datetime] = None) -> float:
+    """Return a confidence multiplier based on the current trading session.
+
+    Crypto markets have different volatility and liquidity profiles across
+    the three main sessions (UTC):
+
+    * **Asian session** (00:00–08:00 UTC): lower volume, more false breakouts → 0.9×
+    * **European session** (08:00–16:00 UTC): moderate volume, cleaner moves → 1.0×
+    * **US session** (16:00–00:00 UTC): highest volume, strongest trends → 1.05×
+
+    Parameters
+    ----------
+    now:
+        Optional UTC datetime for testing.  Defaults to the current UTC time.
+
+    Returns
+    -------
+    float
+        Multiplier to apply to the raw confidence total before capping.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    hour = now.hour  # UTC hour 0–23
+    if 0 <= hour < 8:
+        return 0.9   # Asian session
+    if 8 <= hour < 16:
+        return 1.0   # European session
+    return 1.05      # US session (16–24)
+
+
+def compute_confidence(
+    inp: ConfidenceInput,
+    session_now: Optional[datetime] = None,
+) -> ConfidenceResult:
     """Combine all sub-scores into the final 0–100 confidence.
 
-    Applies caps for new pairs and blocks opposing-position signals.
+    Applies a trading-session multiplier after summing sub-scores, then caps
+    new pairs and blocks opposing-position signals.
+
+    Parameters
+    ----------
+    inp:
+        All sub-score inputs.
+    session_now:
+        Optional UTC datetime used to determine the active trading session.
+        Defaults to the current UTC time.  Pass an explicit value in tests to
+        avoid time-dependent results.
     """
     breakdown: Dict[str, float] = {
         "smc": inp.smc_score,
@@ -184,6 +229,11 @@ def compute_confidence(inp: ConfidenceInput) -> ConfidenceResult:
         "onchain": inp.onchain_score,
     }
     total = sum(breakdown.values())
+
+    # Apply session multiplier before capping
+    session_mult = get_session_multiplier(session_now)
+    total = total * session_mult
+
     total = round(min(max(total, 0.0), 100.0), 2)
 
     capped = False

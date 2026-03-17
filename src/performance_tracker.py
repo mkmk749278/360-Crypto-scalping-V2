@@ -263,6 +263,107 @@ class PerformanceTracker:
             result[ch] = self.get_stats(channel=ch, window_days=window_days)
         return result
 
+    def get_tp_stats(
+        self,
+        channel: Optional[str] = None,
+        window_days: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Compute partial-TP hit rates and weighted PnL.
+
+        Tracks how often each TP level (TP1/TP2/TP3) was reached, along with
+        the average PnL contribution from each partial exit.
+
+        Parameters
+        ----------
+        channel:
+            Optional channel name filter.
+        window_days:
+            Optional rolling window in days.
+
+        Returns
+        -------
+        dict with keys:
+            ``total``, ``tp1_hits``, ``tp2_hits``, ``tp3_hits``,
+            ``tp1_rate``, ``tp2_rate``, ``tp3_rate``,
+            ``avg_pnl_at_tp1``, ``avg_pnl_at_tp2``, ``avg_pnl_at_tp3``,
+            ``sl_hits``, ``sl_rate``.
+        """
+        records = self._filter(channel=channel, window_days=window_days)
+        total = len(records)
+        if total == 0:
+            return {
+                "total": 0,
+                "tp1_hits": 0, "tp2_hits": 0, "tp3_hits": 0,
+                "tp1_rate": 0.0, "tp2_rate": 0.0, "tp3_rate": 0.0,
+                "avg_pnl_at_tp1": 0.0, "avg_pnl_at_tp2": 0.0, "avg_pnl_at_tp3": 0.0,
+                "sl_hits": 0, "sl_rate": 0.0,
+            }
+
+        tp1_pnls: List[float] = []
+        tp2_pnls: List[float] = []
+        tp3_pnls: List[float] = []
+        sl_hits = 0
+
+        for r in records:
+            hit = r.hit_tp
+            pnl = r.signal_quality_pnl_pct  # TP-based PnL for signal quality
+            if r.hit_sl:
+                sl_hits += 1
+            if hit >= 1:
+                tp1_pnls.append(pnl)
+            if hit >= 2:
+                tp2_pnls.append(pnl)
+            if hit >= 3:
+                tp3_pnls.append(pnl)
+
+        def _avg(pnls: List[float]) -> float:
+            return round(sum(pnls) / len(pnls), 4) if pnls else 0.0
+
+        return {
+            "total": total,
+            "tp1_hits": len(tp1_pnls),
+            "tp2_hits": len(tp2_pnls),
+            "tp3_hits": len(tp3_pnls),
+            "tp1_rate": round(len(tp1_pnls) / total * 100.0, 1),
+            "tp2_rate": round(len(tp2_pnls) / total * 100.0, 1),
+            "tp3_rate": round(len(tp3_pnls) / total * 100.0, 1),
+            "avg_pnl_at_tp1": _avg(tp1_pnls),
+            "avg_pnl_at_tp2": _avg(tp2_pnls),
+            "avg_pnl_at_tp3": _avg(tp3_pnls),
+            "sl_hits": sl_hits,
+            "sl_rate": round(sl_hits / total * 100.0, 1),
+        }
+
+    def format_tp_stats_message(
+        self,
+        channel: Optional[str] = None,
+        window_days: Optional[int] = None,
+    ) -> str:
+        """Return a Telegram-ready TP hit-rate and partial-exit PnL summary.
+
+        Parameters
+        ----------
+        channel:
+            Optional channel name filter.
+        window_days:
+            Optional rolling window in days.
+        """
+        label = channel or "All Channels"
+        window_label = f" (last {window_days}d)" if window_days else " (all time)"
+        tp = self.get_tp_stats(channel=channel, window_days=window_days)
+
+        if tp["total"] == 0:
+            return f"📈 *TP Stats – {label}{window_label}*\nNo data yet."
+
+        return (
+            f"📈 *TP Stats – {label}{window_label}*\n"
+            f"Total signals: {tp['total']}\n"
+            f"TP1 hit: {tp['tp1_hits']} ({tp['tp1_rate']:.1f}%) | avg PnL: {tp['avg_pnl_at_tp1']:+.2f}%\n"
+            f"TP2 hit: {tp['tp2_hits']} ({tp['tp2_rate']:.1f}%) | avg PnL: {tp['avg_pnl_at_tp2']:+.2f}%\n"
+            f"TP3 hit: {tp['tp3_hits']} ({tp['tp3_rate']:.1f}%) | avg PnL: {tp['avg_pnl_at_tp3']:+.2f}%\n"
+            f"SL hit: {tp['sl_hits']} ({tp['sl_rate']:.1f}%)"
+        )
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------

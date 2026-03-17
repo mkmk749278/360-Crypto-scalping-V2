@@ -198,14 +198,12 @@ class Backtester:
         Minimum number of candles required before evaluation starts.
     fee_pct:
         Round-trip fee percentage deducted from every simulated trade's PnL.
-        Defaults to ``0.0`` (no fees).  Set to e.g. ``0.08`` to model a
-        typical Binance maker/taker round-trip and obtain more realistic
-        backtest results, especially for scalping strategies.
+        Defaults to ``0.08`` (typical Binance maker/taker round-trip).  Set to
+        ``0.0`` only when comparing ideal (fee-free) scenarios.
     slippage_pct:
         Per-trade slippage percentage applied adversely to every SL/TP fill.
-        Defaults to ``0.0`` (no slippage).  Set to e.g. ``0.03`` (the default
-        ``BACKTEST_SLIPPAGE_PCT`` from config) for a realistic model of spread
-        + market-impact on tight SL levels.
+        Defaults to ``0.02`` for a realistic model of spread + market-impact.
+        Set to ``0.0`` only when comparing ideal (no-slippage) scenarios.
     """
 
     def __init__(
@@ -213,8 +211,8 @@ class Backtester:
         channels: Optional[List] = None,
         lookahead_candles: int = 20,
         min_window: int = 50,
-        fee_pct: float = 0.0,
-        slippage_pct: float = 0.0,
+        fee_pct: float = 0.08,
+        slippage_pct: float = 0.02,
     ) -> None:
         if channels is None:
             channels = [

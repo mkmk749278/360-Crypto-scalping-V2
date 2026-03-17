@@ -65,6 +65,15 @@ _RANGING_RANGE_CONF_BOOST: float = 5.0
 # Maximum number of symbols scanned concurrently
 _MAX_CONCURRENT_SCANS: int = 10
 
+# Regime-channel compatibility matrix.
+# Maps channel name → list of regimes where that channel is blocked.
+# SCALP needs movement: block in QUIET (nothing moves).
+# SWING needs sustained trend: block in VOLATILE (chaotic, stops get swept).
+_REGIME_CHANNEL_INCOMPATIBLE: Dict[str, List[str]] = {
+    "360_SCALP": ["QUIET"],
+    "360_SWING": ["VOLATILE"],
+}
+
 
 @dataclass
 class ScanContext:
@@ -517,6 +526,17 @@ class Scanner:
                 "Suppressing SCALP signal for {} (RANGING, ADX={:.1f})",
                 symbol,
                 ctx.adx_val,
+            )
+            return True
+        # Regime-channel compatibility matrix
+        current_regime = ctx.regime_result.regime.value
+        incompatible_regimes = _REGIME_CHANNEL_INCOMPATIBLE.get(chan_name, [])
+        if current_regime in incompatible_regimes:
+            log.debug(
+                "Suppressing {} signal for {} (regime {} incompatible with channel)",
+                chan_name,
+                symbol,
+                current_regime,
             )
             return True
         return False

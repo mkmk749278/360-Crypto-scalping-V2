@@ -28,6 +28,10 @@ _CACHE_TTL: float = 300.0   # 5 minutes – on-chain data updates slowly
 _NEUTRAL_SCORE: float = 2.5
 _MAX_SCORE: float = 5.0
 
+# Assets supported by Glassnode's free tier.  All other coins will get a 0.0
+# score immediately without making any API calls.
+_SUPPORTED_ONCHAIN_ASSETS: frozenset = frozenset({"BTC", "ETH"})
+
 # Glassnode endpoint for BTC exchange net-flow (free tier)
 _GLASSNODE_BASE = "https://api.glassnode.com/v1/metrics/transactions"
 
@@ -85,6 +89,12 @@ class OnChainClient:
 
         if not self._enabled:
             return neutral
+
+        # Glassnode free-tier only supports BTC and ETH.
+        # Skip the API call entirely for other assets to avoid errors and latency.
+        if coin.upper() not in _SUPPORTED_ONCHAIN_ASSETS:
+            log.debug("On-chain data not supported for %s – returning neutral score", coin)
+            return OnChainData(symbol=coin, source="unsupported", score=0.0)
 
         cached = self._cache.get(coin)
         if cached is not None and (time.monotonic() - cached[0]) < _CACHE_TTL:

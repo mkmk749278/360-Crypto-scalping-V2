@@ -614,6 +614,18 @@ class CommandHandler:
                 )
                 await self._telegram.send_message(chat_id, msg)
 
+        elif cmd == "/tp_stats":
+            if self._performance_tracker is None:
+                await self._telegram.send_message(
+                    chat_id, "ℹ️ Performance tracker is not enabled."
+                )
+            else:
+                channel_arg = parts[1] if len(parts) >= 2 else None
+                msg = self._performance_tracker.format_tp_stats_message(
+                    channel=channel_arg
+                )
+                await self._telegram.send_message(chat_id, msg)
+
         else:
             await self._telegram.send_message(
                 chat_id,
@@ -651,5 +663,6 @@ class CommandHandler:
                 "/subscribe\n"
                 "/unsubscribe\n"
                 "/signal\\_history\n"
-                "/signal\\_stats [channel]",
+                "/signal\\_stats [channel]\n"
+                "/tp\\_stats [channel]",
             )

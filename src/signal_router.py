@@ -24,6 +24,7 @@ from config import (
     CHANNEL_COOLDOWN_SECONDS,
     CHANNEL_TELEGRAM_MAP,
     MAX_CONCURRENT_SIGNALS,
+    MAX_SIGNAL_HOLD_SECONDS,
     TELEGRAM_FREE_CHANNEL_ID,
 )
 from src.channels.base import Signal
@@ -416,3 +417,36 @@ class SignalRouter:
                 if hasattr(sig, k):
                     setattr(sig, k, v)
             self._schedule_persist()
+
+    def cleanup_expired(self) -> int:
+        """Remove signals that have exceeded their max hold duration.
+
+        This provides a safety net to ensure :attr:`_position_lock` entries
+        are always cleaned up even when the :class:`~src.trade_monitor.TradeMonitor`
+        callback is not triggered (e.g. after a process restart where Redis
+        state was restored but the signal is already past its TTL).
+
+        Returns the number of signals that were expired and removed.
+        """
+        now = datetime.now(timezone.utc)
+        expired_ids = []
+        for signal_id, sig in list(self._active_signals.items()):
+            max_hold = MAX_SIGNAL_HOLD_SECONDS.get(sig.channel, 86400)
+            age_secs = (now - sig.timestamp).total_seconds()
+            if age_secs >= max_hold:
+                expired_ids.append(signal_id)
+
+        for signal_id in expired_ids:
+            sig = self._active_signals.pop(signal_id)
+            self._position_lock.pop(sig.symbol, None)
+            # Record cooldown timestamp so rapid re-entry is suppressed
+            self._cooldown_timestamps[(sig.symbol, sig.channel)] = now
+            log.info(
+                "Auto-expired signal {} {} {} (exceeded max hold)",
+                signal_id, sig.symbol, sig.channel,
+            )
+
+        if expired_ids:
+            self._schedule_persist()
+
+        return len(expired_ids)

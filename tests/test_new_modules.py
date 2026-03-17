@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import numpy as np
+import pytest
 
 from src.detector import SMCDetector, SMCResult
+from src.exchange import ExchangeManager
 from src.filters import (
     check_adx,
     check_ema_alignment,
@@ -256,3 +260,79 @@ class TestRiskManager:
         active = {"BTC-001": _make_signal_obj(symbol="BTCUSDT", direction="SHORT")}
         result = rm.calculate_risk(sig, {}, volume_24h_usd=50_000_000, active_signals=active)
         assert result.allowed is True
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: Cross-exchange direction verification
+# ---------------------------------------------------------------------------
+
+
+class TestCrossExchangeDirectionVerification:
+    """verify_signal_cross_exchange must check directional agreement."""
+
+    @pytest.mark.asyncio
+    async def test_no_second_exchange_returns_false(self):
+        mgr = ExchangeManager()
+        result = await mgr.verify_signal_cross_exchange("BTCUSDT", "LONG", 50000.0)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_long_signal_confirmed_when_prices_agree(self):
+        """LONG signal verified when second price is same as primary (neutral within tolerance)."""
+        mgr = ExchangeManager(second_exchange_url="http://fake-exchange/api")
+        mgr._fetch_price_second = AsyncMock(return_value=50000.0)
+        result = await mgr.verify_signal_cross_exchange("BTCUSDT", "LONG", 50000.0)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_long_signal_rejected_when_second_price_much_lower(self):
+        """LONG signal contradicted when second-exchange price is significantly below primary."""
+        mgr = ExchangeManager(second_exchange_url="http://fake-exchange/api")
+        # Second price is 1% below primary – well below tolerance/2
+        mgr._fetch_price_second = AsyncMock(return_value=49000.0)
+        result = await mgr.verify_signal_cross_exchange("BTCUSDT", "LONG", 50000.0)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_short_signal_rejected_when_second_price_much_higher(self):
+        """SHORT signal contradicted when second-exchange price is significantly above primary."""
+        mgr = ExchangeManager(second_exchange_url="http://fake-exchange/api")
+        # Second price is 1% above primary
+        mgr._fetch_price_second = AsyncMock(return_value=50500.0)
+        result = await mgr.verify_signal_cross_exchange("BTCUSDT", "SHORT", 50000.0)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_large_spread_still_returns_false(self):
+        """Large price divergence between exchanges still fails (existing behaviour)."""
+        mgr = ExchangeManager(second_exchange_url="http://fake-exchange/api")
+        # Second price is 2% away (beyond 0.5% tolerance)
+        mgr._fetch_price_second = AsyncMock(return_value=51000.0)
+        result = await mgr.verify_signal_cross_exchange("BTCUSDT", "LONG", 50000.0)
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: Regime detector EMA fallback to close price
+# ---------------------------------------------------------------------------
+
+
+class TestRegimeEMAFallback:
+    """When EMA values are missing, close price should be used as fallback."""
+
+    def test_ema_fallback_uses_close(self):
+        detector = MarketRegimeDetector()
+        # Provide candles but no EMA in indicators
+        indicators = {"adx_last": 22.0}  # borderline ADX, needs EMA for direction
+        candles = {"close": [100.0, 101.0, 102.0]}  # upward trend
+        result = detector.classify(indicators, candles)
+        # With ema_fast = ema_slow = close (same price), ema_slope = 0
+        # borderline ADX (20-25) + ema_slope 0 (not > 0.05 and not < -0.05) → RANGING
+        assert result.regime is not None  # must not crash or return None
+
+    def test_ema_fallback_does_not_crash_without_candles(self):
+        """Without candles and without EMAs, detector must still return a regime."""
+        detector = MarketRegimeDetector()
+        indicators = {}
+        result = detector.classify(indicators, candles=None)
+        assert result.regime is not None

@@ -63,9 +63,13 @@ class ExchangeManager:
     ) -> bool:
         """Check a second exchange to confirm the signal direction.
 
-        Returns ``True`` if the second-exchange price is consistent with
-        *direction* relative to *price*, ``False`` otherwise or when no
-        second exchange is configured.
+        Returns ``True`` only when:
+          1. The second-exchange price is within the price tolerance, **and**
+          2. The second exchange's recent price movement agrees with *direction*.
+
+        Returns ``False`` when no second exchange is configured, prices diverge
+        significantly, or the second exchange's directional bias contradicts the
+        signal direction.
 
         Parameters
         ----------
@@ -95,7 +99,24 @@ class ExchangeManager:
             )
             return False
 
-        # Prices are in agreement – direction confirmed
+        # Directional agreement check: the second-exchange price must be on the
+        # same side of the primary price as the signal direction implies.
+        # A LONG signal expects second_price >= primary (or neutral within tol).
+        # A SHORT signal expects second_price <= primary (or neutral within tol).
+        direction_upper = direction.upper()
+        if direction_upper == "LONG" and second_price < price * (1.0 - _PRICE_TOLERANCE_PCT / 100.0 / 2):
+            log.debug(
+                "%s cross-exchange directional mismatch: LONG signal but second=%.4f < primary=%.4f",
+                symbol, second_price, price,
+            )
+            return False
+        if direction_upper == "SHORT" and second_price > price * (1.0 + _PRICE_TOLERANCE_PCT / 100.0 / 2):
+            log.debug(
+                "%s cross-exchange directional mismatch: SHORT signal but second=%.4f > primary=%.4f",
+                symbol, second_price, price,
+            )
+            return False
+
         log.debug(
             "%s cross-exchange verified: primary=%.4f second=%.4f direction=%s",
             symbol, price, second_price, direction,

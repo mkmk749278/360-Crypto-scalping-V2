@@ -439,3 +439,85 @@ class TestSignalQualityStats:
         stats = PerformanceTracker._compute_signal_quality_stats("360_SCALP", [])
         assert stats.total_signals == 0
         assert stats.win_rate == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Fix 11: Partial TP tracking + /tp_stats
+# ---------------------------------------------------------------------------
+
+
+class TestTPStats:
+    def _make_tracker(self, tmp_path):
+        return PerformanceTracker(storage_path=str(tmp_path / "perf.json"))
+
+    def _record(self, pt, signal_id, hit_tp, pnl_pct, hit_sl=False):
+        pt.record_outcome(
+            signal_id=signal_id,
+            channel="360_SCALP",
+            symbol="BTCUSDT",
+            direction="LONG",
+            entry=50000.0,
+            hit_tp=hit_tp,
+            hit_sl=hit_sl,
+            pnl_pct=pnl_pct,
+        )
+
+    def test_tp_stats_empty(self, tmp_path):
+        pt = self._make_tracker(tmp_path)
+        stats = pt.get_tp_stats()
+        assert stats["total"] == 0
+        assert stats["tp1_rate"] == 0.0
+
+    def test_tp1_hit_rate(self, tmp_path):
+        pt = self._make_tracker(tmp_path)
+        self._record(pt, "A", hit_tp=1, pnl_pct=1.0)
+        self._record(pt, "B", hit_tp=1, pnl_pct=0.8)
+        self._record(pt, "C", hit_tp=0, pnl_pct=-1.0, hit_sl=True)
+        stats = pt.get_tp_stats()
+        assert stats["total"] == 3
+        assert stats["tp1_hits"] == 2
+        assert stats["tp1_rate"] == pytest.approx(66.7, rel=1e-2)
+
+    def test_tp2_and_tp3_hit_rates(self, tmp_path):
+        pt = self._make_tracker(tmp_path)
+        self._record(pt, "A", hit_tp=3, pnl_pct=3.0)
+        self._record(pt, "B", hit_tp=2, pnl_pct=2.0)
+        self._record(pt, "C", hit_tp=1, pnl_pct=1.0)
+        self._record(pt, "D", hit_tp=0, pnl_pct=-1.0, hit_sl=True)
+        stats = pt.get_tp_stats()
+        assert stats["tp1_hits"] == 3   # TP1 reached on TP2 and TP3 trades too
+        assert stats["tp2_hits"] == 2
+        assert stats["tp3_hits"] == 1
+
+    def test_sl_hit_rate(self, tmp_path):
+        pt = self._make_tracker(tmp_path)
+        self._record(pt, "A", hit_tp=0, pnl_pct=-1.0, hit_sl=True)
+        self._record(pt, "B", hit_tp=0, pnl_pct=-0.8, hit_sl=True)
+        self._record(pt, "C", hit_tp=1, pnl_pct=1.0)
+        stats = pt.get_tp_stats()
+        assert stats["sl_hits"] == 2
+        assert stats["sl_rate"] == pytest.approx(66.7, rel=1e-2)
+
+    def test_format_tp_stats_message_contains_tp_levels(self, tmp_path):
+        pt = self._make_tracker(tmp_path)
+        self._record(pt, "A", hit_tp=1, pnl_pct=1.0)
+        msg = pt.format_tp_stats_message()
+        assert "TP1" in msg
+        assert "TP2" in msg
+        assert "TP3" in msg
+
+    def test_format_tp_stats_message_no_data(self, tmp_path):
+        pt = self._make_tracker(tmp_path)
+        msg = pt.format_tp_stats_message()
+        assert "No data" in msg
+
+    def test_tp_stats_channel_filter(self, tmp_path):
+        pt = self._make_tracker(tmp_path)
+        pt.record_outcome("A", "360_SCALP", "BTCUSDT", "LONG", 50000, 1, False, 1.0)
+        pt.record_outcome("B", "360_SWING", "ETHUSDT", "LONG", 3000, 2, False, 2.0)
+        stats_scalp = pt.get_tp_stats(channel="360_SCALP")
+        stats_swing = pt.get_tp_stats(channel="360_SWING")
+        assert stats_scalp["total"] == 1
+        assert stats_swing["total"] == 1
+        assert stats_scalp["tp1_hits"] == 1
+        assert stats_swing["tp2_hits"] == 1

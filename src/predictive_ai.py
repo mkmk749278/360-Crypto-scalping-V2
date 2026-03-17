@@ -132,11 +132,14 @@ class PredictiveEngine:
         """
         if prediction.suggested_tp_adjustment != 1.0:
             m = prediction.suggested_tp_adjustment
-            signal.tp1 *= m
-            signal.tp2 *= m
+            entry = signal.entry
+            # Scale the *distance from entry*, not the absolute price.
+            # This prevents corruption on high-price assets (e.g. BTC).
+            signal.tp1 = entry + (signal.tp1 - entry) * m
+            signal.tp2 = entry + (signal.tp2 - entry) * m
             tp3 = getattr(signal, "tp3", None)
             if tp3 is not None:
-                signal.tp3 = tp3 * m
+                signal.tp3 = entry + (tp3 - entry) * m
             log.debug(
                 "%s TP adjusted by %.2fx → tp1=%.6f tp2=%.6f",
                 getattr(signal, "symbol", "?"),
@@ -147,7 +150,9 @@ class PredictiveEngine:
 
         if prediction.suggested_sl_adjustment != 1.0:
             m = prediction.suggested_sl_adjustment
-            signal.stop_loss *= m
+            entry = signal.entry
+            # Scale the SL *distance from entry* rather than the absolute level.
+            signal.stop_loss = entry + (signal.stop_loss - entry) * m
             log.debug(
                 "%s SL adjusted by %.2fx → sl=%.6f",
                 getattr(signal, "symbol", "?"),

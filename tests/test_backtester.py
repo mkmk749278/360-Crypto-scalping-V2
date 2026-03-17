@@ -355,3 +355,26 @@ class TestSlippageModel:
         """summary() must NOT mention slippage when slippage_pct == 0."""
         r = BacktestResult(channel="TEST", slippage_pct=0.0)
         assert "Slippage" not in r.summary()
+
+
+# ---------------------------------------------------------------------------
+# Fix 8: Realistic default fee and slippage
+# ---------------------------------------------------------------------------
+
+
+class TestRealisticDefaults:
+    """Backtester must default to realistic fee and slippage out of the box."""
+
+    def test_default_fee_is_008(self):
+        bt = Backtester()
+        assert bt._fee_pct == pytest.approx(0.08)
+
+    def test_default_slippage_is_002(self):
+        bt = Backtester()
+        assert bt._slippage_pct == pytest.approx(0.02)
+
+    def test_explicit_zero_overrides_default(self):
+        """Callers can still opt out of fees and slippage explicitly."""
+        bt = Backtester(fee_pct=0.0, slippage_pct=0.0)
+        assert bt._fee_pct == 0.0
+        assert bt._slippage_pct == 0.0

@@ -106,20 +106,31 @@ class TestAdjustTPSL:
         assert sig.stop_loss == 31900.0
 
     def test_tp_adjustment_scales_targets(self):
+        """TP adjustment must scale the *distance from entry*, not the absolute price.
+
+        entry=32000, tp1=32100 (dist=100), tp2=32200 (dist=200), tp3=32400 (dist=400)
+        multiplier=1.1 → tp1=32000+100*1.1=32110, tp2=32000+200*1.1=32220,
+                         tp3=32000+400*1.1=32440
+        """
         engine = PredictiveEngine()
         sig = self._make_signal()
         pred = PredictionResult(suggested_tp_adjustment=1.1, suggested_sl_adjustment=1.0)
         engine.adjust_tp_sl(sig, pred)
-        assert sig.tp1 == pytest.approx(32100.0 * 1.1, rel=1e-6)
-        assert sig.tp2 == pytest.approx(32200.0 * 1.1, rel=1e-6)
-        assert sig.tp3 == pytest.approx(32400.0 * 1.1, rel=1e-6)
+        assert sig.tp1 == pytest.approx(32000.0 + 100.0 * 1.1, rel=1e-6)
+        assert sig.tp2 == pytest.approx(32000.0 + 200.0 * 1.1, rel=1e-6)
+        assert sig.tp3 == pytest.approx(32000.0 + 400.0 * 1.1, rel=1e-6)
 
     def test_sl_adjustment(self):
+        """SL adjustment must scale the *distance from entry*, not the absolute price.
+
+        entry=32000, stop_loss=31900 (dist=-100), multiplier=0.95
+        → new_sl = 32000 + (-100 * 0.95) = 31905
+        """
         engine = PredictiveEngine()
         sig = self._make_signal()
         pred = PredictionResult(suggested_tp_adjustment=1.0, suggested_sl_adjustment=0.95)
         engine.adjust_tp_sl(sig, pred)
-        assert sig.stop_loss == pytest.approx(31900.0 * 0.95, rel=1e-6)
+        assert sig.stop_loss == pytest.approx(32000.0 + (31900.0 - 32000.0) * 0.95, rel=1e-6)
 
     def test_tp3_none_not_adjusted(self):
         engine = PredictiveEngine()

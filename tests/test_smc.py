@@ -208,3 +208,132 @@ class TestNonFlatArrayInputs:
         close[-1] = 105.04
         sweeps = detect_liquidity_sweeps(high, low, close, lookback=50)
         assert any(s.direction == Direction.SHORT for s in sweeps)
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: Expanded scan_window (5 candles instead of 1)
+# ---------------------------------------------------------------------------
+
+
+class TestExpandedScanWindow:
+    """detect_liquidity_sweeps must scan the last scan_window candles, not just
+    the very last candle."""
+
+    def test_sweep_detected_on_candle_minus_2(self):
+        """A bullish sweep that occurred 2 candles ago must still be detected."""
+        n = 60
+        high = np.ones(n) * 105.0
+        low = np.ones(n) * 95.0
+        close = np.ones(n) * 100.0
+
+        # Sweep candle is at index n-3 (i.e. 2 candles before the last)
+        high[n - 3] = 105.0
+        low[n - 3] = 93.0      # below 95 (recent low)
+        close[n - 3] = 95.04   # closed back inside
+
+        # Last two candles are normal
+        high[n - 2] = 105.0
+        low[n - 2] = 95.0
+        close[n - 2] = 100.0
+        high[n - 1] = 105.0
+        low[n - 1] = 95.0
+        close[n - 1] = 100.0
+
+        sweeps = detect_liquidity_sweeps(high, low, close, lookback=50, scan_window=5)
+        assert any(s.direction == Direction.LONG for s in sweeps), (
+            "Bullish sweep at n-3 should be detected with scan_window=5"
+        )
+
+    def test_sweep_missed_with_scan_window_1(self):
+        """With scan_window=1, a sweep 2 candles ago is NOT detected."""
+        n = 60
+        high = np.ones(n) * 105.0
+        low = np.ones(n) * 95.0
+        close = np.ones(n) * 100.0
+
+        high[n - 3] = 105.0
+        low[n - 3] = 93.0
+        close[n - 3] = 95.04
+
+        high[n - 2] = 105.0
+        low[n - 2] = 95.0
+        close[n - 2] = 100.0
+        high[n - 1] = 105.0
+        low[n - 1] = 95.0
+        close[n - 1] = 100.0
+
+        sweeps = detect_liquidity_sweeps(high, low, close, lookback=50, scan_window=1)
+        assert not any(s.direction == Direction.LONG for s in sweeps), (
+            "Sweep at n-3 should NOT be detected with scan_window=1"
+        )
+
+    def test_no_duplicate_sweeps_in_window(self):
+        """A single sweep event should not produce duplicate entries."""
+        n = 60
+        high = np.ones(n) * 105.0
+        low = np.ones(n) * 95.0
+        close = np.ones(n) * 100.0
+
+        # Only the last candle sweeps
+        low[-1] = 93.0
+        close[-1] = 95.04
+
+        sweeps = detect_liquidity_sweeps(high, low, close, lookback=50, scan_window=5)
+        long_sweeps = [s for s in sweeps if s.direction == Direction.LONG]
+        assert len(long_sweeps) == 1, "Same candle should not appear twice"
+
+
+# ---------------------------------------------------------------------------
+# Fix 10: Volume confirmation for SMC sweeps
+# ---------------------------------------------------------------------------
+
+
+class TestVolumeConfirmation:
+    """Volume-confirmed sweeps: only count if sweep candle volume >= 1.2× avg."""
+
+    def test_high_volume_sweep_detected(self):
+        """Sweep candle with 2× average volume should be detected."""
+        n = 60
+        high = np.ones(n) * 105.0
+        low = np.ones(n) * 95.0
+        close = np.ones(n) * 100.0
+        volume = np.ones(n) * 1000.0
+
+        low[-1] = 93.0
+        close[-1] = 95.04
+        volume[-1] = 2500.0   # 2.5× average → passes 1.2× filter
+
+        sweeps = detect_liquidity_sweeps(
+            high, low, close, lookback=50, volume=volume, volume_multiplier=1.2
+        )
+        assert any(s.direction == Direction.LONG for s in sweeps)
+
+    def test_low_volume_sweep_filtered(self):
+        """Sweep candle with only 0.8× average volume should be filtered out."""
+        n = 60
+        high = np.ones(n) * 105.0
+        low = np.ones(n) * 95.0
+        close = np.ones(n) * 100.0
+        volume = np.ones(n) * 1000.0
+
+        low[-1] = 93.0
+        close[-1] = 95.04
+        volume[-1] = 800.0    # 0.8× average → fails 1.2× filter
+
+        sweeps = detect_liquidity_sweeps(
+            high, low, close, lookback=50, volume=volume, volume_multiplier=1.2
+        )
+        assert not any(s.direction == Direction.LONG for s in sweeps)
+
+    def test_no_volume_data_unchanged_behavior(self):
+        """Without volume data, existing sweep detection is unchanged."""
+        n = 60
+        high = np.ones(n) * 105.0
+        low = np.ones(n) * 95.0
+        close = np.ones(n) * 100.0
+
+        low[-1] = 93.0
+        close[-1] = 95.04
+
+        sweeps = detect_liquidity_sweeps(high, low, close, lookback=50)
+        assert any(s.direction == Direction.LONG for s in sweeps)

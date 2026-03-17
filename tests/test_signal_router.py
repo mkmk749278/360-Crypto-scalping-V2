@@ -645,3 +645,59 @@ class TestRedisPersistence:
         # Must not raise and must leave state empty
         await router.restore()
         assert router._active_signals == {}
+
+
+# ---------------------------------------------------------------------------
+# Fix 7: Position lock cleanup via cleanup_expired()
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupExpired:
+    """cleanup_expired() must remove stale signals and their position locks."""
+
+    def test_cleanup_removes_expired_signal(self, router):
+        """A signal older than its channel max hold must be removed."""
+        sig = _make_signal(channel="360_SCALP")
+        # Age the signal far beyond its 1-hour hold
+        sig.timestamp = datetime.now(timezone.utc) - timedelta(hours=3)
+        router._active_signals[sig.signal_id] = sig
+        router._position_lock[sig.symbol] = sig.direction
+
+        removed = router.cleanup_expired()
+        assert removed == 1
+        assert sig.signal_id not in router._active_signals
+
+    def test_cleanup_clears_position_lock(self, router):
+        """After cleanup, the position lock for the expired symbol is released."""
+        sig = _make_signal(channel="360_SCALP", symbol="ETHUSDT")
+        sig.timestamp = datetime.now(timezone.utc) - timedelta(hours=3)
+        router._active_signals[sig.signal_id] = sig
+        router._position_lock["ETHUSDT"] = sig.direction
+
+        router.cleanup_expired()
+        assert "ETHUSDT" not in router._position_lock
+
+    def test_cleanup_sets_cooldown_on_expiry(self, router):
+        """Expired signals must record a cooldown timestamp for re-entry suppression."""
+        sig = _make_signal(channel="360_SCALP", symbol="SOLUSDT")
+        sig.timestamp = datetime.now(timezone.utc) - timedelta(hours=3)
+        router._active_signals[sig.signal_id] = sig
+        router._position_lock["SOLUSDT"] = sig.direction
+
+        router.cleanup_expired()
+        assert ("SOLUSDT", "360_SCALP") in router._cooldown_timestamps
+
+    def test_cleanup_does_not_remove_active_signal(self, router):
+        """A fresh signal must not be removed by cleanup_expired."""
+        sig = _make_signal(channel="360_SCALP", symbol="BNBUSDT")
+        sig.timestamp = datetime.now(timezone.utc)  # just created
+        router._active_signals[sig.signal_id] = sig
+        router._position_lock["BNBUSDT"] = sig.direction
+
+        removed = router.cleanup_expired()
+        assert removed == 0
+        assert sig.signal_id in router._active_signals
+
+    def test_cleanup_returns_zero_on_empty_router(self, router):
+        """cleanup_expired with no active signals must return 0."""
+        assert router.cleanup_expired() == 0
