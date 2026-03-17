@@ -273,6 +273,18 @@ MIN_SIGNAL_LIFESPAN_SECONDS: Dict[str, int] = {
 }
 
 # ---------------------------------------------------------------------------
+# Maximum hold duration per channel (seconds).  Signals older than this
+# are auto-closed at current market price to free up concurrent-signal slots.
+# ---------------------------------------------------------------------------
+MAX_SIGNAL_HOLD_SECONDS: Dict[str, int] = {
+    "360_SCALP": int(os.getenv("MAX_SCALP_HOLD", "3600")),       # 1 hour
+    "360_SWING": int(os.getenv("MAX_SWING_HOLD", "172800")),     # 48 hours
+    "360_RANGE": int(os.getenv("MAX_RANGE_HOLD", "7200")),       # 2 hours
+    "360_THE_TAPE": int(os.getenv("MAX_TAPE_HOLD", "1800")),     # 30 min
+    "360_SELECT": int(os.getenv("MAX_SELECT_HOLD", "86400")),    # 24 hours
+}
+
+# ---------------------------------------------------------------------------
 # Concurrency cap – maximum number of open signals across all channels
 # ---------------------------------------------------------------------------
 MAX_CONCURRENT_SIGNALS: int = 5

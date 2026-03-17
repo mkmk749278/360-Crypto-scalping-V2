@@ -43,27 +43,78 @@ class ConfidenceResult:
     reason: str = ""
 
 
-def score_smc(has_sweep: bool, has_mss: bool, has_fvg: bool) -> float:
-    """SMC component (max 25)."""
+def score_smc(
+    has_sweep: bool,
+    has_mss: bool,
+    has_fvg: bool,
+    sweep_depth_pct: float = 0.0,
+    fvg_atr_ratio: float = 0.0,
+) -> float:
+    """SMC component (max 25).
+
+    Parameters
+    ----------
+    has_sweep:
+        Whether a liquidity sweep was detected.
+    has_mss:
+        Whether a market structure shift was detected.
+    has_fvg:
+        Whether a fair value gap was detected.
+    sweep_depth_pct:
+        How deep the sweep went past the level, as a percentage of price.
+        Deeper sweeps are more significant.  Clipped to [0, 1] for scoring.
+    fvg_atr_ratio:
+        Size of the FVG gap relative to ATR.
+        Larger gaps are more significant.  Clipped to [0, 2] for scoring.
+    """
     s = 0.0
     if has_sweep:
-        s += 12.0
+        # Base 8 + up to 4 for depth (deeper sweep = stronger signal)
+        depth_bonus = min(sweep_depth_pct / 0.5, 1.0) * 4.0  # max at 0.5%
+        s += 8.0 + depth_bonus
     if has_mss:
         s += 9.0
     if has_fvg:
-        s += 4.0
+        # Base 2 + up to 2 for size (larger FVG = more significant)
+        size_bonus = min(fvg_atr_ratio / 1.5, 1.0) * 2.0  # max at 1.5×ATR
+        s += 2.0 + size_bonus
     return min(s, 25.0)
 
 
-def score_trend(ema_aligned: bool, adx_ok: bool, momentum_positive: bool) -> float:
-    """Trend component (max 20)."""
+def score_trend(
+    ema_aligned: bool,
+    adx_ok: bool,
+    momentum_positive: bool,
+    adx_value: float = 0.0,
+    momentum_strength: float = 0.0,
+) -> float:
+    """Trend component (max 20).
+
+    Parameters
+    ----------
+    ema_aligned:
+        Whether EMA9 > EMA21 (LONG) or EMA9 < EMA21 (SHORT).
+    adx_ok:
+        Whether ADX >= 20 (trending).
+    momentum_positive:
+        Whether momentum is in the signal direction.
+    adx_value:
+        Actual ADX value for gradient scoring.
+        ADX 20-25 = minimal trend, ADX 40+ = strong trend.
+    momentum_strength:
+        Absolute momentum value for gradient scoring.
+    """
     s = 0.0
     if ema_aligned:
         s += 8.0
     if adx_ok:
-        s += 7.0
+        # Base 3 + up to 4 based on ADX strength (20→3, 40+→7)
+        adx_bonus = min(max(adx_value - 20.0, 0.0) / 20.0, 1.0) * 4.0
+        s += 3.0 + adx_bonus
     if momentum_positive:
-        s += 5.0
+        # Base 2 + up to 3 based on momentum strength
+        mom_bonus = min(abs(momentum_strength) / 1.0, 1.0) * 3.0
+        s += 2.0 + mom_bonus
     return min(s, 20.0)
 
 

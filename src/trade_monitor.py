@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Callable, Coroutine, Dict, Optional
 
-from config import CHANNEL_TELEGRAM_MAP, MIN_SIGNAL_LIFESPAN_SECONDS, MONITOR_POLL_INTERVAL
+from config import CHANNEL_TELEGRAM_MAP, MIN_SIGNAL_LIFESPAN_SECONDS, MAX_SIGNAL_HOLD_SECONDS, MONITOR_POLL_INTERVAL
 from src.channels.base import Signal
 from src.historical_data import HistoricalDataStore
 from src.performance_metrics import calculate_trade_pnl_pct, classify_trade_outcome
@@ -25,6 +25,7 @@ _STOP_OUTCOME_MESSAGES = {
     "SL_HIT": "🔴 SL HIT",
     "BREAKEVEN_EXIT": "⚪ BREAKEVEN EXIT",
     "PROFIT_LOCKED": "🟢 PROFIT LOCKED",
+    "EXPIRED": "⏰ EXPIRED",
 }
 
 
@@ -181,6 +182,16 @@ class TradeMonitor:
                 "Signal %s %s too new (%.1fs < %ds min lifespan) – skipping SL/TP eval",
                 sig.symbol, sig.channel, age_secs, min_lifespan,
             )
+            return
+
+        # Max hold duration guard – auto-expire signals that have been open too long
+        max_hold = MAX_SIGNAL_HOLD_SECONDS.get(sig.channel, 86400)
+        if age_secs >= max_hold:
+            self._set_realized_pnl(sig, price)
+            sig.status = "EXPIRED"
+            await self._post_update(sig, "⏰ EXPIRED (max hold time reached)")
+            self._record_outcome(sig, hit_tp=0, hit_sl=False)
+            self._remove(sig.signal_id)
             return
 
         # SL direction sanity check – catch misconfigured signals

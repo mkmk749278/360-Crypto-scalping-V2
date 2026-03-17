@@ -566,3 +566,127 @@ class TestTrailingStopAfterTP2:
 
         assert sig.status == "SL_HIT"
         assert sl_callbacks == ["BTCUSDT"]
+
+
+class TestSignalExpiry:
+    """Auto-expiry: signals older than MAX_SIGNAL_HOLD_SECONDS are closed at market."""
+
+    def _build_monitor(self, active: Dict[str, Signal]):
+        removed = []
+        sent = []
+
+        async def mock_send(chat_id, text):
+            sent.append((chat_id, text))
+
+        data_store = MagicMock()
+        data_store.get_candles.return_value = None
+        data_store.ticks = {}
+
+        monitor = TradeMonitor(
+            data_store=data_store,
+            send_telegram=mock_send,
+            get_active_signals=lambda: dict(active),
+            remove_signal=lambda sid: removed.append(sid),
+            update_signal=MagicMock(),
+        )
+        return monitor, removed, sent
+
+    @pytest.mark.asyncio
+    async def test_scalp_signal_expired_after_3600s(self):
+        """A SCALP signal older than 3600s must be auto-expired at market price."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            tp1=30150.0,
+            tp2=30300.0,
+            tp3=30450.0,
+            age_seconds=3601.0,  # just over 1 hour
+        )
+        market_price = 30100.0
+        sig.current_price = market_price
+
+        active = {sig.signal_id: sig}
+        monitor, removed, sent = self._build_monitor(active)
+
+        await monitor._evaluate_signal(sig)
+
+        assert sig.signal_id in removed
+        assert sig.status == "EXPIRED"
+        # PnL should reflect the market exit price
+        assert sig.current_price == pytest.approx(market_price)
+
+    @pytest.mark.asyncio
+    async def test_scalp_signal_not_expired_before_3600s(self):
+        """A SCALP signal younger than 3600s must NOT be auto-expired."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            tp1=30150.0,
+            tp2=30300.0,
+            age_seconds=3599.0,  # just under 1 hour
+        )
+        sig.current_price = 30050.0  # price in range (no TP/SL triggered)
+
+        active = {sig.signal_id: sig}
+        monitor, removed, sent = self._build_monitor(active)
+
+        await monitor._evaluate_signal(sig)
+
+        assert sig.signal_id not in removed
+        assert sig.status != "EXPIRED"
+
+    @pytest.mark.asyncio
+    async def test_expiry_records_correct_pnl(self):
+        """On expiry, PnL must be calculated at the current market price."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            tp1=30150.0,
+            tp2=30300.0,
+            age_seconds=3700.0,
+        )
+        market_price = 30200.0  # price moved up, expect positive PnL
+        sig.current_price = market_price
+
+        active = {sig.signal_id: sig}
+        monitor, removed, sent = self._build_monitor(active)
+
+        await monitor._evaluate_signal(sig)
+
+        assert sig.signal_id in removed
+        assert sig.status == "EXPIRED"
+        expected_pnl = (market_price - 30000.0) / 30000.0 * 100.0
+        assert sig.pnl_pct == pytest.approx(expected_pnl, rel=1e-4)
+
+    @pytest.mark.asyncio
+    async def test_expiry_posts_telegram_update(self):
+        """An expired signal must attempt to post a Telegram update with EXPIRED text."""
+        from unittest.mock import AsyncMock, patch
+
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            tp1=30150.0,
+            tp2=30300.0,
+            age_seconds=4000.0,
+        )
+        sig.current_price = 30050.0
+
+        active = {sig.signal_id: sig}
+        monitor, removed, sent = self._build_monitor(active)
+
+        with patch.object(monitor, "_post_update", new_callable=AsyncMock) as mock_post:
+            await monitor._evaluate_signal(sig)
+            mock_post.assert_called_once()
+            # The event argument (second positional arg) must contain "EXPIRED"
+            call_args = mock_post.call_args
+            event_text = call_args[0][1] if call_args[0] else call_args.kwargs.get("event", "")
+            assert "EXPIRED" in event_text

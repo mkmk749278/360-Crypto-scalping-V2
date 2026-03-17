@@ -601,9 +601,36 @@ class Scanner:
             if sig.direction.value == "LONG"
             else (ctx.ind_for_predict.get("momentum_last") or 0) < 0
         )
+
+        # Compute sweep depth percentage for gradient SMC scoring
+        sweep_depth_pct = 0.0
+        if ctx.smc_data["sweeps"]:
+            sweep = ctx.smc_data["sweeps"][0]
+            if hasattr(sweep, "sweep_level") and hasattr(sweep, "close_price"):
+                ref_price = sweep.close_price if sweep.close_price > 0 else max(sig.entry, 1e-8)
+                sweep_depth_pct = abs(sweep.sweep_level - sweep.close_price) / ref_price * 100.0
+
+        # Compute FVG size relative to ATR for gradient SMC scoring
+        fvg_atr_ratio = 0.0
+        if ctx.smc_data["fvg"]:
+            fvg = ctx.smc_data["fvg"][0]
+            if hasattr(fvg, "gap_high") and hasattr(fvg, "gap_low"):
+                fvg_size = abs(fvg.gap_high - fvg.gap_low)
+                atr_val = ctx.ind_for_predict.get("atr_last")
+                if atr_val and atr_val > 0:
+                    fvg_atr_ratio = fvg_size / atr_val
+
         cinp = ConfidenceInput(
-            smc_score=score_smc(has_sweep, has_mss, has_fvg),
-            trend_score=score_trend(ema_aligned, adx_ok, mom_positive),
+            smc_score=score_smc(
+                has_sweep, has_mss, has_fvg,
+                sweep_depth_pct=sweep_depth_pct,
+                fvg_atr_ratio=fvg_atr_ratio,
+            ),
+            trend_score=score_trend(
+                ema_aligned, adx_ok, mom_positive,
+                adx_value=ctx.ind_for_predict.get("adx_last") or 0.0,
+                momentum_strength=ctx.ind_for_predict.get("momentum_last") or 0.0,
+            ),
             ai_sentiment_score=score_ai_sentiment(ctx.ai.get("score", 0)),
             liquidity_score=score_liquidity(volume_24h),
             spread_score=score_spread(ctx.spread_pct),

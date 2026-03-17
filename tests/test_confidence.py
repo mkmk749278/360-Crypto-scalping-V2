@@ -17,24 +17,71 @@ from src.confidence import (
 
 class TestScoreSMC:
     def test_all_present(self):
-        assert score_smc(True, True, True) == 25.0
+        # With no gradient inputs, base scores: sweep=8, mss=9, fvg=2 → 19
+        assert score_smc(True, True, True) == 19.0
 
     def test_none_present(self):
         assert score_smc(False, False, False) == 0.0
 
-    def test_sweep_only(self):
-        assert score_smc(True, False, False) == 12.0
+    def test_sweep_only_no_depth(self):
+        # Base sweep score only (no depth bonus)
+        assert score_smc(True, False, False) == 8.0
 
-    def test_sweep_and_mss(self):
-        assert score_smc(True, True, False) == 21.0
+    def test_sweep_and_mss_no_depth(self):
+        assert score_smc(True, True, False) == 17.0
+
+    def test_sweep_with_full_depth_bonus(self):
+        # sweep_depth_pct=0.5 → full depth bonus (+4), total = 8 + 4 = 12
+        assert score_smc(True, False, False, sweep_depth_pct=0.5) == 12.0
+
+    def test_sweep_with_half_depth_bonus(self):
+        # sweep_depth_pct=0.25 → half depth bonus (+2), total = 8 + 2 = 10
+        assert score_smc(True, False, False, sweep_depth_pct=0.25) == pytest.approx(10.0)
+
+    def test_fvg_with_atr_ratio_bonus(self):
+        # fvg_atr_ratio=1.5 → full size bonus (+2), base 2 + 2 = 4
+        assert score_smc(False, False, True, fvg_atr_ratio=1.5) == pytest.approx(4.0)
+
+    def test_all_max_gradient(self):
+        # sweep: 8+4=12, mss: 9, fvg: 2+2=4 → 25, capped at 25
+        assert score_smc(True, True, True, sweep_depth_pct=0.5, fvg_atr_ratio=1.5) == 25.0
+
+    def test_backward_compat_no_gradient_params(self):
+        # Old 3-arg call signature still works
+        assert score_smc(True, True, True) == 19.0
 
 
 class TestScoreTrend:
-    def test_all_positive(self):
-        assert score_trend(True, True, True) == 20.0
+    def test_all_positive_base_only(self):
+        # With no gradient inputs: ema=8, adx base=3, mom base=2 → 13
+        assert score_trend(True, True, True) == 13.0
 
     def test_none(self):
         assert score_trend(False, False, False) == 0.0
+
+    def test_with_adx_at_20_no_bonus(self):
+        # ADX=20 → adx_bonus = 0, base only → ema=8, adx=3, mom=2 → 13
+        assert score_trend(True, True, True, adx_value=20.0) == pytest.approx(13.0)
+
+    def test_with_adx_at_40_full_bonus(self):
+        # ADX=40 → adx_bonus = 4, ema=8, adx=3+4=7, mom=2 → 17
+        assert score_trend(True, True, True, adx_value=40.0) == pytest.approx(17.0)
+
+    def test_with_momentum_strength_full_bonus(self):
+        # momentum_strength=1.0 → mom_bonus=3, ema=8, adx=3 (no adx_value), mom=2+3=5 → 16
+        assert score_trend(True, True, True, momentum_strength=1.0) == pytest.approx(16.0)
+
+    def test_negative_momentum_strength_same_bonus(self):
+        # abs(-1.0) = 1.0 → same bonus as +1.0 (useful for SHORT signals)
+        assert score_trend(True, True, True, momentum_strength=-1.0) == pytest.approx(16.0)
+
+    def test_all_max_gradient(self):
+        # ema=8, adx=3+4=7, mom=2+3=5 → 20
+        assert score_trend(True, True, True, adx_value=40.0, momentum_strength=1.0) == pytest.approx(20.0)
+
+    def test_backward_compat_no_gradient_params(self):
+        # Old 3-arg call signature still works
+        assert score_trend(True, True, True) == 13.0
 
 
 class TestScoreAISentiment:

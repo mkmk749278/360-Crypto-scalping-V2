@@ -25,6 +25,7 @@ from config import (
     TELEGRAM_FREE_CHANNEL_ID,
 )
 from src.channels.base import Signal
+from src.correlation import check_correlation_limit
 from src.risk import RiskManager
 from src.smc import Direction
 from src.utils import get_logger
@@ -139,6 +140,23 @@ class SignalRouter:
                 "Global position cap reached ({}/{}) – {} {} blocked",
                 len(self._active_signals), MAX_CONCURRENT_SIGNALS,
                 signal.symbol, signal.direction.value,
+            )
+            return
+
+        # Correlation-aware position limiting
+        active_positions = {
+            sid: (s.symbol, s.direction.value)
+            for sid, s in self._active_signals.items()
+        }
+        corr_allowed, corr_reason = check_correlation_limit(
+            symbol=signal.symbol,
+            direction=signal.direction.value,
+            active_positions=active_positions,
+        )
+        if not corr_allowed:
+            log.info(
+                "Blocked {} {} – {}",
+                signal.symbol, signal.direction.value, corr_reason,
             )
             return
 

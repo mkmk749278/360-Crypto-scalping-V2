@@ -352,11 +352,15 @@ class Backtester:
             total = result.wins + result.losses
             result.win_rate = result.wins / total * 100.0 if total > 0 else 0.0
             result.total_pnl_pct = sum(pnl_history)
-            result.avg_rr = (
-                sum(p for p in pnl_history if p > 0) / result.wins
-                if result.wins > 0
-                else 0.0
-            )
+            # Proper avg R:R: average win / average loss magnitude
+            if result.wins > 0 and result.losses > 0:
+                avg_win = sum(p for p in pnl_history if p > 0) / result.wins
+                avg_loss = sum(abs(p) for p in pnl_history if p <= 0) / result.losses
+                result.avg_rr = avg_win / avg_loss if avg_loss > 0 else 0.0
+            elif result.wins > 0:
+                result.avg_rr = float("inf")
+            else:
+                result.avg_rr = 0.0
             result.best_trade = max(pnl_history) if pnl_history else 0.0
             result.worst_trade = min(pnl_history) if pnl_history else 0.0
 
