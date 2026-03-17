@@ -41,10 +41,16 @@ class BacktestResult:
     total_pnl_pct: float = 0.0
     best_trade: float = 0.0
     worst_trade: float = 0.0
+    slippage_pct: float = 0.0
     signal_details: List[Dict] = field(default_factory=list)
 
     def summary(self) -> str:
         """Return a human-readable summary."""
+        slippage_note = (
+            f"\nSlippage Assumption: {self.slippage_pct:.4f}%/trade"
+            if self.slippage_pct > 0
+            else ""
+        )
         return (
             f"Backtest: {self.channel}\n"
             f"Signals: {self.total_signals} | Wins: {self.wins} | Losses: {self.losses}\n"
@@ -53,6 +59,7 @@ class BacktestResult:
             f"Total PnL: {self.total_pnl_pct:+.2f}%\n"
             f"Max Drawdown: {self.max_drawdown:.2f}%\n"
             f"Best: {self.best_trade:+.2f}% | Worst: {self.worst_trade:+.2f}%"
+            f"{slippage_note}"
         )
 
 
@@ -97,6 +104,7 @@ def _simulate_trade(
     future_candles: Dict,
     sl_multiplier: float = 1.0,
     fee_pct: float = 0.0,
+    slippage_pct: float = 0.0,
 ) -> Tuple[bool, float, int]:
     """Simulate a signal against future price data.
 
@@ -112,12 +120,18 @@ def _simulate_trade(
         Round-trip fee percentage (entry + exit) deducted from PnL.
         E.g. ``0.08`` deducts 0.08 % for a typical Binance maker/taker
         round-trip.  Defaults to ``0.0`` (no fees) for backward compatibility.
+    slippage_pct:
+        Per-trade slippage percentage applied to the fill price at SL/TP.
+        Slippage is always adverse: for a LONG SL the actual fill is *below*
+        the stop level; for a SHORT SL it is *above*.  Similarly, TP fills
+        receive a slight haircut in the unfavourable direction.
+        Defaults to ``0.0`` (no slippage) for backward compatibility.
 
     Returns
     -------
     (won, pnl_pct, tp_level_hit)
         ``won`` is True if TP1 was hit before SL.
-        ``pnl_pct`` is the estimated PnL percentage (net of fees).
+        ``pnl_pct`` is the estimated PnL percentage (net of fees and slippage).
         ``tp_level_hit`` is 0 (SL), 1 (TP1), 2 (TP2), or 3 (TP3).
     """
     highs = future_candles.get("high", np.array([]))
@@ -128,6 +142,7 @@ def _simulate_trade(
 
     is_long = signal.direction.value == "LONG"
     sl = signal.stop_loss * sl_multiplier
+    slip = slippage_pct / 100.0  # fraction
     targets = [signal.tp1, signal.tp2]
     if signal.tp3 is not None:
         targets.append(signal.tp3)
@@ -137,19 +152,27 @@ def _simulate_trade(
 
         if is_long:
             if lo <= sl:
-                pnl = (sl - signal.entry) / signal.entry * 100.0 - fee_pct
+                # SL hit – fill below the stop level (adverse slippage)
+                fill = sl * (1.0 - slip)
+                pnl = (fill - signal.entry) / signal.entry * 100.0 - fee_pct
                 return False, pnl, 0
             for level_idx, tp in enumerate(targets, start=1):
                 if h >= tp:
-                    pnl = (tp - signal.entry) / signal.entry * 100.0 - fee_pct
+                    # TP hit – fill slightly below the target level (adverse slippage)
+                    fill = tp * (1.0 - slip)
+                    pnl = (fill - signal.entry) / signal.entry * 100.0 - fee_pct
                     return True, pnl, level_idx
         else:
             if h >= sl:
-                pnl = (signal.entry - sl) / signal.entry * 100.0 - fee_pct
+                # SL hit – fill above the stop level (adverse slippage)
+                fill = sl * (1.0 + slip)
+                pnl = (signal.entry - fill) / signal.entry * 100.0 - fee_pct
                 return False, -abs(pnl), 0
             for level_idx, tp in enumerate(targets, start=1):
                 if lo <= tp:
-                    pnl = (signal.entry - tp) / signal.entry * 100.0 - fee_pct
+                    # TP hit – fill slightly above the target level (adverse slippage)
+                    fill = tp * (1.0 + slip)
+                    pnl = (signal.entry - fill) / signal.entry * 100.0 - fee_pct
                     return True, pnl, level_idx
 
     # No TP or SL hit in the lookahead window
@@ -178,6 +201,11 @@ class Backtester:
         Defaults to ``0.0`` (no fees).  Set to e.g. ``0.08`` to model a
         typical Binance maker/taker round-trip and obtain more realistic
         backtest results, especially for scalping strategies.
+    slippage_pct:
+        Per-trade slippage percentage applied adversely to every SL/TP fill.
+        Defaults to ``0.0`` (no slippage).  Set to e.g. ``0.03`` (the default
+        ``BACKTEST_SLIPPAGE_PCT`` from config) for a realistic model of spread
+        + market-impact on tight SL levels.
     """
 
     def __init__(
@@ -186,6 +214,7 @@ class Backtester:
         lookahead_candles: int = 20,
         min_window: int = 50,
         fee_pct: float = 0.0,
+        slippage_pct: float = 0.0,
     ) -> None:
         if channels is None:
             channels = [
@@ -199,6 +228,7 @@ class Backtester:
         self._min_window = min_window
         self._smc_detector = SMCDetector()
         self._fee_pct = fee_pct
+        self._slippage_pct = slippage_pct
 
     def run(
         self,
@@ -264,7 +294,7 @@ class Backtester:
         simulated_ai_score: float = 0.0,
     ) -> BacktestResult:
         """Run a single channel backtest across all candle windows."""
-        result = BacktestResult(channel=channel.config.name)
+        result = BacktestResult(channel=channel.config.name, slippage_pct=self._slippage_pct)
         pnl_history: List[float] = []
 
         # Use the primary timeframe for the channel
@@ -330,7 +360,9 @@ class Backtester:
             for k, v in primary_candles.items():
                 if hasattr(v, "__getitem__"):
                     future[k] = v[i: i + self._lookahead]
-            won, pnl, tp_level = _simulate_trade(sig, future, fee_pct=self._fee_pct)
+            won, pnl, tp_level = _simulate_trade(
+                sig, future, fee_pct=self._fee_pct, slippage_pct=self._slippage_pct
+            )
 
             result.total_signals += 1
             if won:

@@ -1,13 +1,22 @@
 """Tests for src.signal_router – queue-based signal routing."""
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
 import src.signal_router as signal_router_module
 from src.channels.base import Signal
-from src.signal_router import SignalRouter
+from src.signal_router import (
+    SignalRouter,
+    _signal_from_dict,
+    _signal_to_dict,
+    _REDIS_KEY_SIGNALS,
+    _REDIS_KEY_POSITION_LOCK,
+    _REDIS_KEY_COOLDOWNS,
+)
 from src.smc import Direction
 from src.utils import utcnow
 
@@ -455,3 +464,184 @@ class TestSignalRouter:
         await router.publish_free_signals()
 
         assert sent_messages == []
+
+
+def _make_mock_redis(stored: dict):
+    """Build a fake RedisClient that stores/retrieves from `stored` dict."""
+    mock_redis = MagicMock()
+    mock_redis.available = True
+
+    async def fake_get(key):
+        return stored.get(key)
+
+    async def fake_set(key, value):
+        stored[key] = value
+
+    mock_client = MagicMock()
+    mock_client.get = fake_get
+    mock_client.set = fake_set
+    mock_redis.client = mock_client
+    return mock_redis
+
+
+class TestSignalToDict:
+    """_signal_to_dict must produce a JSON-serializable, reversible dict."""
+
+    def test_direction_is_string(self):
+        sig = _make_signal()
+        d = _signal_to_dict(sig)
+        assert isinstance(d["direction"], str)
+        assert d["direction"] == "LONG"
+
+    def test_timestamp_is_isoformat(self):
+        sig = _make_signal()
+        d = _signal_to_dict(sig)
+        assert isinstance(d["timestamp"], str)
+        # Must be valid ISO format
+        datetime.fromisoformat(d["timestamp"])
+
+    def test_roundtrip_via_signal_from_dict(self):
+        sig = _make_signal(symbol="ETHUSDT", confidence=88)
+        d = _signal_to_dict(sig)
+        restored = _signal_from_dict(d)
+        assert restored is not None
+        assert restored.symbol == sig.symbol
+        assert restored.confidence == sig.confidence
+        assert restored.direction == sig.direction
+
+    def test_json_serializable(self):
+        sig = _make_signal()
+        d = _signal_to_dict(sig)
+        # Must not raise
+        json.dumps(d)
+
+
+class TestRedisPersistence:
+    """SignalRouter must persist and restore state via RedisClient."""
+
+    def _make_router(self, redis_store: dict):
+        mock_redis = _make_mock_redis(redis_store)
+
+        async def mock_send(chat_id: str, text: str):
+            return True
+
+        router = SignalRouter(
+            queue=asyncio.Queue(),
+            send_telegram=mock_send,
+            format_signal=lambda sig: f"Signal: {sig.signal_id}",
+            redis_client=mock_redis,
+        )
+        return router
+
+    @pytest.mark.asyncio
+    async def test_persist_state_saves_active_signals(self):
+        """_persist_state must write active signals, position lock, and cooldowns to Redis."""
+        store: dict = {}
+        router = self._make_router(store)
+
+        sig = _make_signal(symbol="BTCUSDT", confidence=90)
+        router._active_signals[sig.signal_id] = sig
+        router._position_lock[sig.symbol] = sig.direction
+
+        await router._persist_state()
+
+        assert _REDIS_KEY_SIGNALS in store
+        saved = json.loads(store[_REDIS_KEY_SIGNALS])
+        assert sig.signal_id in saved
+        assert _REDIS_KEY_POSITION_LOCK in store
+        lock = json.loads(store[_REDIS_KEY_POSITION_LOCK])
+        assert lock.get("BTCUSDT") == "LONG"
+
+    @pytest.mark.asyncio
+    async def test_restore_reloads_active_signals(self):
+        """restore() must load previously persisted signals back into memory."""
+        sig = _make_signal(symbol="SOLUSDT", confidence=82)
+        store: dict = {
+            _REDIS_KEY_SIGNALS: json.dumps({sig.signal_id: _signal_to_dict(sig)}),
+            _REDIS_KEY_POSITION_LOCK: json.dumps({"SOLUSDT": "LONG"}),
+            _REDIS_KEY_COOLDOWNS: json.dumps({}),
+        }
+        router = self._make_router(store)
+        await router.restore()
+
+        assert sig.signal_id in router._active_signals
+        assert router._position_lock.get("SOLUSDT") == Direction.LONG
+
+    @pytest.mark.asyncio
+    async def test_restore_reloads_cooldown_timestamps(self):
+        """restore() must reload cooldown timestamps with proper tuple keys."""
+        ts = datetime.now(timezone.utc)
+        store: dict = {
+            _REDIS_KEY_SIGNALS: json.dumps({}),
+            _REDIS_KEY_POSITION_LOCK: json.dumps({}),
+            _REDIS_KEY_COOLDOWNS: json.dumps({"ADAUSDT|360_SCALP": ts.isoformat()}),
+        }
+        router = self._make_router(store)
+        await router.restore()
+
+        assert ("ADAUSDT", "360_SCALP") in router._cooldown_timestamps
+
+    @pytest.mark.asyncio
+    async def test_persist_called_on_remove_signal(self):
+        """remove_signal() must schedule a Redis persist."""
+        store: dict = {}
+        router = self._make_router(store)
+
+        sig = _make_signal()
+        router._active_signals[sig.signal_id] = sig
+        router._position_lock[sig.symbol] = sig.direction
+
+        router.remove_signal(sig.signal_id)
+        # Flush pending tasks
+        await asyncio.sleep(0)
+
+        assert sig.signal_id not in router._active_signals
+        # Persistence must have fired (signals key updated)
+        assert _REDIS_KEY_SIGNALS in store
+
+    @pytest.mark.asyncio
+    async def test_persist_called_on_update_signal(self):
+        """update_signal() must schedule a Redis persist."""
+        store: dict = {}
+        router = self._make_router(store)
+
+        sig = _make_signal()
+        router._active_signals[sig.signal_id] = sig
+
+        router.update_signal(sig.signal_id, status="TP1_HIT")
+        # Flush pending tasks
+        await asyncio.sleep(0)
+
+        assert router._active_signals[sig.signal_id].status == "TP1_HIT"
+        assert _REDIS_KEY_SIGNALS in store
+
+    @pytest.mark.asyncio
+    async def test_no_redis_skips_persist(self):
+        """When no redis_client is provided, _persist_state must be a no-op."""
+        async def mock_send(chat_id: str, text: str):
+            return True
+
+        router = SignalRouter(
+            queue=asyncio.Queue(),
+            send_telegram=mock_send,
+            format_signal=lambda sig: f"Signal: {sig.signal_id}",
+            redis_client=None,
+        )
+        # Must not raise
+        await router._persist_state()
+
+    @pytest.mark.asyncio
+    async def test_no_redis_skips_restore(self):
+        """When no redis_client is provided, restore() must be a no-op."""
+        async def mock_send(chat_id: str, text: str):
+            return True
+
+        router = SignalRouter(
+            queue=asyncio.Queue(),
+            send_telegram=mock_send,
+            format_signal=lambda sig: f"Signal: {sig.signal_id}",
+            redis_client=None,
+        )
+        # Must not raise and must leave state empty
+        await router.restore()
+        assert router._active_signals == {}

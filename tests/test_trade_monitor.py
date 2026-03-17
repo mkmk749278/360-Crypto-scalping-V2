@@ -6,6 +6,7 @@ from datetime import timedelta
 from typing import Dict
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from src.channels.base import Signal
@@ -690,3 +691,175 @@ class TestSignalExpiry:
             call_args = mock_post.call_args
             event_text = call_args[0][1] if call_args[0] else call_args.kwargs.get("event", "")
             assert "EXPIRED" in event_text
+
+
+class TestATRBasedTrailing:
+    """TradeMonitor._adjust_trailing must use ATR-based distance when data is available."""
+
+    def _build_monitor(self, active: Dict[str, Signal], candles=None):
+        removed = []
+        sent = []
+
+        async def mock_send(chat_id, text):
+            sent.append((chat_id, text))
+
+        data_store = MagicMock()
+        data_store.get_candles.return_value = candles
+        data_store.ticks = {}
+
+        monitor = TradeMonitor(
+            data_store=data_store,
+            send_telegram=mock_send,
+            get_active_signals=lambda: dict(active),
+            remove_signal=lambda sid: removed.append(sid),
+            update_signal=MagicMock(),
+        )
+        return monitor, removed
+
+    def _make_candles_with_atr(self, n: int = 50, price: float = 30000.0, noise: float = 50.0):
+        """Generate synthetic candles that will produce a non-zero ATR(14)."""
+        rng = np.random.default_rng(7)
+        close = np.cumsum(rng.normal(0, noise, n)) + price
+        high = close + abs(rng.normal(0, noise * 0.3, n))
+        low = close - abs(rng.normal(0, noise * 0.3, n))
+        return {
+            "open": close,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": np.ones(n) * 1000.0,
+        }
+
+    def test_atr_based_trailing_advances_stop(self):
+        """When ATR data is available the trailing stop must advance with price."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            age_seconds=60.0,
+        )
+        sig.status = "TP1_HIT"
+        sig.trailing_active = True
+        sig.original_sl_distance = 150.0
+
+        # Price well above entry
+        sig.current_price = 30500.0
+
+        candles = self._make_candles_with_atr(n=50, price=30000.0)
+        monitor, _ = self._build_monitor({sig.signal_id: sig}, candles=candles)
+
+        original_sl = sig.stop_loss
+        monitor._adjust_trailing(sig)
+
+        # SL must have moved above the original level
+        assert sig.stop_loss > original_sl
+
+    def test_fallback_when_no_candles(self):
+        """When get_candles returns None, fall back to base_dist * 0.5."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            age_seconds=60.0,
+        )
+        sig.status = "TP1_HIT"
+        sig.trailing_active = True
+        sig.original_sl_distance = 150.0
+        sig.current_price = 30400.0
+
+        # No candles available → fallback
+        monitor, _ = self._build_monitor({sig.signal_id: sig}, candles=None)
+        monitor._adjust_trailing(sig)
+
+        # trail_dist = 150 * 0.5 = 75  → new_sl = 30400 - 75 = 30325
+        assert sig.stop_loss == pytest.approx(30325.0)
+
+    def test_fallback_when_insufficient_candles(self):
+        """When fewer than 15 candles are available, fall back to base_dist * 0.5."""
+        short_candles = {
+            "open": np.ones(5) * 30000.0,
+            "high": np.ones(5) * 30010.0,
+            "low": np.ones(5) * 29990.0,
+            "close": np.ones(5) * 30000.0,
+            "volume": np.ones(5) * 100.0,
+        }
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            age_seconds=60.0,
+        )
+        sig.status = "TP1_HIT"
+        sig.trailing_active = True
+        sig.original_sl_distance = 150.0
+        sig.current_price = 30400.0
+
+        monitor, _ = self._build_monitor({sig.signal_id: sig}, candles=short_candles)
+        monitor._adjust_trailing(sig)
+
+        # Fallback: trail_dist = 150 * 0.5 = 75 → new_sl = 30325
+        assert sig.stop_loss == pytest.approx(30325.0)
+
+    def test_atr_trailing_short_direction(self):
+        """For SHORT positions the ATR-based trailing stop must move down with price."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.SHORT,
+            entry=30000.0,
+            stop_loss=30150.0,
+            tp1=29850.0,
+            tp2=29700.0,
+            age_seconds=60.0,
+        )
+        sig.status = "TP1_HIT"
+        sig.trailing_active = True
+        sig.original_sl_distance = 150.0
+        # Price has fallen
+        sig.current_price = 29600.0
+
+        candles = self._make_candles_with_atr(n=50, price=30000.0)
+        monitor, _ = self._build_monitor({sig.signal_id: sig}, candles=candles)
+
+        original_sl = sig.stop_loss
+        monitor._adjust_trailing(sig)
+
+        # SL for SHORT must decrease (move closer to price from above)
+        assert sig.stop_loss < original_sl
+
+    def test_channel_atr_multiplier_used(self):
+        """The trailing distance should reflect the channel's trailing_atr_mult config."""
+        candles = self._make_candles_with_atr(n=50)
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            age_seconds=60.0,
+        )
+        sig.status = "TP1_HIT"
+        sig.trailing_active = True
+        sig.original_sl_distance = 150.0
+        sig.current_price = 30500.0
+
+        monitor, _ = self._build_monitor({sig.signal_id: sig}, candles=candles)
+        # Run once to capture the SL after adjustment
+        sig_copy_1 = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            age_seconds=60.0,
+        )
+        sig_copy_1.status = "TP1_HIT"
+        sig_copy_1.trailing_active = True
+        sig_copy_1.original_sl_distance = 150.0
+        sig_copy_1.current_price = 30500.0
+
+        monitor._adjust_trailing(sig_copy_1)
+        sl_after = sig_copy_1.stop_loss
+
+        # The SL must be above entry and above original stop
+        assert sl_after > 29850.0

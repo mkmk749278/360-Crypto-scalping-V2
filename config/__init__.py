@@ -290,6 +290,16 @@ MAX_SIGNAL_HOLD_SECONDS: Dict[str, int] = {
 MAX_CONCURRENT_SIGNALS: int = 5
 
 # ---------------------------------------------------------------------------
+# Backtester – default slippage per trade (percent, e.g. 0.03 = 0.03 %)
+# ---------------------------------------------------------------------------
+BACKTEST_SLIPPAGE_PCT: float = float(os.getenv("BACKTEST_SLIPPAGE_PCT", "0.03"))
+
+# ---------------------------------------------------------------------------
+# Trailing stop – ATR multiplier for adaptive trailing distance
+# ---------------------------------------------------------------------------
+TRAILING_ATR_MULTIPLIER: float = float(os.getenv("TRAILING_ATR_MULTIPLIER", "1.5"))
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

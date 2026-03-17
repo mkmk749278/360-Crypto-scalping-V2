@@ -236,3 +236,122 @@ class TestFeeDeduction:
         results = bt.run(candles_by_tf, channel_name="360_SCALP", simulated_ai_score=-0.5)
         assert isinstance(results, list)
         assert len(results) == 1
+
+
+class TestSlippageModel:
+    """Slippage must be applied adversely to every SL/TP fill price."""
+
+    def _fake_signal(self, direction="LONG", entry=100.0, sl=99.0, tp1=101.0, tp2=102.0):
+        class _FakeDir:
+            value = direction
+
+        class _FakeSig:
+            pass
+
+        s = _FakeSig()
+        s.direction = _FakeDir()
+        s.entry = entry
+        s.stop_loss = sl
+        s.tp1 = tp1
+        s.tp2 = tp2
+        s.tp3 = None
+        return s
+
+    def test_long_sl_fill_below_stop_level(self):
+        """LONG SL fill must be below the nominal stop level (adverse slippage)."""
+        sig = self._fake_signal("LONG", entry=100.0, sl=99.0, tp1=101.0)
+        future = {
+            "high": np.array([100.5]),
+            "low": np.array([98.5]),  # below SL
+            "close": np.array([99.0]),
+        }
+        # Without slippage
+        _, pnl_no_slip, _ = _simulate_trade(sig, future, slippage_pct=0.0)
+        # With slippage = 0.1 % → fill at 99.0 * (1 - 0.001) = 98.901
+        _, pnl_with_slip, _ = _simulate_trade(sig, future, slippage_pct=0.1)
+        # Slippage makes the loss WORSE (more negative PnL)
+        assert pnl_with_slip < pnl_no_slip
+
+    def test_short_sl_fill_above_stop_level(self):
+        """SHORT SL fill must be above the nominal stop level (adverse slippage)."""
+        sig = self._fake_signal("SHORT", entry=100.0, sl=101.0, tp1=99.0)
+        future = {
+            "high": np.array([101.5]),  # above SL
+            "low": np.array([100.0]),
+            "close": np.array([101.0]),
+        }
+        _, pnl_no_slip, _ = _simulate_trade(sig, future, slippage_pct=0.0)
+        _, pnl_with_slip, _ = _simulate_trade(sig, future, slippage_pct=0.1)
+        assert pnl_with_slip < pnl_no_slip
+
+    def test_long_tp_fill_below_target(self):
+        """LONG TP fill must be slightly below the target (adverse slippage)."""
+        sig = self._fake_signal("LONG", entry=100.0, sl=99.0, tp1=101.0)
+        future = {
+            "high": np.array([101.5]),
+            "low": np.array([100.0]),
+            "close": np.array([101.5]),
+        }
+        _, pnl_no_slip, _ = _simulate_trade(sig, future, slippage_pct=0.0)
+        _, pnl_with_slip, _ = _simulate_trade(sig, future, slippage_pct=0.1)
+        # TP PnL is slightly reduced by slippage
+        assert pnl_with_slip < pnl_no_slip
+
+    def test_short_tp_fill_above_target(self):
+        """SHORT TP fill must be slightly above the target (adverse slippage)."""
+        sig = self._fake_signal("SHORT", entry=100.0, sl=101.0, tp1=99.0, tp2=98.0)
+        future = {
+            "high": np.array([100.0]),
+            "low": np.array([98.5]),  # below tp1
+            "close": np.array([99.0]),
+        }
+        _, pnl_no_slip, _ = _simulate_trade(sig, future, slippage_pct=0.0)
+        _, pnl_with_slip, _ = _simulate_trade(sig, future, slippage_pct=0.1)
+        assert pnl_with_slip < pnl_no_slip
+
+    def test_zero_slippage_matches_original_behavior(self):
+        """With slippage_pct=0 the result must match the no-slippage path exactly."""
+        sig = self._fake_signal("LONG", entry=100.0, sl=99.0, tp1=101.0)
+        future = {
+            "high": np.array([101.5]),
+            "low": np.array([99.5]),
+            "close": np.array([101.5]),
+        }
+        won_a, pnl_a, lvl_a = _simulate_trade(sig, future)
+        won_b, pnl_b, lvl_b = _simulate_trade(sig, future, slippage_pct=0.0)
+        assert won_a == won_b
+        assert pnl_a == pytest.approx(pnl_b)
+        assert lvl_a == lvl_b
+
+    def test_backtester_slippage_reduces_pnl(self):
+        """Backtester with slippage_pct set must produce lower PnL than without."""
+        candles = _make_candles(n=200, trend=0.5)
+        candles_by_tf = {"5m": candles, "1m": candles}
+
+        bt_no_slip = Backtester(
+            channels=[ScalpChannel()], min_window=30, lookahead_candles=10, slippage_pct=0.0
+        )
+        bt_with_slip = Backtester(
+            channels=[ScalpChannel()], min_window=30, lookahead_candles=10, slippage_pct=0.03
+        )
+
+        res_no = bt_no_slip.run(candles_by_tf, channel_name="360_SCALP")
+        res_with = bt_with_slip.run(candles_by_tf, channel_name="360_SCALP")
+
+        if res_no[0].total_signals > 0:
+            assert res_with[0].total_pnl_pct <= res_no[0].total_pnl_pct
+
+    def test_backtest_result_slippage_stored(self):
+        """BacktestResult must expose the slippage_pct used."""
+        r = BacktestResult(channel="TEST", slippage_pct=0.03)
+        assert r.slippage_pct == pytest.approx(0.03)
+
+    def test_backtest_result_summary_shows_slippage(self):
+        """summary() must mention slippage when slippage_pct > 0."""
+        r = BacktestResult(channel="TEST", slippage_pct=0.03)
+        assert "Slippage" in r.summary()
+
+    def test_backtest_result_summary_no_slippage_note_when_zero(self):
+        """summary() must NOT mention slippage when slippage_pct == 0."""
+        r = BacktestResult(channel="TEST", slippage_pct=0.0)
+        assert "Slippage" not in r.summary()

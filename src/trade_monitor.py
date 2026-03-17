@@ -7,11 +7,20 @@ updating status, PnL, trailing stop, and posting updates to Telegram.
 from __future__ import annotations
 
 import asyncio
+import numpy as np
 from typing import Any, Callable, Coroutine, Dict, Optional
 
-from config import CHANNEL_TELEGRAM_MAP, MIN_SIGNAL_LIFESPAN_SECONDS, MAX_SIGNAL_HOLD_SECONDS, MONITOR_POLL_INTERVAL
+from config import (
+    ALL_CHANNELS,
+    CHANNEL_TELEGRAM_MAP,
+    MAX_SIGNAL_HOLD_SECONDS,
+    MIN_SIGNAL_LIFESPAN_SECONDS,
+    MONITOR_POLL_INTERVAL,
+    TRAILING_ATR_MULTIPLIER,
+)
 from src.channels.base import Signal
 from src.historical_data import HistoricalDataStore
+from src.indicators import atr as _compute_atr
 from src.performance_metrics import calculate_trade_pnl_pct, classify_trade_outcome
 from src.smc import Direction
 from src.utils import fmt_price, fmt_ts, get_logger, utcnow
@@ -290,13 +299,51 @@ class TradeMonitor:
             self._adjust_trailing(sig)
 
     def _adjust_trailing(self, sig: Signal) -> None:
-        """Move the trailing stop behind the price."""
+        """Move the trailing stop behind the price using an ATR-based distance.
+
+        The trailing distance is ``atr_value * atr_multiplier`` where
+        ``atr_multiplier`` comes from the channel's ``trailing_atr_mult``
+        config field (or the global ``TRAILING_ATR_MULTIPLIER`` constant when
+        the channel config cannot be found).
+
+        Falls back to ``original_sl_distance * 0.5`` when ATR data is
+        unavailable (e.g. candles not yet loaded for this symbol).
+        """
         price = sig.current_price
         # Use the original SL distance (stored at signal creation) so that the
         # trailing buffer doesn't collapse to zero after TP2 moves SL to break-even.
         # Fall back to the live distance only for legacy signals where the field is unset.
         base_dist = sig.original_sl_distance or abs(sig.entry - sig.stop_loss)
-        trail_dist = base_dist * 0.5
+
+        # ------------------------------------------------------------------
+        # Attempt ATR-based trailing distance
+        # ------------------------------------------------------------------
+        trail_dist: Optional[float] = None
+        candles = self._store.get_candles(sig.symbol, "1m")
+        if candles is not None and len(candles.get("close", [])) >= 15:
+            try:
+                highs = np.asarray(candles["high"], dtype=np.float64)
+                lows = np.asarray(candles["low"], dtype=np.float64)
+                closes = np.asarray(candles["close"], dtype=np.float64)
+                atr_arr = _compute_atr(highs, lows, closes, 14)
+                valid = atr_arr[~np.isnan(atr_arr)]
+                if len(valid) > 0:
+                    atr_value = float(valid[-1])
+                    # Use per-channel multiplier when available, otherwise the global default
+                    chan_cfg = next(
+                        (c for c in ALL_CHANNELS if c.name == sig.channel), None
+                    )
+                    atr_mult = (
+                        chan_cfg.trailing_atr_mult if chan_cfg is not None else TRAILING_ATR_MULTIPLIER
+                    )
+                    trail_dist = atr_value * atr_mult
+            except Exception:
+                trail_dist = None
+
+        # Fall back to fixed 50 % of original SL distance when ATR is unavailable
+        if trail_dist is None:
+            trail_dist = base_dist * 0.5
+
         if sig.direction == Direction.LONG:
             new_sl = price - trail_dist
             if new_sl > sig.stop_loss:

@@ -13,7 +13,9 @@ The router:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
+import json
 from datetime import datetime, timezone
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
 
@@ -26,6 +28,7 @@ from config import (
 )
 from src.channels.base import Signal
 from src.correlation import check_correlation_limit
+from src.redis_client import RedisClient
 from src.risk import RiskManager
 from src.smc import Direction
 from src.utils import get_logger
@@ -47,6 +50,20 @@ def _signal_from_dict(data: dict) -> Optional[Signal]:
         return None
 
 
+def _signal_to_dict(sig: Signal) -> dict:
+    """Serialize a Signal to a JSON-serializable dict."""
+    d = dataclasses.asdict(sig)
+    d["direction"] = sig.direction.value  # Direction enum → string
+    d["timestamp"] = sig.timestamp.isoformat()  # datetime → ISO string
+    return d
+
+
+# Redis keys used for state persistence
+_REDIS_KEY_SIGNALS = "signal_router:active_signals"
+_REDIS_KEY_POSITION_LOCK = "signal_router:position_lock"
+_REDIS_KEY_COOLDOWNS = "signal_router:cooldown_timestamps"
+
+
 class SignalRouter:
     """Consumes signals from a queue, scores, filters, and dispatches."""
 
@@ -55,10 +72,12 @@ class SignalRouter:
         queue: Any,
         send_telegram: Callable[[str, str], Coroutine],
         format_signal: Callable[[Signal], str],
+        redis_client: Optional[RedisClient] = None,
     ) -> None:
         self._queue = queue
         self._send_telegram = send_telegram
         self._format_signal = format_signal
+        self._redis = redis_client
         self._active_signals: Dict[str, Signal] = {}
         self._daily_best: List[Signal] = []  # for free channel
         self._position_lock: Dict[str, Direction] = {}  # symbol → direction
@@ -73,6 +92,99 @@ class SignalRouter:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    async def restore(self) -> None:
+        """Reload active state from Redis after a process restart.
+
+        Should be called once before :meth:`start` to resume monitoring of
+        any signals that were active when the process last exited.
+        """
+        if self._redis is None or not self._redis.available:
+            return
+        try:
+            client = self._redis.client
+            if client is None:
+                return
+            # Restore active signals
+            raw = await client.get(_REDIS_KEY_SIGNALS)
+            if raw:
+                signals_data: Dict[str, Any] = json.loads(raw)
+                for sid, data in signals_data.items():
+                    sig = _signal_from_dict(data)
+                    if sig is not None:
+                        self._active_signals[sid] = sig
+                log.info(
+                    "Restored {} active signal(s) from Redis",
+                    len(self._active_signals),
+                )
+
+            # Restore position lock
+            raw = await client.get(_REDIS_KEY_POSITION_LOCK)
+            if raw:
+                lock_data: Dict[str, str] = json.loads(raw)
+                for sym, dir_str in lock_data.items():
+                    try:
+                        self._position_lock[sym] = Direction(dir_str)
+                    except ValueError:
+                        log.warning("Unknown direction '{}' for symbol {} – skipped", dir_str, sym)
+
+            # Restore cooldown timestamps
+            raw = await client.get(_REDIS_KEY_COOLDOWNS)
+            if raw:
+                cooldown_data: Dict[str, str] = json.loads(raw)
+                for key, ts_str in cooldown_data.items():
+                    parts = key.split("|", 1)
+                    if len(parts) == 2:
+                        sym, chan = parts
+                        self._cooldown_timestamps[(sym, chan)] = datetime.fromisoformat(ts_str)
+                log.info(
+                    "Restored {} cooldown timestamp(s) from Redis",
+                    len(self._cooldown_timestamps),
+                )
+        except Exception as exc:
+            log.warning("Failed to restore state from Redis: {}", exc)
+
+    async def _persist_state(self) -> None:
+        """Serialize and save active router state to Redis.
+
+        Persists :attr:`_active_signals`, :attr:`_position_lock`, and
+        :attr:`_cooldown_timestamps` so that state can be restored after a
+        process restart via :meth:`restore`.
+        """
+        if self._redis is None or not self._redis.available:
+            return
+        try:
+            client = self._redis.client
+            if client is None:
+                return
+            # Persist active signals
+            signals_payload = {
+                sid: _signal_to_dict(sig)
+                for sid, sig in self._active_signals.items()
+            }
+            await client.set(_REDIS_KEY_SIGNALS, json.dumps(signals_payload))
+
+            # Persist position lock
+            lock_payload = {sym: dir_.value for sym, dir_ in self._position_lock.items()}
+            await client.set(_REDIS_KEY_POSITION_LOCK, json.dumps(lock_payload))
+
+            # Persist cooldown timestamps (tuple keys → "symbol|channel" strings)
+            cooldown_payload = {
+                f"{sym}|{chan}": ts.isoformat()
+                for (sym, chan), ts in self._cooldown_timestamps.items()
+            }
+            await client.set(_REDIS_KEY_COOLDOWNS, json.dumps(cooldown_payload))
+        except Exception as exc:
+            log.warning("Failed to persist state to Redis: {}", exc)
+
+    def _schedule_persist(self) -> None:
+        """Fire-and-forget: schedule :meth:`_persist_state` on the running loop."""
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(self._persist_state())
+        except RuntimeError:
+            pass
 
     async def start(self) -> None:
         self._running = True
@@ -247,6 +359,7 @@ class SignalRouter:
         # Register only after confirmed delivery
         self._active_signals[signal.signal_id] = signal
         self._position_lock[signal.symbol] = signal.direction
+        self._schedule_persist()
 
         # Track for daily free-channel picks
         self._daily_best.append(signal)
@@ -294,6 +407,7 @@ class SignalRouter:
             self._position_lock.pop(sig.symbol, None)
             # Record cooldown timestamp so we suppress rapid re-entry
             self._cooldown_timestamps[(sig.symbol, sig.channel)] = datetime.now(timezone.utc)
+            self._schedule_persist()
 
     def update_signal(self, signal_id: str, **kwargs) -> None:
         sig = self._active_signals.get(signal_id)
@@ -301,3 +415,4 @@ class SignalRouter:
             for k, v in kwargs.items():
                 if hasattr(sig, k):
                     setattr(sig, k, v)
+            self._schedule_persist()
