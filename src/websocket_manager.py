@@ -30,6 +30,7 @@ from config import (
     WS_FALLBACK_POLL_INTERVALS,
     WS_FALLBACK_TIMEFRAMES,
     WS_HEARTBEAT_INTERVAL,
+    WS_HEARTBEAT_INTERVAL_FUTURES,
     WS_MAX_STREAMS_PER_CONN,
     WS_RECONNECT_BASE_DELAY,
     WS_RECONNECT_MAX_DELAY,
@@ -61,6 +62,7 @@ class WebSocketManager:
         self._market = market
         self._base_url = BINANCE_WS_BASE if market == "spot" else BINANCE_FUTURES_WS_BASE
         self._rest_base_url = BINANCE_REST_BASE if market == "spot" else BINANCE_FUTURES_REST_BASE
+        self._heartbeat_interval = WS_HEARTBEAT_INTERVAL_FUTURES if market == "futures" else WS_HEARTBEAT_INTERVAL
         self._connections: List[WSConnection] = []
         self._session: Optional[aiohttp.ClientSession] = None
         self._running = False
@@ -302,7 +304,7 @@ class WebSocketManager:
         assert self._session is not None
         stream_path = "/".join(conn.streams)
         url = f"{self._base_url}/{stream_path}"
-        conn.ws = await self._session.ws_connect(url, heartbeat=WS_HEARTBEAT_INTERVAL)
+        conn.ws = await self._session.ws_connect(url, heartbeat=self._heartbeat_interval)
         conn.last_pong = time.monotonic()
         conn.reconnect_attempts = 0
         conn.degraded = False
@@ -335,11 +337,11 @@ class WebSocketManager:
         """Periodically force-close stale connections so _run_connection reconnects."""
         try:
             while self._running:
-                await asyncio.sleep(WS_HEARTBEAT_INTERVAL)
+                await asyncio.sleep(self._heartbeat_interval)
                 now = time.monotonic()
                 for conn in self._connections:
                     if conn.ws and not conn.ws.closed:
-                        if (now - conn.last_pong) >= WS_HEARTBEAT_INTERVAL * 6:
+                        if (now - conn.last_pong) >= self._heartbeat_interval * 6:
                             log.warning(
                                 "Watchdog: stale WS connection ({:.0f}s since last data) — force-closing to trigger reconnect",
                                 now - conn.last_pong,
@@ -383,6 +385,6 @@ class WebSocketManager:
         if not open_connections or len(open_connections) != len(self._connections):
             return False
         return all(
-            (now - c.last_pong) < WS_HEARTBEAT_INTERVAL * 6
+            (now - c.last_pong) < self._heartbeat_interval * 6
             for c in open_connections
         )

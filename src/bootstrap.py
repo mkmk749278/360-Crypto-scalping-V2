@@ -218,7 +218,9 @@ class Bootstrap:
             s = sym.lower()
             futures_streams.append(f"{s}@kline_1m")
             futures_streams.append(f"{s}@kline_5m")
-            futures_streams.append(f"{s}@trade")
+            # Skip @trade for futures — high-volume trade streams cause
+            # connection instability; kline streams suffice for all
+            # futures channel strategies.
 
         engine._ws_spot = WebSocketManager(
             engine._on_ws_message,

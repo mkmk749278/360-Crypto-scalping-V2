@@ -7,7 +7,7 @@ import unittest.mock as mock
 import pytest
 
 
-from config import WS_ALERT_COOLDOWN, WS_FALLBACK_TIMEFRAMES, WS_SESSION_RECYCLE_ATTEMPTS
+from config import WS_ALERT_COOLDOWN, WS_FALLBACK_TIMEFRAMES, WS_HEARTBEAT_INTERVAL, WS_HEARTBEAT_INTERVAL_FUTURES, WS_SESSION_RECYCLE_ATTEMPTS
 from src.channels.base import Signal
 from src.smc import Direction
 from src.telegram_bot import TelegramBot
@@ -338,6 +338,28 @@ class TestAdminAlertRateLimiting:
         """_ping_loop must not exist — aiohttp heartbeat= handles keepalive."""
         ws = WebSocketManager(lambda data: None, market="spot")
         assert not hasattr(ws, "_ping_loop")
+
+    def test_alert_cooldown_is_300(self):
+        """WS_ALERT_COOLDOWN must be at least 300s to reduce Telegram spam."""
+        assert WS_ALERT_COOLDOWN >= 300
+
+
+class TestHeartbeatIntervalPerMarket:
+    """Verify per-market heartbeat interval selection."""
+
+    def test_futures_uses_longer_heartbeat(self):
+        """Futures WebSocketManager must use WS_HEARTBEAT_INTERVAL_FUTURES."""
+        ws = WebSocketManager(lambda data: None, market="futures")
+        assert ws._heartbeat_interval == WS_HEARTBEAT_INTERVAL_FUTURES
+
+    def test_spot_uses_default_heartbeat(self):
+        """Spot WebSocketManager must use WS_HEARTBEAT_INTERVAL."""
+        ws = WebSocketManager(lambda data: None, market="spot")
+        assert ws._heartbeat_interval == WS_HEARTBEAT_INTERVAL
+
+    def test_futures_heartbeat_longer_than_spot(self):
+        """Futures heartbeat interval must be strictly longer than spot."""
+        assert WS_HEARTBEAT_INTERVAL_FUTURES > WS_HEARTBEAT_INTERVAL
 
 
 class TestReconnectJitter:

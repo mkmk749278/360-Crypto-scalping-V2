@@ -189,12 +189,16 @@ CHANNEL_TELEGRAM_MAP: Dict[str, str] = {
 # WebSocket settings
 # ---------------------------------------------------------------------------
 WS_MAX_STREAMS_PER_CONN: int = 5
-WS_HEARTBEAT_INTERVAL: int = 30  # seconds
+WS_HEARTBEAT_INTERVAL: int = 30  # seconds (spot)
+# Futures WS endpoint (fstream.binance.com) is higher-throughput and sometimes
+# slower to respond to protocol-level pings under load; use a longer interval
+# to avoid aiohttp closing the connection before the pong arrives.
+WS_HEARTBEAT_INTERVAL_FUTURES: int = int(os.getenv("WS_HEARTBEAT_INTERVAL_FUTURES", "45"))
 WS_RECONNECT_BASE_DELAY: float = 1.0
 WS_RECONNECT_MAX_DELAY: float = 60.0
 # Admin alert dedup window (seconds) — alerts are throttled to at most one
 # per this interval per manager to avoid Telegram spam during prolonged outages.
-WS_ALERT_COOLDOWN: int = int(os.getenv("WS_ALERT_COOLDOWN", "60"))
+WS_ALERT_COOLDOWN: int = int(os.getenv("WS_ALERT_COOLDOWN", "300"))
 # How many consecutive failed reconnection attempts before the aiohttp session
 # is recycled (clears stale TCP connection pool and DNS cache).
 WS_SESSION_RECYCLE_ATTEMPTS: int = int(os.getenv("WS_SESSION_RECYCLE_ATTEMPTS", "5"))
