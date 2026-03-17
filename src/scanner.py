@@ -168,6 +168,10 @@ class Scanner:
         # Cooldown tracking: (symbol, channel_name) → monotonic expiry time
         self._cooldown_until: Dict[Tuple[str, str], float] = {}
 
+        # Per-symbol cooldown after a stop-loss: prevents any channel from
+        # firing on the same symbol for a short window after an SL event.
+        self._symbol_sl_cooldown_until: Dict[str, float] = {}
+
         # Semaphore to limit concurrent symbol scans
         self._scan_semaphore: asyncio.Semaphore = asyncio.Semaphore(_MAX_CONCURRENT_SCANS)
 
@@ -260,6 +264,18 @@ class Scanner:
         )
         log.debug(
             "Cooldown set for {} {} ({:.0f}s)", symbol, channel_name, cooldown_s
+        )
+
+    def set_symbol_sl_cooldown(self, symbol: str, duration_s: float = 60.0) -> None:
+        """Apply a short cross-channel cooldown for *symbol* after a stop-loss.
+
+        Called by the TradeMonitor when any signal for *symbol* hits its stop
+        loss.  Prevents every other channel from immediately firing a new signal
+        on the same symbol before the market has had time to stabilise.
+        """
+        self._symbol_sl_cooldown_until[symbol] = time.monotonic() + duration_s
+        log.debug(
+            "Per-symbol SL cooldown set for {} ({:.0f}s)", symbol, duration_s
         )
 
     async def _scan_symbol_bounded(self, sem: asyncio.Semaphore, symbol: str, volume_24h: float) -> None:
@@ -477,6 +493,15 @@ class Scanner:
         if self._is_in_cooldown(symbol, chan_name):
             log.debug("Cooldown active: skipping {} {}", symbol, chan_name)
             return True
+        # Per-symbol SL cooldown: suppress all channels briefly after an SL event
+        sl_expiry = self._symbol_sl_cooldown_until.get(symbol)
+        if sl_expiry is not None:
+            if time.monotonic() < sl_expiry:
+                log.debug(
+                    "Per-symbol SL cooldown active: skipping {} {}", symbol, chan_name
+                )
+                return True
+            del self._symbol_sl_cooldown_until[symbol]
         if any(
             s.symbol == symbol and s.channel == chan_name
             for s in self.router.active_signals.values()
@@ -586,7 +611,10 @@ class Scanner:
             multi_exchange=score_multi_exchange(verified=cross_verified),
             onchain_score=score_onchain(ctx.onchain_data),
             has_enough_history=self.pair_mgr.has_enough_history(symbol),
-            opposing_position_open=False,
+            opposing_position_open=any(
+                s.symbol == symbol and s.direction.value != sig.direction.value
+                for s in self.router.active_signals.values()
+            ),
         )
         result = compute_confidence(cinp)
         if result.blocked:

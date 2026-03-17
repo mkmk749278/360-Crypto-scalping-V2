@@ -22,6 +22,10 @@ from src.utils import get_logger
 
 log = get_logger("backtester")
 
+# Thresholds for converting a numeric AI sentiment score ([-1, 1]) to a label.
+_AI_BULLISH_THRESHOLD = 0.2
+_AI_BEARISH_THRESHOLD = -0.2
+
 
 @dataclass
 class BacktestResult:
@@ -92,14 +96,28 @@ def _simulate_trade(
     signal: Signal,
     future_candles: Dict,
     sl_multiplier: float = 1.0,
+    fee_pct: float = 0.0,
 ) -> Tuple[bool, float, int]:
     """Simulate a signal against future price data.
+
+    Parameters
+    ----------
+    signal:
+        The signal to simulate.
+    future_candles:
+        OHLCV dict of future candles.
+    sl_multiplier:
+        Multiplier applied to the stop-loss price.
+    fee_pct:
+        Round-trip fee percentage (entry + exit) deducted from PnL.
+        E.g. ``0.08`` deducts 0.08 % for a typical Binance maker/taker
+        round-trip.  Defaults to ``0.0`` (no fees) for backward compatibility.
 
     Returns
     -------
     (won, pnl_pct, tp_level_hit)
         ``won`` is True if TP1 was hit before SL.
-        ``pnl_pct`` is the estimated PnL percentage.
+        ``pnl_pct`` is the estimated PnL percentage (net of fees).
         ``tp_level_hit`` is 0 (SL), 1 (TP1), 2 (TP2), or 3 (TP3).
     """
     highs = future_candles.get("high", np.array([]))
@@ -119,27 +137,27 @@ def _simulate_trade(
 
         if is_long:
             if lo <= sl:
-                pnl = (sl - signal.entry) / signal.entry * 100.0
+                pnl = (sl - signal.entry) / signal.entry * 100.0 - fee_pct
                 return False, pnl, 0
             for level_idx, tp in enumerate(targets, start=1):
                 if h >= tp:
-                    pnl = (tp - signal.entry) / signal.entry * 100.0
+                    pnl = (tp - signal.entry) / signal.entry * 100.0 - fee_pct
                     return True, pnl, level_idx
         else:
             if h >= sl:
-                pnl = (signal.entry - sl) / signal.entry * 100.0
+                pnl = (signal.entry - sl) / signal.entry * 100.0 - fee_pct
                 return False, -abs(pnl), 0
             for level_idx, tp in enumerate(targets, start=1):
                 if lo <= tp:
-                    pnl = (signal.entry - tp) / signal.entry * 100.0
+                    pnl = (signal.entry - tp) / signal.entry * 100.0 - fee_pct
                     return True, pnl, level_idx
 
     # No TP or SL hit in the lookahead window
     last_close = float(future_candles.get("close", [signal.entry])[-1])
     if is_long:
-        pnl = (last_close - signal.entry) / signal.entry * 100.0
+        pnl = (last_close - signal.entry) / signal.entry * 100.0 - fee_pct
     else:
-        pnl = (signal.entry - last_close) / signal.entry * 100.0
+        pnl = (signal.entry - last_close) / signal.entry * 100.0 - fee_pct
     return pnl > 0, pnl, 0
 
 
@@ -155,6 +173,11 @@ class Backtester:
         Number of future candles to use for simulating trade outcomes.
     min_window:
         Minimum number of candles required before evaluation starts.
+    fee_pct:
+        Round-trip fee percentage deducted from every simulated trade's PnL.
+        Defaults to ``0.0`` (no fees).  Set to e.g. ``0.08`` to model a
+        typical Binance maker/taker round-trip and obtain more realistic
+        backtest results, especially for scalping strategies.
     """
 
     def __init__(
@@ -162,6 +185,7 @@ class Backtester:
         channels: Optional[List] = None,
         lookahead_candles: int = 20,
         min_window: int = 50,
+        fee_pct: float = 0.0,
     ) -> None:
         if channels is None:
             channels = [
@@ -174,6 +198,7 @@ class Backtester:
         self._lookahead = lookahead_candles
         self._min_window = min_window
         self._smc_detector = SMCDetector()
+        self._fee_pct = fee_pct
 
     def run(
         self,
@@ -182,6 +207,7 @@ class Backtester:
         channel_name: Optional[str] = None,
         spread_pct: float = 0.01,
         volume_24h_usd: float = 10_000_000.0,
+        simulated_ai_score: float = 0.0,
     ) -> List[BacktestResult]:
         """Run backtest across all (or one) channel(s).
 
@@ -198,6 +224,16 @@ class Backtester:
             Simulated spread percentage.
         volume_24h_usd:
             Simulated 24h volume.
+        simulated_ai_score:
+            AI sentiment score passed to each channel evaluation, in the range
+            ``[-1.0, 1.0]``.  Defaults to ``0.0`` (Neutral).
+
+            **Note:** The backtester cannot replay historical AI sentiment data,
+            so this value is the same for every candle window.  A value of
+            ``0.0`` maps to ``score_ai_sentiment(0) ≈ 7.5/15``, which is a
+            neutral mid-point — not zero.  To simulate pessimistic conditions
+            (e.g. bearish news sentiment that would lower confidence in live
+            trading), pass a negative value such as ``-0.5``.
 
         Returns
         -------
@@ -210,7 +246,8 @@ class Backtester:
         results: List[BacktestResult] = []
         for chan in channels:
             result = self._backtest_channel(
-                chan, candles_by_tf, symbol, spread_pct, volume_24h_usd
+                chan, candles_by_tf, symbol, spread_pct, volume_24h_usd,
+                simulated_ai_score,
             )
             results.append(result)
             log.info("Backtest %s: %s", chan.config.name, result.summary())
@@ -224,6 +261,7 @@ class Backtester:
         symbol: str,
         spread_pct: float,
         volume_24h_usd: float,
+        simulated_ai_score: float = 0.0,
     ) -> BacktestResult:
         """Run a single channel backtest across all candle windows."""
         result = BacktestResult(channel=channel.config.name)
@@ -241,6 +279,16 @@ class Backtester:
 
         primary_candles = candles_by_tf[primary_tf]
         total_candles = len(primary_candles.get("close", []))
+
+        # Derive a human-readable sentiment label from the numeric score so
+        # channels that inspect the label field also behave consistently.
+        if simulated_ai_score > _AI_BULLISH_THRESHOLD:
+            ai_label = "Bullish"
+        elif simulated_ai_score < _AI_BEARISH_THRESHOLD:
+            ai_label = "Bearish"
+        else:
+            ai_label = "Neutral"
+        ai_insight = {"label": ai_label, "summary": "", "score": simulated_ai_score}
 
         for i in range(self._min_window, total_candles - self._lookahead):
             # Slice candles up to index i for the evaluation window
@@ -266,7 +314,7 @@ class Backtester:
                     candles=window,
                     indicators=indicators,
                     smc_data=smc_data,
-                    ai_insight={"label": "Neutral", "summary": "", "score": 0.0},
+                    ai_insight=ai_insight,
                     spread_pct=spread_pct,
                     volume_24h_usd=volume_24h_usd,
                 )
@@ -282,7 +330,7 @@ class Backtester:
             for k, v in primary_candles.items():
                 if hasattr(v, "__getitem__"):
                     future[k] = v[i: i + self._lookahead]
-            won, pnl, tp_level = _simulate_trade(sig, future)
+            won, pnl, tp_level = _simulate_trade(sig, future, fee_pct=self._fee_pct)
 
             result.total_signals += 1
             if won:

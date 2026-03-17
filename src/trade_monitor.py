@@ -49,6 +49,9 @@ class TradeMonitor:
         self._performance_tracker = performance_tracker
         self._circuit_breaker = circuit_breaker
         self._running = False
+        # Optional callback invoked with the symbol whenever a stop-loss is hit.
+        # Set after construction (e.g. to scanner.set_symbol_sl_cooldown).
+        self.on_sl_callback: Optional[Any] = None
 
     def _record_outcome(self, sig: Signal, hit_tp: int, hit_sl: bool) -> None:
         """Notify performance tracker and circuit breaker of a completed signal.
@@ -101,6 +104,10 @@ class TradeMonitor:
                 hit_sl=hit_sl,
                 pnl_pct=sig.pnl_pct,
             )
+        # Notify the scanner to apply a short per-symbol cooldown so no other
+        # channel fires on the same symbol immediately after a stop-loss.
+        if hit_sl and self.on_sl_callback is not None:
+            self.on_sl_callback(sig.symbol)
 
     @staticmethod
     def _set_realized_pnl(sig: Signal, exit_price: float) -> None:
@@ -274,7 +281,11 @@ class TradeMonitor:
     def _adjust_trailing(self, sig: Signal) -> None:
         """Move the trailing stop behind the price."""
         price = sig.current_price
-        trail_dist = abs(sig.entry - sig.stop_loss) * 0.5  # tighten on TP hits
+        # Use the original SL distance (stored at signal creation) so that the
+        # trailing buffer doesn't collapse to zero after TP2 moves SL to break-even.
+        # Fall back to the live distance only for legacy signals where the field is unset.
+        base_dist = sig.original_sl_distance or abs(sig.entry - sig.stop_loss)
+        trail_dist = base_dist * 0.5
         if sig.direction == Direction.LONG:
             new_sl = price - trail_dist
             if new_sl > sig.stop_loss:

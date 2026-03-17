@@ -174,6 +174,10 @@ class CryptoSignalEngine:
         self._scanner.confidence_overrides = self._confidence_overrides
         self._scanner.circuit_breaker = self._circuit_breaker
 
+        # Wire the per-symbol SL cooldown callback so the monitor triggers a
+        # short cross-channel cooldown on the scanner after any stop-loss.
+        self.monitor.on_sl_callback = self._scanner.set_symbol_sl_cooldown
+
         # Select mode filter (OFF by default – admin must run /select_mode on)
         self._select_mode = SelectModeFilter()
         self._scanner.select_mode_filter = self._select_mode

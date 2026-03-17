@@ -49,6 +49,9 @@ class Signal:
     pnl_pct: float = 0.0
     max_favorable_excursion_pct: float = 0.0
     max_adverse_excursion_pct: float = 0.0
+    # Original SL distance at signal creation (used by trailing stop logic so that
+    # the trailing buffer doesn't collapse to zero after TP2 moves SL to break-even)
+    original_sl_distance: float = 0.0
     # Scanner-enriched market context (set before enqueuing)
     spread_pct: float = 0.0
     volume_24h_usd: float = 0.0

@@ -448,3 +448,121 @@ class TestOutcomeRecording:
         assert call_kwargs["pnl_pct"] == pytest.approx(0.4)
         assert call_kwargs["outcome_label"] == "PROFIT_LOCKED"
         assert sig.status == "PROFIT_LOCKED"
+
+
+class TestTrailingStopAfterTP2:
+    """Trailing stop must continue to advance after TP2 moves SL to break-even."""
+
+    def _build_monitor(self, active: Dict[str, Signal]):
+        removed = []
+        sent = []
+
+        async def mock_send(chat_id, text):
+            sent.append((chat_id, text))
+
+        data_store = MagicMock()
+        data_store.get_candles.return_value = None
+        data_store.ticks = {}
+
+        monitor = TradeMonitor(
+            data_store=data_store,
+            send_telegram=mock_send,
+            get_active_signals=lambda: dict(active),
+            remove_signal=lambda sid: removed.append(sid),
+            update_signal=MagicMock(),
+        )
+        return monitor, removed
+
+    @pytest.mark.asyncio
+    async def test_trailing_stop_advances_after_tp2(self):
+        """After TP2 sets SL to entry, the trailing stop should still move up with price."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,  # original SL → original_sl_distance = 150
+            tp1=30150.0,
+            tp2=30300.0,
+            tp3=30450.0,
+            age_seconds=60.0,
+        )
+        # Simulate what happens after TP2 is hit: SL moves to entry
+        sig.status = "TP2_HIT"
+        sig.stop_loss = sig.entry  # break-even
+        sig.original_sl_distance = 150.0  # 30000 - 29850
+        sig.trailing_active = True
+
+        # Price has moved up to 30400 (between TP2 and TP3)
+        sig.current_price = 30400.0
+
+        active = {sig.signal_id: sig}
+        monitor, removed = self._build_monitor(active)
+
+        # Invoke trailing adjustment directly
+        monitor._adjust_trailing(sig)
+
+        # trail_dist = 150 * 0.5 = 75
+        # new_sl = 30400 - 75 = 30325
+        # 30325 > 30000 (break-even), so stop should advance
+        assert sig.stop_loss == pytest.approx(30325.0)
+
+    @pytest.mark.asyncio
+    async def test_trailing_stop_does_not_regress(self):
+        """Trailing stop should never move backwards (lower for LONG)."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            age_seconds=60.0,
+        )
+        sig.status = "TP2_HIT"
+        sig.stop_loss = 30200.0  # already advanced above break-even
+        sig.original_sl_distance = 150.0
+        sig.trailing_active = True
+        # Price dips slightly – trailing should NOT regress
+        sig.current_price = 30250.0  # new_sl would be 30175, below current 30200
+
+        monitor, _ = self._build_monitor({sig.signal_id: sig})
+        monitor._adjust_trailing(sig)
+
+        assert sig.stop_loss == pytest.approx(30200.0)  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_on_sl_callback_triggered_on_sl_hit(self):
+        """on_sl_callback must be called with the symbol when a stop-loss is hit."""
+        sl_callbacks: list = []
+
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            age_seconds=35.0,
+        )
+        sig.current_price = 29800.0  # below SL
+
+        active = {sig.signal_id: sig}
+        removed = []
+        sent = []
+
+        async def mock_send(chat_id, text):
+            sent.append((chat_id, text))
+
+        data_store = MagicMock()
+        data_store.get_candles.return_value = None
+        data_store.ticks = {}
+
+        monitor = TradeMonitor(
+            data_store=data_store,
+            send_telegram=mock_send,
+            get_active_signals=lambda: dict(active),
+            remove_signal=lambda sid: removed.append(sid),
+            update_signal=MagicMock(),
+        )
+        monitor.on_sl_callback = sl_callbacks.append
+
+        await monitor._evaluate_signal(sig)
+
+        assert sig.status == "SL_HIT"
+        assert sl_callbacks == ["BTCUSDT"]

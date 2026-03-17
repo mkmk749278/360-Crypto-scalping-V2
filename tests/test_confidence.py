@@ -8,6 +8,7 @@ from src.confidence import (
     score_ai_sentiment,
     score_data_sufficiency,
     score_liquidity,
+    score_multi_exchange,
     score_smc,
     score_spread,
     score_trend,
@@ -76,6 +77,20 @@ class TestScoreDataSufficiency:
 
     def test_partial(self):
         assert score_data_sufficiency(250) == pytest.approx(5.0)
+
+
+class TestScoreMultiExchange:
+    def test_verified_true(self):
+        assert score_multi_exchange(True) == 5.0
+
+    def test_verified_false(self):
+        assert score_multi_exchange(False) == 0.0
+
+    def test_neutral_none(self):
+        assert score_multi_exchange(None) == pytest.approx(2.5)
+
+    def test_default_is_neutral(self):
+        assert score_multi_exchange() == pytest.approx(2.5)
 
 
 class TestComputeConfidence:

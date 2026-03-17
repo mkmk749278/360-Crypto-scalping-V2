@@ -113,4 +113,5 @@ class SwingChannel(BaseChannel):
             timestamp=utcnow(),
             signal_id=f"SWING-{uuid.uuid4().hex[:8].upper()}",
             current_price=close,
+            original_sl_distance=sl_dist,
         )

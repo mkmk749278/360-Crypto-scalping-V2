@@ -101,20 +101,20 @@ def score_data_sufficiency(candle_count: int, minimum: int = 500) -> float:
 
 
 def score_multi_exchange(verified: Optional[bool] = None) -> float:
-    """Multi-exchange verification bonus (max 10).
+    """Multi-exchange verification bonus (max 5).
 
     Parameters
     ----------
     verified:
-        ``True``  – second exchange confirms the signal → 10.0.
+        ``True``  – second exchange confirms the signal → 5.0.
         ``False`` – second exchange contradicts the signal → 0.0.
-        ``None``  – no second exchange configured (neutral) → 5.0.
+        ``None``  – no second exchange configured (neutral) → 2.5.
     """
     if verified is True:
-        return 10.0
+        return 5.0
     if verified is False:
         return 0.0
-    return 5.0  # None → neutral
+    return 2.5  # None → neutral
 
 
 def compute_confidence(inp: ConfidenceInput) -> ConfidenceResult:

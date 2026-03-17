@@ -100,4 +100,5 @@ class RangeChannel(BaseChannel):
             timestamp=utcnow(),
             signal_id=f"RANGE-{uuid.uuid4().hex[:8].upper()}",
             current_price=close,
+            original_sl_distance=sl_dist,
         )
