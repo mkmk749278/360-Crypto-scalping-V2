@@ -353,3 +353,224 @@ class TestSignalStatsCommands:
             await handler._handle_command("/unknown_xyz", USER_CHAT_ID)
         call_args = handler._telegram.send_message.call_args[0]
         assert "real\\_stats" in call_args[1]
+
+
+class TestBacktestCommands:
+    """Tests for /backtest, /backtest_all, and /backtest_config commands."""
+
+    @pytest.mark.asyncio
+    async def test_backtest_blocked_for_non_admin(self):
+        handler = _make_handler()
+        with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID):
+            await handler._handle_command("/backtest BTCUSDT", USER_CHAT_ID)
+        call_args = handler._telegram.send_message.call_args[0]
+        assert "restricted" in call_args[1].lower()
+
+    @pytest.mark.asyncio
+    async def test_backtest_no_args_shows_usage(self):
+        handler = _make_handler()
+        with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID):
+            await handler._handle_command("/backtest", ADMIN_CHAT_ID)
+        call_args = handler._telegram.send_message.call_args[0]
+        assert "Usage" in call_args[1]
+
+    @pytest.mark.asyncio
+    async def test_backtest_no_data_returns_error(self):
+        handler = _make_handler()
+        handler._data_store.candles = {}
+        with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID):
+            await handler._handle_command("/backtest BTCUSDT", ADMIN_CHAT_ID)
+        call_args = handler._telegram.send_message.call_args[0]
+        assert "No candle data" in call_args[1]
+
+    @pytest.mark.asyncio
+    async def test_backtest_runs_and_sends_results(self):
+        import numpy as np
+        from src.backtester import BacktestResult
+
+        handler = _make_handler()
+        candles = {
+            "open": np.ones(200) * 100.0,
+            "high": np.ones(200) * 101.0,
+            "low": np.ones(200) * 99.0,
+            "close": np.ones(200) * 100.0,
+            "volume": np.ones(200) * 1000.0,
+        }
+        handler._data_store.candles = {"BTCUSDT": {"5m": candles, "1m": candles}}
+
+        fake_result = BacktestResult(
+            channel="360_SCALP",
+            total_signals=10,
+            wins=7,
+            losses=3,
+            win_rate=70.0,
+            avg_rr=1.5,
+            total_pnl_pct=5.0,
+            max_drawdown=1.2,
+        )
+
+        with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID), \
+             patch("asyncio.to_thread", return_value=[fake_result]):
+            await handler._handle_command("/backtest BTCUSDT", ADMIN_CHAT_ID)
+
+        # Acknowledgement + result messages
+        assert handler._telegram.send_message.call_count >= 2
+        result_call = handler._telegram.send_message.call_args_list[-1][0]
+        assert "BTCUSDT" in result_call[1]
+        assert "360_SCALP" in result_call[1]
+
+    @pytest.mark.asyncio
+    async def test_backtest_error_sends_error_message(self):
+        import numpy as np
+
+        handler = _make_handler()
+        candles = {
+            "open": np.ones(200) * 100.0,
+            "high": np.ones(200) * 101.0,
+            "low": np.ones(200) * 99.0,
+            "close": np.ones(200) * 100.0,
+            "volume": np.ones(200) * 1000.0,
+        }
+        handler._data_store.candles = {"BTCUSDT": {"5m": candles}}
+
+        with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID), \
+             patch("asyncio.to_thread", side_effect=RuntimeError("test error")):
+            await handler._handle_command("/backtest BTCUSDT", ADMIN_CHAT_ID)
+
+        last_call = handler._telegram.send_message.call_args_list[-1][0]
+        assert "failed" in last_call[1].lower() or "error" in last_call[1].lower()
+
+    @pytest.mark.asyncio
+    async def test_backtest_all_blocked_for_non_admin(self):
+        handler = _make_handler()
+        with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID):
+            await handler._handle_command("/backtest_all", USER_CHAT_ID)
+        call_args = handler._telegram.send_message.call_args[0]
+        assert "restricted" in call_args[1].lower()
+
+    @pytest.mark.asyncio
+    async def test_backtest_all_no_data_returns_error(self):
+        handler = _make_handler()
+        handler._data_store.candles = {}
+        with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID):
+            await handler._handle_command("/backtest_all", ADMIN_CHAT_ID)
+        call_args = handler._telegram.send_message.call_args[0]
+        assert "No candle data" in call_args[1]
+
+    @pytest.mark.asyncio
+    async def test_backtest_all_aggregates_results(self):
+        import numpy as np
+        from src.backtester import BacktestResult
+
+        handler = _make_handler()
+        candles = {
+            "open": np.ones(200) * 100.0,
+            "high": np.ones(200) * 101.0,
+            "low": np.ones(200) * 99.0,
+            "close": np.ones(200) * 100.0,
+            "volume": np.ones(200) * 1000.0,
+        }
+        handler._data_store.candles = {
+            "BTCUSDT": {"5m": candles, "1m": candles},
+            "ETHUSDT": {"5m": candles, "1m": candles},
+        }
+
+        fake_result = BacktestResult(
+            channel="360_SCALP",
+            total_signals=8,
+            wins=5,
+            losses=3,
+            win_rate=62.5,
+            total_pnl_pct=3.0,
+            max_drawdown=1.0,
+        )
+
+        with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID), \
+             patch("asyncio.to_thread", return_value=[fake_result]):
+            await handler._handle_command("/backtest_all", ADMIN_CHAT_ID)
+
+        # At least acknowledgement + summary message
+        assert handler._telegram.send_message.call_count >= 2
+        last_call = handler._telegram.send_message.call_args_list[-1][0]
+        assert "360_SCALP" in last_call[1]
+
+    @pytest.mark.asyncio
+    async def test_backtest_config_show_defaults(self):
+        handler = _make_handler()
+        with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID):
+            await handler._handle_command("/backtest_config", ADMIN_CHAT_ID)
+        call_args = handler._telegram.send_message.call_args[0]
+        assert "Fee" in call_args[1]
+        assert "Slippage" in call_args[1]
+        assert "Lookahead" in call_args[1]
+        assert "Min Window" in call_args[1]
+
+    @pytest.mark.asyncio
+    async def test_backtest_config_update_fee(self):
+        handler = _make_handler()
+        with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID):
+            await handler._handle_command("/backtest_config fee 0.10", ADMIN_CHAT_ID)
+        assert handler._bt_fee_pct == pytest.approx(0.10)
+        call_args = handler._telegram.send_message.call_args[0]
+        assert "fee" in call_args[1].lower()
+
+    @pytest.mark.asyncio
+    async def test_backtest_config_update_slippage(self):
+        handler = _make_handler()
+        with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID):
+            await handler._handle_command("/backtest_config slippage 0.05", ADMIN_CHAT_ID)
+        assert handler._bt_slippage_pct == pytest.approx(0.05)
+
+    @pytest.mark.asyncio
+    async def test_backtest_config_update_lookahead(self):
+        handler = _make_handler()
+        with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID):
+            await handler._handle_command("/backtest_config lookahead 30", ADMIN_CHAT_ID)
+        assert handler._bt_lookahead == 30
+
+    @pytest.mark.asyncio
+    async def test_backtest_config_update_min_window(self):
+        handler = _make_handler()
+        with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID):
+            await handler._handle_command("/backtest_config min_window 100", ADMIN_CHAT_ID)
+        assert handler._bt_min_window == 100
+
+    @pytest.mark.asyncio
+    async def test_backtest_config_invalid_key(self):
+        handler = _make_handler()
+        with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID):
+            await handler._handle_command("/backtest_config badkey 1.0", ADMIN_CHAT_ID)
+        call_args = handler._telegram.send_message.call_args[0]
+        assert "Unknown config key" in call_args[1]
+
+    @pytest.mark.asyncio
+    async def test_backtest_config_invalid_value(self):
+        handler = _make_handler()
+        with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID):
+            await handler._handle_command("/backtest_config fee notanumber", ADMIN_CHAT_ID)
+        call_args = handler._telegram.send_message.call_args[0]
+        assert "Invalid value" in call_args[1]
+
+    @pytest.mark.asyncio
+    async def test_backtest_config_blocked_for_non_admin(self):
+        handler = _make_handler()
+        with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID):
+            await handler._handle_command("/backtest_config", USER_CHAT_ID)
+        call_args = handler._telegram.send_message.call_args[0]
+        assert "restricted" in call_args[1].lower()
+
+    @pytest.mark.asyncio
+    async def test_backtest_config_defaults_set_on_init(self):
+        handler = _make_handler()
+        assert handler._bt_fee_pct == pytest.approx(0.08)
+        assert handler._bt_slippage_pct == pytest.approx(0.02)
+        assert handler._bt_lookahead == 20
+        assert handler._bt_min_window == 50
+
+    @pytest.mark.asyncio
+    async def test_help_text_includes_backtest_commands(self):
+        handler = _make_handler()
+        with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID):
+            await handler._handle_command("/unknown_xyz", USER_CHAT_ID)
+        call_args = handler._telegram.send_message.call_args[0]
+        assert "backtest" in call_args[1].lower()

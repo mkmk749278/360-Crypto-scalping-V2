@@ -12,11 +12,12 @@ import re
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 import psutil
 
 from config import TELEGRAM_ADMIN_CHAT_ID
+from src.backtester import Backtester
 from src.logger import get_recent_logs
 from src.utils import get_logger
 
@@ -24,6 +25,32 @@ log = get_logger("commands")
 
 _TELEGRAM_LOG_MAX_CHARS: int = 3_500
 _REPO_ROOT: Path = Path(__file__).parent.parent
+_TELEGRAM_MAX_MSG_CHARS: int = 4_096
+
+_CHANNEL_EMOJIS: Dict[str, str] = {
+    "360_SCALP": "⚡",
+    "360_SWING": "🏛️",
+    "360_RANGE": "⚖️",
+    "360_THE_TAPE": "🐋",
+}
+
+
+def _split_message(text: str, limit: int = _TELEGRAM_MAX_MSG_CHARS) -> List[str]:
+    """Split *text* into chunks that fit within Telegram's message size limit."""
+    if len(text) <= limit:
+        return [text]
+    chunks: List[str] = []
+    while text:
+        if len(text) <= limit:
+            chunks.append(text)
+            break
+        # Try to split at a newline boundary
+        split_at = text.rfind("\n", 0, limit)
+        if split_at == -1:
+            split_at = limit
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+    return chunks
 
 
 class CommandHandler:
@@ -123,6 +150,11 @@ class CommandHandler:
         self._performance_tracker = performance_tracker
         self._circuit_breaker = circuit_breaker
         self._select_mode = select_mode_filter
+        # Backtest configuration defaults
+        self._bt_fee_pct: float = 0.08
+        self._bt_slippage_pct: float = 0.02
+        self._bt_lookahead: int = 20
+        self._bt_min_window: int = 50
 
     # ------------------------------------------------------------------
     # Public API
@@ -149,6 +181,7 @@ class CommandHandler:
             "/circuit_breaker_status", "/reset_circuit_breaker",
             "/select_mode", "/select_config", "/reset_stats",
             "/real_stats", "/stats",
+            "/backtest", "/backtest_all", "/backtest_config",
         }
         if cmd in admin_cmds and not is_admin:
             await self._telegram.send_message(
@@ -626,6 +659,213 @@ class CommandHandler:
                 )
                 await self._telegram.send_message(chat_id, msg)
 
+        elif cmd == "/backtest":
+            if len(parts) < 2:
+                await self._telegram.send_message(
+                    chat_id, "Usage: /backtest <symbol> [channel] [lookahead]"
+                )
+                return
+            symbol = parts[1].upper()
+            channel_filter: Optional[str] = parts[2] if len(parts) >= 3 else None
+            lookahead = self._bt_lookahead
+            if len(parts) >= 4:
+                try:
+                    lookahead = int(parts[3])
+                except ValueError:
+                    pass
+            candles_by_tf = self._data_store.candles.get(symbol, {})
+            if not candles_by_tf:
+                await self._telegram.send_message(
+                    chat_id,
+                    f"❌ No candle data found for `{symbol}`. Make sure the symbol is tracked and data has been seeded.",
+                )
+                return
+            await self._telegram.send_message(chat_id, "⏳ Running backtest…")
+            try:
+                bt = Backtester(
+                    lookahead_candles=lookahead,
+                    min_window=self._bt_min_window,
+                    fee_pct=self._bt_fee_pct,
+                    slippage_pct=self._bt_slippage_pct,
+                )
+                results = await asyncio.to_thread(
+                    bt.run, candles_by_tf, symbol, channel_filter
+                )
+            except Exception as exc:
+                log.error("Backtest error for %s: %s", symbol, exc)
+                await self._telegram.send_message(
+                    chat_id, f"❌ Backtest failed: {exc}"
+                )
+                return
+            lines = [f"📊 Backtest Results — {symbol}\n"]
+            for r in results:
+                emoji = _CHANNEL_EMOJIS.get(r.channel, "📈")
+                lines.append(f"{emoji} {r.channel}")
+                lines.append(r.summary().replace(f"Backtest: {r.channel}\n", ""))
+                lines.append("")
+            msg = "\n".join(lines).strip()
+            # Split messages longer than 4096 chars
+            for chunk in _split_message(msg):
+                await self._telegram.send_message(chat_id, chunk)
+
+        elif cmd == "/backtest_all":
+            channel_filter_all: Optional[str] = parts[1] if len(parts) >= 2 else None
+            lookahead_all = self._bt_lookahead
+            if len(parts) >= 3:
+                try:
+                    lookahead_all = int(parts[2])
+                except ValueError:
+                    pass
+            all_symbols = list(self._data_store.candles.keys())
+            if not all_symbols:
+                await self._telegram.send_message(
+                    chat_id, "❌ No candle data available. Wait for the data store to be seeded."
+                )
+                return
+            # Limit to top 10 symbols by number of timeframes available
+            all_symbols = sorted(
+                all_symbols,
+                key=lambda s: len(self._data_store.candles.get(s, {})),
+                reverse=True,
+            )[:10]
+            await self._telegram.send_message(
+                chat_id,
+                f"⏳ Running backtest across {len(all_symbols)} tracked symbol(s)…",
+            )
+            bt_all = Backtester(
+                lookahead_candles=lookahead_all,
+                min_window=self._bt_min_window,
+                fee_pct=self._bt_fee_pct,
+                slippage_pct=self._bt_slippage_pct,
+            )
+            # Aggregate results per channel
+            agg: Dict[str, Dict] = {}
+            errors: List[str] = []
+            for sym in all_symbols:
+                ctf = self._data_store.candles.get(sym, {})
+                if not ctf:
+                    continue
+                try:
+                    sym_results = await asyncio.to_thread(
+                        bt_all.run, ctf, sym, channel_filter_all
+                    )
+                except Exception as exc:
+                    log.error("Backtest error for %s: %s", sym, exc)
+                    errors.append(sym)
+                    continue
+                for r in sym_results:
+                    if r.channel not in agg:
+                        agg[r.channel] = {
+                            "total_signals": 0,
+                            "wins": 0,
+                            "losses": 0,
+                            "total_pnl": 0.0,
+                            "max_drawdown": 0.0,
+                        }
+                    agg[r.channel]["total_signals"] += r.total_signals
+                    agg[r.channel]["wins"] += r.wins
+                    agg[r.channel]["losses"] += r.losses
+                    agg[r.channel]["total_pnl"] += r.total_pnl_pct
+                    agg[r.channel]["max_drawdown"] = max(
+                        agg[r.channel]["max_drawdown"], r.max_drawdown
+                    )
+            _CHANNEL_EMOJIS_ALL = {
+                "360_SCALP": "⚡",
+                "360_SWING": "🏛️",
+                "360_RANGE": "⚖️",
+                "360_THE_TAPE": "🐋",
+            }
+            lines_all = [
+                f"📊 Backtest Summary — {len(all_symbols)} symbol(s)\n"
+            ]
+            for ch, data in agg.items():
+                emoji = _CHANNEL_EMOJIS.get(ch, "📈")
+                total = data["total_signals"]
+                wins = data["wins"]
+                losses = data["losses"]
+                wr = (wins / total * 100) if total > 0 else 0.0
+                lines_all.append(f"{emoji} {ch}")
+                lines_all.append(
+                    f"Signals: {total} | Wins: {wins} | Losses: {losses}"
+                )
+                lines_all.append(f"Win Rate: {wr:.1f}%")
+                lines_all.append(f"Total PnL: {data['total_pnl']:+.2f}%")
+                lines_all.append(
+                    f"Max Drawdown: {data['max_drawdown']:.2f}%"
+                )
+                lines_all.append("")
+            if errors:
+                lines_all.append(f"⚠️ Failed symbols: {', '.join(errors)}")
+            if not agg:
+                lines_all.append("ℹ️ No results generated.")
+            msg_all = "\n".join(lines_all).strip()
+            for chunk in _split_message(msg_all):
+                await self._telegram.send_message(chat_id, chunk)
+
+        elif cmd == "/backtest_config":
+            if len(parts) == 1:
+                # Show current config
+                config_msg = (
+                    "🔧 Backtest Configuration\n"
+                    f"Fee: {self._bt_fee_pct:.2f}%\n"
+                    f"Slippage: {self._bt_slippage_pct:.2f}%\n"
+                    f"Lookahead: {self._bt_lookahead} candles\n"
+                    f"Min Window: {self._bt_min_window} candles"
+                )
+                await self._telegram.send_message(chat_id, config_msg)
+            elif len(parts) >= 3:
+                key = parts[1].lower()
+                val_str = parts[2]
+                _valid_keys = {"fee", "slippage", "lookahead", "min_window"}
+                if key not in _valid_keys:
+                    valid_keys_str = ", ".join(sorted(_valid_keys)).replace("_", "\\_")
+                    await self._telegram.send_message(
+                        chat_id,
+                        f"❌ Unknown config key `{key}`. Valid keys: {valid_keys_str}",
+                    )
+                    return
+                try:
+                    parsed: Union[int, float]
+                    if key in ("lookahead", "min_window"):
+                        parsed = int(val_str)
+                        if parsed < 1:
+                            raise ValueError("must be >= 1")
+                    else:
+                        parsed = float(val_str)
+                        if parsed < 0:
+                            raise ValueError("must be >= 0")
+                except ValueError as exc:
+                    await self._telegram.send_message(
+                        chat_id, f"❌ Invalid value: {exc}"
+                    )
+                    return
+                if key == "fee":
+                    self._bt_fee_pct = parsed
+                    await self._telegram.send_message(
+                        chat_id, f"✅ Backtest fee updated to {self._bt_fee_pct:.2f}%"
+                    )
+                elif key == "slippage":
+                    self._bt_slippage_pct = parsed
+                    await self._telegram.send_message(
+                        chat_id, f"✅ Backtest slippage updated to {self._bt_slippage_pct:.2f}%"
+                    )
+                elif key == "lookahead":
+                    self._bt_lookahead = int(parsed)
+                    await self._telegram.send_message(
+                        chat_id, f"✅ Backtest lookahead updated to {self._bt_lookahead} candles"
+                    )
+                elif key == "min_window":
+                    self._bt_min_window = int(parsed)
+                    await self._telegram.send_message(
+                        chat_id, f"✅ Backtest min\\_window updated to {self._bt_min_window} candles"
+                    )
+            else:
+                await self._telegram.send_message(
+                    chat_id,
+                    "Usage: /backtest\\_config [key] [value]\n"
+                    "Keys: fee, slippage, lookahead, min\\_window",
+                )
+
         else:
             await self._telegram.send_message(
                 chat_id,
@@ -654,7 +894,10 @@ class CommandHandler:
                 "/real\\_stats [channel]\n"
                 "/reset\\_stats [channel]\n"
                 "/select\\_mode [on|off|status]\n"
-                "/select\\_config <key> <value>\n\n"
+                "/select\\_config <key> <value>\n"
+                "/backtest <symbol> [channel] [lookahead]\n"
+                "/backtest\\_all [channel] [lookahead]\n"
+                "/backtest\\_config [key] [value]\n\n"
                 "*User:*\n"
                 "/signals\n"
                 "/free\\_signals\n"
