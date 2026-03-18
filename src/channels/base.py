@@ -68,6 +68,7 @@ class Signal:
     position_weight_2: float = 0.4            # Weight of Entry 2 (default 40%)
     dca_zone_lower: float = 0.0               # Lower bound of DCA zone
     dca_zone_upper: float = 0.0               # Upper bound of DCA zone
+    dca_timestamp: Optional[datetime] = None  # When DCA Entry 2 was filled
 
     # ---- Original TP/Entry values (before DCA recalc) ----
     original_entry: float = 0.0               # Entry 1 price before averaging

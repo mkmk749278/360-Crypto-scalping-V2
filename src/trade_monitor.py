@@ -41,6 +41,9 @@ _STOP_OUTCOME_MESSAGES = {
     "PROFIT_LOCKED": "🟢 PROFIT LOCKED",
     "EXPIRED": "⏰ EXPIRED",
 }
+# Seconds of grace after a DCA entry before invalidation checks are allowed.
+# Gives the averaged position time to develop without being killed prematurely.
+_DCA_GRACE_SECONDS = 300
 
 
 class TradeMonitor:
@@ -213,6 +216,20 @@ class TradeMonitor:
         """
         is_long = sig.direction == Direction.LONG
 
+        # Age gate — ALL invalidation checks require minimum age to avoid
+        # reacting to 1m candle noise and killing trades too early.
+        min_age = INVALIDATION_MIN_AGE_SECONDS.get(sig.channel, 120)
+        age_secs = (utcnow() - sig.timestamp).total_seconds()
+        if age_secs < min_age:
+            return None  # Too young for any invalidation
+
+        # DCA grace period — give the averaged position time to develop before
+        # allowing invalidation to close it prematurely.
+        if sig.entry_2_filled and sig.dca_timestamp is not None:
+            dca_age = (utcnow() - sig.dca_timestamp).total_seconds()
+            if dca_age < _DCA_GRACE_SECONDS:
+                return None
+
         # Build an indicators dict for regime detection and EMA/momentum checks.
         # Priority: caller-supplied indicators_fn → data-store fallback.
         indicators: Optional[dict] = None
@@ -262,15 +279,12 @@ class TradeMonitor:
             if not is_long and ema9 > ema21:
                 return "EMA bullish crossover (EMA9 > EMA21) – SHORT thesis invalidated"
 
-        # 3. Momentum loss – only applies after minimum invalidation age
-        if momentum is not None:
-            min_age = INVALIDATION_MIN_AGE_SECONDS.get(sig.channel, 120)
-            age_secs = (utcnow() - sig.timestamp).total_seconds()
-            if age_secs >= min_age and abs(momentum) < INVALIDATION_MOMENTUM_THRESHOLD:
-                return (
-                    f"momentum loss (|momentum|={abs(momentum):.3f} < "
-                    f"{INVALIDATION_MOMENTUM_THRESHOLD}) – signal thesis exhausted"
-                )
+        # 3. Momentum loss
+        if momentum is not None and abs(momentum) < INVALIDATION_MOMENTUM_THRESHOLD:
+            return (
+                f"momentum loss (|momentum|={abs(momentum):.3f} < "
+                f"{INVALIDATION_MOMENTUM_THRESHOLD}) – signal thesis exhausted"
+            )
 
         return None
 
@@ -322,18 +336,6 @@ class TradeMonitor:
                     )
                     await self._post_dca_update(sig)
 
-        # Market-structure invalidation – close stale signals whose thesis no
-        # longer holds (regime flip, momentum loss, EMA crossover).  Checked
-        # AFTER the min-lifespan guard but BEFORE SL/TP to free slots quickly.
-        invalidation_reason = self._check_invalidation(sig)
-        if invalidation_reason:
-            self._set_realized_pnl(sig, price)
-            sig.status = "INVALIDATED"
-            await self._post_update(sig, f"🔄 INVALIDATED ({invalidation_reason})")
-            self._record_outcome(sig, hit_tp=0, hit_sl=False)
-            self._remove(sig.signal_id)
-            return
-
         # SL direction sanity check – catch misconfigured signals
         protective_stop_active = sig.status in ("TP1_HIT", "TP2_HIT")
         if is_long and sig.stop_loss > sig.entry and not protective_stop_active:
@@ -374,7 +376,8 @@ class TradeMonitor:
             )
             return
 
-        # Stop-loss hit
+        # Stop-loss hit — checked BEFORE invalidation so that a price gap
+        # through the SL is never exited at a worse price via invalidation.
         if is_long and price <= sig.stop_loss:
             self._set_realized_pnl(sig, sig.stop_loss)
             outcome_label = self._apply_final_outcome(sig, hit_tp=0, hit_sl=True)
@@ -389,6 +392,26 @@ class TradeMonitor:
             outcome_event = _STOP_OUTCOME_MESSAGES.get(outcome_label, "🔴 EXIT")
             await self._post_update(sig, outcome_event)
             self._record_outcome(sig, hit_tp=0, hit_sl=True)
+            self._remove(sig.signal_id)
+            return
+
+        # Market-structure invalidation – close stale signals whose thesis no
+        # longer holds (regime flip, momentum loss, EMA crossover).  Checked
+        # AFTER the SL check so that a price gap through the SL is always
+        # caught at the SL level, not at the (potentially worse) current price.
+        invalidation_reason = self._check_invalidation(sig)
+        if invalidation_reason:
+            # Cap the exit price — invalidation must never produce a worse exit
+            # than the SL would have given.  For a LONG that gapped down, the
+            # capped price is the SL; for a SHORT that gapped up, it is the SL.
+            if is_long:
+                capped_price = max(price, sig.stop_loss)
+            else:
+                capped_price = min(price, sig.stop_loss)
+            self._set_realized_pnl(sig, capped_price)
+            sig.status = "INVALIDATED"
+            await self._post_update(sig, f"🔄 INVALIDATED ({invalidation_reason})")
+            self._record_outcome(sig, hit_tp=0, hit_sl=False)
             self._remove(sig.signal_id)
             return
 

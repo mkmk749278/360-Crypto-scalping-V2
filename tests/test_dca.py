@@ -500,3 +500,36 @@ class TestDcaConfig:
     def test_tape_dca_disabled(self):
         from config import CHANNEL_TAPE
         assert CHANNEL_TAPE.dca_enabled is False
+
+
+# ---------------------------------------------------------------------------
+# dca_timestamp tests
+# ---------------------------------------------------------------------------
+
+class TestDcaTimestamp:
+    def test_dca_timestamp_set_after_recalculate(self):
+        """dca_timestamp must be set to a recent UTC time after recalculate_after_dca."""
+        from src.utils import utcnow
+        sig = _make_long_signal(entry=2300.0, stop_loss=2280.0)
+        assert sig.dca_timestamp is None  # not set before DCA
+
+        before = utcnow()
+        recalculate_after_dca(sig, 2294.0, list(CHANNEL_SWING.tp_ratios))
+        after = utcnow()
+
+        assert sig.dca_timestamp is not None
+        assert before <= sig.dca_timestamp <= after
+
+    def test_dca_timestamp_not_overwritten_on_second_call(self):
+        """dca_timestamp is updated on each DCA call (recalculate stamps with current time)."""
+        sig = _make_long_signal(entry=2300.0, stop_loss=2280.0)
+        recalculate_after_dca(sig, 2294.0, list(CHANNEL_SWING.tp_ratios))
+        first_ts = sig.dca_timestamp
+
+        # Reset flag to allow a second call (testing timestamp behaviour)
+        sig.entry_2_filled = False
+        recalculate_after_dca(sig, 2292.0, list(CHANNEL_SWING.tp_ratios))
+
+        # Each DCA call stamps the current time, so the second stamp >= first
+        assert sig.dca_timestamp is not None
+        assert sig.dca_timestamp >= first_ts

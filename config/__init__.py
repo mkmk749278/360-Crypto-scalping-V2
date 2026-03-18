@@ -320,10 +320,10 @@ MAX_CONCURRENT_SIGNALS: int = 5
 # Signal invalidation – minimum age before market-structure checks apply (secs)
 # ---------------------------------------------------------------------------
 INVALIDATION_MIN_AGE_SECONDS: Dict[str, int] = {
-    "360_SCALP": 120,
+    "360_SCALP": 300,       # was 120 — too aggressive for 1m candle noise
     "360_SWING": 300,
     "360_RANGE": 180,
-    "360_THE_TAPE": 60,
+    "360_THE_TAPE": 120,    # was 60 — too aggressive
     "360_SELECT": 180,
 }
 

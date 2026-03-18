@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from src.smc import Direction
-from src.utils import get_logger
+from src.utils import get_logger, utcnow
 
 if TYPE_CHECKING:
     from config import ChannelConfig
@@ -140,6 +140,7 @@ def recalculate_after_dca(
     sig.avg_entry = round(avg_entry, 8)
     sig.entry_2 = round(entry_2_price, 8)
     sig.entry_2_filled = True
+    sig.dca_timestamp = utcnow()
     sig.position_weight_1 = weight_1
     sig.position_weight_2 = weight_2
 

@@ -1212,7 +1212,7 @@ class TestSignalInvalidation:
 
     def test_regime_flip_invalidates_long(self):
         """LONG signal must be invalidated when regime detector returns TRENDING_DOWN."""
-        sig = _make_signal(direction=Direction.LONG, age_seconds=200.0)
+        sig = _make_signal(direction=Direction.LONG, age_seconds=400.0)
 
         regime_detector = MagicMock()
         regime_result = MagicMock()
@@ -1237,7 +1237,7 @@ class TestSignalInvalidation:
             entry=30000.0,
             stop_loss=30150.0,
             tp1=29850.0,
-            age_seconds=200.0,
+            age_seconds=400.0,
         )
 
         regime_detector = MagicMock()
@@ -1258,7 +1258,7 @@ class TestSignalInvalidation:
 
     def test_ema_bearish_crossover_invalidates_long(self):
         """LONG signal invalidated when EMA9 < EMA21 (bearish crossover)."""
-        sig = _make_signal(direction=Direction.LONG, age_seconds=200.0)
+        sig = _make_signal(direction=Direction.LONG, age_seconds=400.0)
 
         # Create a falling price sequence: EMA9 will be lower than EMA21
         closes = [30000.0 - i * 10 for i in range(25)]  # descending
@@ -1275,7 +1275,7 @@ class TestSignalInvalidation:
             entry=30000.0,
             stop_loss=30150.0,
             tp1=29850.0,
-            age_seconds=200.0,
+            age_seconds=400.0,
         )
 
         # Rising prices: EMA9 > EMA21
@@ -1333,12 +1333,13 @@ class TestSignalInvalidation:
         """An invalidated signal must be removed from active signals."""
         sig = _make_signal(
             channel="360_SCALP",
-            age_seconds=200.0,
+            age_seconds=400.0,
             entry=30000.0,
             stop_loss=29850.0,
             tp1=30150.0,
         )
-        sig.current_price = 30000.0  # price near entry (not at SL/TP)
+        # Price slightly above entry so PnL is non-zero and zero-PnL guard passes
+        sig.current_price = 30050.0
 
         regime_detector = MagicMock()
         regime_result = MagicMock()
@@ -1363,12 +1364,13 @@ class TestSignalInvalidation:
         """Invalidated signals must NOT count as stop-losses in the circuit breaker."""
         sig = _make_signal(
             channel="360_SCALP",
-            age_seconds=200.0,
+            age_seconds=400.0,
             entry=30000.0,
             stop_loss=29850.0,
             tp1=30150.0,
         )
-        sig.current_price = 30000.0
+        # Price slightly above entry so PnL is non-zero and zero-PnL guard passes
+        sig.current_price = 30050.0
 
         cb = MagicMock()
 
@@ -1400,8 +1402,6 @@ class TestSignalInvalidation:
             circuit_breaker=cb,
             regime_detector=regime_detector,
         )
-        for s in active.values():
-            s.current_price = s.entry
 
         await monitor._evaluate_signal(sig)
 
@@ -1409,3 +1409,226 @@ class TestSignalInvalidation:
         assert cb.record_outcome.called
         call_kwargs = cb.record_outcome.call_args.kwargs
         assert call_kwargs.get("hit_sl") is False
+
+    # ------------------------------------------------------------------
+    # New tests for the reordered evaluation and age-gating
+    # ------------------------------------------------------------------
+
+    def test_regime_not_invalidated_before_min_age(self):
+        """Regime flip must NOT fire before INVALIDATION_MIN_AGE_SECONDS (global gate)."""
+        from config import INVALIDATION_MIN_AGE_SECONDS
+        channel = "360_SCALP"
+        min_age = INVALIDATION_MIN_AGE_SECONDS[channel]
+        sig = _make_signal(channel=channel, direction=Direction.LONG, age_seconds=min_age - 10)
+
+        regime_detector = MagicMock()
+        regime_result = MagicMock()
+        regime_result.regime.value = "TRENDING_DOWN"
+        regime_detector.classify.return_value = regime_result
+
+        closes = [30000.0] * 25
+        monitor, _, _ = self._build_monitor(
+            {sig.signal_id: sig},
+            candles_close=closes,
+            regime_detector=regime_detector,
+        )
+        reason = monitor._check_invalidation(sig)
+        assert reason is None, (
+            f"Regime invalidation must not fire before min_age ({min_age}s), got: {reason!r}"
+        )
+
+    def test_ema_not_invalidated_before_min_age(self):
+        """EMA crossover must NOT fire before INVALIDATION_MIN_AGE_SECONDS (global gate)."""
+        from config import INVALIDATION_MIN_AGE_SECONDS
+        channel = "360_SCALP"
+        min_age = INVALIDATION_MIN_AGE_SECONDS[channel]
+        sig = _make_signal(channel=channel, direction=Direction.LONG, age_seconds=min_age - 10)
+
+        # Falling prices → EMA9 < EMA21 (bearish crossover)
+        closes = [30000.0 - i * 10 for i in range(25)]
+        monitor, _, _ = self._build_monitor({sig.signal_id: sig}, candles_close=closes)
+        reason = monitor._check_invalidation(sig)
+        assert reason is None, (
+            f"EMA invalidation must not fire before min_age ({min_age}s), got: {reason!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sl_fires_before_invalidation(self):
+        """When price is below SL and regime flips, SL must fire (not invalidation)."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            tp1=30150.0,
+            age_seconds=400.0,
+        )
+        # Price has gapped BELOW the stop-loss
+        sig.current_price = 29700.0
+
+        regime_detector = MagicMock()
+        regime_result = MagicMock()
+        regime_result.regime.value = "TRENDING_DOWN"
+        regime_detector.classify.return_value = regime_result
+
+        closes = [30000.0] * 25
+        active = {sig.signal_id: sig}
+        monitor, removed, sent = self._build_monitor(
+            active, candles_close=closes, regime_detector=regime_detector
+        )
+
+        await monitor._evaluate_signal(sig)
+
+        # SL must have fired, not invalidation
+        assert sig.signal_id in removed
+        assert sig.status != "INVALIDATED", "Should be SL_HIT, not INVALIDATED"
+        assert "SL" in sig.status or sig.status in ("SL_HIT", "BREAKEVEN_EXIT", "PROFIT_LOCKED")
+
+    @pytest.mark.asyncio
+    async def test_invalidation_exit_price_capped_at_sl_long(self):
+        """LONG: when invalidation fires, exit price must be capped at the SL (not below)."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            tp1=30150.0,
+            age_seconds=400.0,
+        )
+        # Price is above SL so SL doesn't fire; invalidation will fire instead
+        sig.current_price = 29900.0
+
+        regime_detector = MagicMock()
+        regime_result = MagicMock()
+        regime_result.regime.value = "TRENDING_DOWN"
+        regime_detector.classify.return_value = regime_result
+
+        closes = [30000.0] * 25
+        active = {sig.signal_id: sig}
+        monitor, removed, sent = self._build_monitor(
+            active, candles_close=closes, regime_detector=regime_detector
+        )
+
+        await monitor._evaluate_signal(sig)
+
+        assert sig.status == "INVALIDATED"
+        # Exit PnL must be computed at the capped price (max(29900, 29850) = 29900 for LONG)
+        # which is the current price since price > SL
+        from src.performance_metrics import calculate_trade_pnl_pct
+        expected_pnl = calculate_trade_pnl_pct(30000.0, 29900.0, "LONG")
+        assert sig.pnl_pct == pytest.approx(expected_pnl, abs=1e-4)
+
+    @pytest.mark.asyncio
+    async def test_invalidation_exit_price_never_worse_than_sl_long(self):
+        """LONG: invalidation with price below SL must exit at SL, not current price."""
+        # This scenario: price has gapped, but SL check runs first and catches it.
+        # However, if the reorder means SL fires first, we verify that pathway.
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            entry=30000.0,
+            stop_loss=29850.0,
+            tp1=30150.0,
+            age_seconds=400.0,
+        )
+        # Price is below SL — SL check fires first
+        sig.current_price = 29700.0
+
+        closes = [30000.0] * 25
+        active = {sig.signal_id: sig}
+        monitor, removed, _ = self._build_monitor(active, candles_close=closes)
+
+        await monitor._evaluate_signal(sig)
+
+        # Must be removed via SL, not invalidation
+        assert sig.signal_id in removed
+        # Exit price frozen at SL, not at the worse 29700
+        assert sig.current_price == pytest.approx(29850.0)
+
+    @pytest.mark.asyncio
+    async def test_invalidation_exit_price_capped_at_sl_short(self):
+        """SHORT: when invalidation fires, exit price must be capped at the SL (not above)."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.SHORT,
+            entry=30000.0,
+            stop_loss=30150.0,
+            tp1=29850.0,
+            age_seconds=400.0,
+        )
+        # Price is below SL so SL doesn't fire; invalidation will fire instead
+        sig.current_price = 30100.0
+
+        regime_detector = MagicMock()
+        regime_result = MagicMock()
+        regime_result.regime.value = "TRENDING_UP"
+        regime_detector.classify.return_value = regime_result
+
+        closes = [30000.0] * 25
+        active = {sig.signal_id: sig}
+        monitor, removed, sent = self._build_monitor(
+            active, candles_close=closes, regime_detector=regime_detector
+        )
+
+        await monitor._evaluate_signal(sig)
+
+        assert sig.status == "INVALIDATED"
+        # Exit PnL must use min(30100, 30150) = 30100 — current price since price < SL
+        from src.performance_metrics import calculate_trade_pnl_pct
+        expected_pnl = calculate_trade_pnl_pct(30000.0, 30100.0, "SHORT")
+        assert sig.pnl_pct == pytest.approx(expected_pnl, abs=1e-4)
+
+    def test_dca_grace_period_prevents_invalidation(self):
+        """Invalidation must return None within 300s of a DCA entry being filled."""
+        from datetime import timedelta
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            age_seconds=400.0,
+        )
+        # Mark DCA as just filled (1 minute ago — within grace period)
+        sig.entry_2_filled = True
+        sig.dca_timestamp = utcnow() - timedelta(seconds=60)
+
+        regime_detector = MagicMock()
+        regime_result = MagicMock()
+        regime_result.regime.value = "TRENDING_DOWN"
+        regime_detector.classify.return_value = regime_result
+
+        closes = [30000.0] * 25
+        monitor, _, _ = self._build_monitor(
+            {sig.signal_id: sig},
+            candles_close=closes,
+            regime_detector=regime_detector,
+        )
+        reason = monitor._check_invalidation(sig)
+        assert reason is None, (
+            f"Invalidation must be suppressed during DCA grace period, got: {reason!r}"
+        )
+
+    def test_dca_grace_period_expires(self):
+        """Invalidation is allowed after the DCA grace period (>300s since DCA)."""
+        from datetime import timedelta
+        sig = _make_signal(
+            channel="360_SCALP",
+            direction=Direction.LONG,
+            age_seconds=400.0,
+        )
+        # Mark DCA as filled 310 seconds ago — grace period has expired
+        sig.entry_2_filled = True
+        sig.dca_timestamp = utcnow() - timedelta(seconds=310)
+
+        regime_detector = MagicMock()
+        regime_result = MagicMock()
+        regime_result.regime.value = "TRENDING_DOWN"
+        regime_detector.classify.return_value = regime_result
+
+        closes = [30000.0] * 25
+        monitor, _, _ = self._build_monitor(
+            {sig.signal_id: sig},
+            candles_close=closes,
+            regime_detector=regime_detector,
+        )
+        reason = monitor._check_invalidation(sig)
+        assert reason is not None, "Invalidation must fire after DCA grace period expires"
+        assert "TRENDING_DOWN" in reason
