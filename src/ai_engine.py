@@ -103,6 +103,7 @@ class SentimentResult:
     label: str = "Neutral"    # Positive / Negative / Neutral / Bullish / Bearish
     summary: str = ""
     sources: List[str] = field(default_factory=list)
+    fear_greed_value: int = 50  # 0–100; 50 = neutral (default when unavailable)
 
 
 @dataclass
@@ -403,4 +404,5 @@ async def get_ai_insight(
         label=label,
         summary=summary,
         sources=news.sources + social.sources,
+        fear_greed_value=int(fg_value),
     )

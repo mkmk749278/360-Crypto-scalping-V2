@@ -323,14 +323,20 @@ INVALIDATION_MIN_AGE_SECONDS: Dict[str, int] = {
     "360_SCALP": 300,       # was 120 — too aggressive for 1m candle noise
     "360_SWING": 300,
     "360_RANGE": 180,
-    "360_THE_TAPE": 120,    # was 60 — too aggressive
+    "360_THE_TAPE": 180,    # increased from 120 — 1m candles are noisy
     "360_SELECT": 180,
 }
 
-# Momentum threshold below which a signal is considered to have lost its thesis
-INVALIDATION_MOMENTUM_THRESHOLD: float = float(
-    os.getenv("INVALIDATION_MOMENTUM_THRESHOLD", "0.15")
-)
+# Momentum threshold below which a signal is considered to have lost its thesis.
+# Per-channel to account for different timeframe noise levels.
+# TAPE uses 1m candles which have rapid momentum oscillation — use a lower threshold.
+INVALIDATION_MOMENTUM_THRESHOLD: Dict[str, float] = {
+    "360_THE_TAPE": float(os.getenv("INVALIDATION_MOMENTUM_THRESHOLD_TAPE", "0.05")),
+    "360_SCALP": float(os.getenv("INVALIDATION_MOMENTUM_THRESHOLD_SCALP", "0.10")),
+    "360_RANGE": float(os.getenv("INVALIDATION_MOMENTUM_THRESHOLD_RANGE", "0.15")),
+    "360_SWING": float(os.getenv("INVALIDATION_MOMENTUM_THRESHOLD_SWING", "0.20")),
+    "360_SELECT": float(os.getenv("INVALIDATION_MOMENTUM_THRESHOLD_SELECT", "0.20")),
+}
 
 # ---------------------------------------------------------------------------
 # Backtester – default slippage per trade (percent, e.g. 0.03 = 0.03 %)

@@ -19,6 +19,14 @@ from typing import Dict, Optional
 
 from config import NEW_PAIR_MIN_CONFIDENCE
 
+# Fear & Greed index thresholds and modifiers for AI sentiment scoring
+_FG_EXTREME_FEAR_THRESHOLD: int = 25   # below this → extreme fear zone
+_FG_EXTREME_GREED_THRESHOLD: int = 75  # above this → extreme greed zone
+_FG_LONG_PENALTY: float = -3.0   # applied to LONG confidence in extreme fear
+_FG_SHORT_BOOST: float = 2.0     # applied to SHORT confidence in extreme fear
+_FG_LONG_BOOST: float = 2.0      # applied to LONG confidence in extreme greed
+_FG_SHORT_PENALTY: float = -3.0  # applied to SHORT confidence in extreme greed
+
 
 @dataclass
 class ConfidenceInput:
@@ -120,16 +128,35 @@ def score_trend(
     return min(s, 20.0)
 
 
-def score_ai_sentiment(sentiment_value: float, direction: str = "LONG") -> float:
+def score_ai_sentiment(
+    sentiment_value: float,
+    direction: str = "LONG",
+    fear_greed_value: int = 50,
+) -> float:
     """AI sentiment component (max 15).
 
     *sentiment_value* expected in [-1, 1].
     For SHORT signals, bearish sentiment supports the trade and should score
     high, so the sentiment value is inverted before scoring.
+
+    *fear_greed_value* is the Alternative.me Fear & Greed index (0–100).
+    Extreme readings apply a directional modifier:
+      - F&G < 25 (Extreme Fear): LONG penalised by -3, SHORT boosted by +2
+      - F&G > 75 (Extreme Greed): SHORT penalised by -3, LONG boosted by +2
     """
     effective = sentiment_value if direction.upper() != "SHORT" else -sentiment_value
     normalised = (effective + 1.0) / 2.0  # map to [0, 1]
-    return round(min(max(normalised * 15.0, 0.0), 15.0), 2)
+    base = normalised * 15.0
+
+    # Fear & Greed modifier
+    is_long = direction.upper() != "SHORT"
+    fg_modifier = 0.0
+    if fear_greed_value < _FG_EXTREME_FEAR_THRESHOLD:  # Extreme Fear – contrarian boost for SHORT
+        fg_modifier = _FG_LONG_PENALTY if is_long else _FG_SHORT_BOOST
+    elif fear_greed_value > _FG_EXTREME_GREED_THRESHOLD:  # Extreme Greed – contrarian boost for LONG
+        fg_modifier = _FG_LONG_BOOST if is_long else _FG_SHORT_PENALTY
+
+    return round(min(max(base + fg_modifier, 0.0), 15.0), 2)
 
 
 def score_liquidity(volume_24h_usd: float, threshold: float = 5_000_000) -> float:

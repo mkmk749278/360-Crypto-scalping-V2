@@ -92,7 +92,8 @@ def fmt_price(price: float) -> str:
       ≥ $1,000 → 0 decimals  (e.g. BTC, ETH)
       ≥ $100   → 2 decimals  (e.g. SOL, BNB)
       ≥ $1     → 4 decimals  (e.g. DOT, UNI – avoids identical TP display)
-      < $1     → 6 decimals  (e.g. DOGE, SHIB)
+      ≥ $0.001 → 6 decimals  (e.g. DOGE, SHIB)
+      < $0.001 → 8 decimals  (e.g. BONK, SHIB micro-cap tokens)
     """
     if price >= 1_000:
         return f"{price:,.0f}"
@@ -100,7 +101,27 @@ def fmt_price(price: float) -> str:
         return f"{price:,.2f}"
     if price >= 1:
         return f"{price:,.4f}"
-    return f"{price:.6f}"
+    if price >= 0.001:
+        return f"{price:.6f}"
+    return f"{price:.8f}"
+
+
+def price_decimal_fmt(price: float) -> str:
+    """Return a Python format spec string for adaptive decimal precision.
+
+    Used for inline f-string formatting of raw prices where commas and
+    the ``fmt_price`` full formatter are not desired (e.g. zone labels,
+    invalidation messages). Consistent with the tiers in :func:`fmt_price`.
+
+    Examples::
+
+        f"{zone_low:{price_decimal_fmt(zone_low)}}"
+    """
+    if price >= 1.0:
+        return ".4f"
+    if price >= 0.001:
+        return ".6f"
+    return ".8f"
 
 
 def fmt_ts(dt: Optional[datetime] = None) -> str:

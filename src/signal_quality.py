@@ -10,6 +10,7 @@ import numpy as np
 
 from src.regime import MarketRegime
 from src.smc import Direction
+from src.utils import price_decimal_fmt
 
 
 class SetupClass(str, Enum):
@@ -309,7 +310,15 @@ def classify_setup(
     momentum = _safe_float(primary.get("momentum_last"))
 
     if channel_name == "360_THE_TAPE":
-        setup = SetupClass.MOMENTUM_EXPANSION if (whale or delta_spike) and abs(momentum) >= 0.3 else SetupClass.LIQUIDITY_SWEEP_REVERSAL
+        rsi = _safe_float(primary.get("rsi_last"), 50.0)
+        if (whale or delta_spike) and abs(momentum) >= 0.3:
+            setup = SetupClass.MOMENTUM_EXPANSION
+        elif (rsi > 78 or rsi < 22) and abs(momentum) < 0.2:
+            setup = SetupClass.EXHAUSTION_FADE
+        elif smc_data.get("mss") is not None and abs(momentum) >= 0.2:
+            setup = SetupClass.BREAKOUT_RETEST
+        else:
+            setup = SetupClass.LIQUIDITY_SWEEP_REVERSAL
     elif channel_name == "360_RANGE":
         setup = SetupClass.RANGE_REJECTION if market_state == MarketState.CLEAN_RANGE else SetupClass.EXHAUSTION_FADE
     elif sweeps and signal.direction == sweeps[0].direction and (mss is not None or abs(momentum) >= 0.2):
@@ -352,7 +361,7 @@ def execution_quality_check(
 ) -> ExecutionAssessment:
     primary_tf = "15m" if signal.channel == "360_RANGE" else "1h" if signal.channel == "360_SWING" else "1m" if signal.channel == "360_THE_TAPE" else "5m"
     primary = indicators.get(primary_tf, indicators.get("5m", indicators.get("1m", {})))
-    atr_val = max(_safe_float(primary.get("atr_last")), max(signal.entry, 1.0) * 0.001)
+    atr_val = max(_safe_float(primary.get("atr_last")), signal.entry * 0.01)  # 1% floor
     ema_anchor = _safe_float(primary.get("ema21_last"), signal.entry)
     bb_mid = _safe_float(primary.get("bb_mid_last"), signal.entry)
     sweep = smc_data.get("sweeps", [None])[0] if smc_data.get("sweeps") else None
@@ -406,7 +415,9 @@ def execution_quality_check(
     passed = trigger_confirmed and extension_ratio <= max_extension
     zone_low = min(anchor, signal.entry)
     zone_high = max(anchor, signal.entry)
-    entry_zone = f"{zone_low:.4f} – {zone_high:.4f}"
+    # Use dynamic decimal places based on price magnitude for micro-cap tokens
+    _zone_fmt = price_decimal_fmt(max(zone_low, zone_high, 1e-12))
+    entry_zone = f"{zone_low:{_zone_fmt}} – {zone_high:{_zone_fmt}}"
     reason = ""
     if not trigger_confirmed:
         reason = "entry trigger not confirmed"
@@ -435,7 +446,7 @@ def build_risk_plan(
     primary_tf = "15m" if signal.channel == "360_RANGE" else "1h" if signal.channel == "360_SWING" else "1m" if signal.channel == "360_THE_TAPE" else "5m"
     primary = indicators.get(primary_tf, indicators.get("5m", indicators.get("1m", {})))
     candle_bucket = candles.get(primary_tf, candles.get("5m", candles.get("1m", {})))
-    atr_val = max(_safe_float(primary.get("atr_last")), max(signal.entry, 1.0) * 0.001)
+    atr_val = max(_safe_float(primary.get("atr_last")), signal.entry * 0.01)  # 1% of price as minimum ATR
     buffer = max(atr_val * 0.35, signal.entry * (spread_pct / 100.0) * 1.5)
     structure = _recent_structure(candle_bucket, signal.direction)
 
@@ -495,7 +506,17 @@ def build_risk_plan(
     min_rr = 0.9 if setup == SetupClass.RANGE_REJECTION else 1.2
     passed = r_multiple >= min_rr
     reason = "" if passed else f"rr {r_multiple:.2f} below {min_rr:.2f}"
-    invalidation = f"{'Below' if signal.direction == Direction.LONG else 'Above'} {structure:.4f} structure + volatility buffer"
+    # Sanity check: reject if SL or any TP is negative, or SL distance > 5% of entry
+    sl_pct = risk / signal.entry if signal.entry > 0 else 0.0
+    if stop_loss <= 0 or tp1 <= 0 or tp2 <= 0 or (tp3 is not None and tp3 <= 0):
+        passed = False
+        reason = "SL or TP computed as non-positive (micro-cap price precision issue)"
+    elif sl_pct > 0.05:
+        passed = False
+        reason = f"SL distance {sl_pct:.1%} exceeds 5% of entry (risk plan rejected)"
+    # Dynamic decimal places for invalidation message (micro-cap tokens)
+    _struct_fmt = price_decimal_fmt(structure)
+    invalidation = f"{'Below' if signal.direction == Direction.LONG else 'Above'} {structure:{_struct_fmt}} structure + volatility buffer"
 
     return RiskAssessment(
         passed=passed,

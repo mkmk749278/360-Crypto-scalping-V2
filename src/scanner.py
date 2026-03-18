@@ -45,7 +45,7 @@ from src.signal_quality import (
     execution_quality_check,
     score_signal_components,
 )
-from src.utils import get_logger
+from src.utils import get_logger, price_decimal_fmt
 
 log = get_logger("scanner")
 
@@ -71,7 +71,7 @@ _MAX_CONCURRENT_SCANS: int = 10
 # SWING needs sustained trend: block in VOLATILE (chaotic, stops get swept).
 _REGIME_CHANNEL_INCOMPATIBLE: Dict[str, List[str]] = {
     "360_SCALP": ["QUIET"],
-    "360_SWING": ["VOLATILE"],
+    "360_SWING": ["VOLATILE", "DIRTY_RANGE"],
 }
 
 
@@ -180,6 +180,10 @@ class Scanner:
         # Per-symbol cooldown after a stop-loss: prevents any channel from
         # firing on the same symbol for a short window after an SL event.
         self._symbol_sl_cooldown_until: Dict[str, float] = {}
+
+        # Post-invalidation cooldown: (symbol, channel, direction) → monotonic expiry
+        # Prevents rapid re-fire of the same thesis after invalidation.
+        self._invalidation_cooldown_until: Dict[Tuple[str, str, str], float] = {}
 
         # Semaphore to limit concurrent symbol scans
         self._scan_semaphore: asyncio.Semaphore = asyncio.Semaphore(_MAX_CONCURRENT_SCANS)
@@ -292,6 +296,35 @@ class Scanner:
             "Per-symbol SL cooldown set for {} ({:.0f}s)", symbol, duration_s
         )
 
+    # Post-invalidation cooldown durations per channel (seconds)
+    _INVALIDATION_COOLDOWN_SECONDS: Dict[str, int] = {
+        "360_THE_TAPE": 300,
+        "360_SCALP": 300,
+        "360_RANGE": 300,
+        "360_SWING": 600,
+        "360_SELECT": 600,
+    }
+
+    def set_invalidation_cooldown(
+        self,
+        symbol: str,
+        channel: str,
+        direction: str,
+    ) -> None:
+        """Apply a cooldown for (symbol, channel, direction) after invalidation.
+
+        Prevents the same thesis from re-firing immediately after a signal is
+        invalidated (e.g., EMA crossover kills BNBUSDT SHORT, then it fires again
+        within minutes with the same parameters).
+        """
+        duration_s = self._INVALIDATION_COOLDOWN_SECONDS.get(channel, 300)
+        key = (symbol, channel, direction)
+        self._invalidation_cooldown_until[key] = time.monotonic() + duration_s
+        log.debug(
+            "Post-invalidation cooldown set for {} {} {} ({:.0f}s)",
+            symbol, channel, direction, duration_s,
+        )
+
     async def _scan_symbol_bounded(self, sem: asyncio.Semaphore, symbol: str, volume_24h: float) -> None:
         """Acquire *sem* then delegate to :meth:`_scan_symbol`."""
         async with sem:
@@ -345,13 +378,14 @@ class Scanner:
         return indicators
 
     async def _fetch_ai_context(self, symbol: str) -> Dict[str, Any]:
-        ai: Dict[str, Any] = {"label": "Neutral", "summary": "", "score": 0.0}
+        ai: Dict[str, Any] = {"label": "Neutral", "summary": "", "score": 0.0, "fear_greed_value": 50}
         try:
             insight = await asyncio.wait_for(get_ai_insight(symbol), timeout=2)
             ai = {
                 "label": insight.label,
                 "summary": insight.summary,
                 "score": insight.score,
+                "fear_greed_value": insight.fear_greed_value,
             }
         except Exception:
             pass
@@ -423,12 +457,14 @@ class Scanner:
         smc_parts = []
         if smc_result.sweeps:
             sweep = smc_result.sweeps[0]
+            fmt = price_decimal_fmt(sweep.sweep_level)
             smc_parts.append(
-                f"Sweep {sweep.direction.value} at {sweep.sweep_level:.4f}"
+                f"Sweep {sweep.direction.value} at {sweep.sweep_level:{fmt}}"
             )
         if smc_result.fvg:
             fvg = smc_result.fvg[0]
-            smc_parts.append(f"FVG {fvg.gap_high:.4f}-{fvg.gap_low:.4f}")
+            fmt = price_decimal_fmt(max(fvg.gap_high, fvg.gap_low))
+            smc_parts.append(f"FVG {fvg.gap_high:{fmt}}-{fvg.gap_low:{fmt}}")
         return " | ".join(smc_parts) if smc_parts else "None detected"
 
     async def _build_scan_context(self, symbol: str, volume_24h: float) -> Optional[ScanContext]:
@@ -656,7 +692,11 @@ class Scanner:
                 adx_value=ctx.ind_for_predict.get("adx_last") or 0.0,
                 momentum_strength=ctx.ind_for_predict.get("momentum_last") or 0.0,
             ),
-            ai_sentiment_score=score_ai_sentiment(ctx.ai.get("score", 0), sig.direction.value),
+            ai_sentiment_score=score_ai_sentiment(
+                ctx.ai.get("score", 0),
+                sig.direction.value,
+                fear_greed_value=int(ctx.ai.get("fear_greed_value", 50)),
+            ),
             liquidity_score=score_liquidity(volume_24h),
             spread_score=score_spread(ctx.spread_pct),
             data_sufficiency=score_data_sufficiency(ctx.candle_total),
@@ -814,6 +854,18 @@ class Scanner:
             return None, None
         if sig is None:
             return None, None
+
+        # Post-invalidation cooldown: suppress same (symbol, channel, direction) thesis
+        inv_key = (symbol, chan_name, sig.direction.value)
+        inv_expiry = self._invalidation_cooldown_until.get(inv_key)
+        if inv_expiry is not None:
+            if time.monotonic() < inv_expiry:
+                log.debug(
+                    "Post-invalidation cooldown: skipping {} {} {}",
+                    symbol, chan_name, sig.direction.value,
+                )
+                return None, None
+            del self._invalidation_cooldown_until[inv_key]
 
         setup = self._evaluate_setup(chan_name, sig, ctx)
         if not setup.channel_compatible or not setup.regime_compatible:

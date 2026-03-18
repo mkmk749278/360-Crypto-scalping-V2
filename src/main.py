@@ -182,6 +182,10 @@ class CryptoSignalEngine:
         # short cross-channel cooldown on the scanner after any stop-loss.
         self.monitor.on_sl_callback = self._scanner.set_symbol_sl_cooldown
 
+        # Wire the post-invalidation cooldown callback so the monitor suppresses
+        # rapid re-fire of the same (symbol, channel, direction) thesis after invalidation.
+        self.monitor.on_invalidation_callback = self._scanner.set_invalidation_cooldown
+
         # Select mode filter (OFF by default – admin must run /select_mode on)
         self._select_mode = SelectModeFilter()
         self._scanner.select_mode_filter = self._select_mode

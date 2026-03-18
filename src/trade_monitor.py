@@ -81,6 +81,9 @@ class TradeMonitor:
         # Optional callback invoked with the symbol whenever a stop-loss is hit.
         # Set after construction (e.g. to scanner.set_symbol_sl_cooldown).
         self.on_sl_callback: Optional[Any] = None
+        # Optional callback invoked with (symbol, channel, direction) on invalidation.
+        # Set after construction (e.g. to scanner.set_invalidation_cooldown).
+        self.on_invalidation_callback: Optional[Any] = None
 
     def _record_outcome(self, sig: Signal, hit_tp: int, hit_sl: bool) -> None:
         """Notify performance tracker and circuit breaker of a completed signal.
@@ -280,17 +283,21 @@ class TradeMonitor:
         momentum = indicators.get("momentum")
 
         # 2. EMA crossover against signal direction
-        if ema9 is not None and ema21 is not None:
+        # After TP1 has been hit, let trailing stop manage the exit — don't kill
+        # a profitable trade just because the 1m EMA crosses (common noise).
+        if ema9 is not None and ema21 is not None and sig.status not in ("TP1_HIT", "TP2_HIT"):
             if is_long and ema9 < ema21:
                 return "EMA bearish crossover (EMA9 < EMA21) – LONG thesis invalidated"
             if not is_long and ema9 > ema21:
                 return "EMA bullish crossover (EMA9 > EMA21) – SHORT thesis invalidated"
 
-        # 3. Momentum loss
-        if momentum is not None and abs(momentum) < INVALIDATION_MOMENTUM_THRESHOLD:
+        # 3. Momentum loss – threshold is per-channel since different timeframes have
+        # different noise characteristics (TAPE 1m candles have rapid oscillation).
+        mom_threshold = INVALIDATION_MOMENTUM_THRESHOLD.get(sig.channel, 0.15)
+        if momentum is not None and abs(momentum) < mom_threshold:
             return (
                 f"momentum loss (|momentum|={abs(momentum):.3f} < "
-                f"{INVALIDATION_MOMENTUM_THRESHOLD}) – signal thesis exhausted"
+                f"{mom_threshold}) – signal thesis exhausted"
             )
 
         return None
@@ -420,6 +427,8 @@ class TradeMonitor:
             await self._post_update(sig, f"🔄 INVALIDATED ({invalidation_reason})")
             self._record_outcome(sig, hit_tp=0, hit_sl=False)
             self._remove(sig.signal_id)
+            if self.on_invalidation_callback is not None:
+                self.on_invalidation_callback(sig.symbol, sig.channel, sig.direction.value)
             return
 
         # TP hits (progressive)
