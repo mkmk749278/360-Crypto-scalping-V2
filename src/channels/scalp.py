@@ -1,7 +1,7 @@
 """360_SCALP – M1/M5 High-Frequency Scalping ⚡
 
-Trigger : M5 Liquidity Sweep + Momentum > 0.3 % over 3 candles
-Filters : EMA alignment, ADX > 25, ATR-based volatility, spread < 0.02 %, liquidity
+Trigger : M5 Liquidity Sweep + Momentum > 0.15 % over 3 candles
+Filters : EMA alignment, ADX > 20, ATR-based volatility, spread < 0.02 %, liquidity
 Risk    : SL 0.05–0.1 %, TP1 0.5–1R, TP2 1–1.5R, TP3 optional 20 %, Trailing 1.5–2×ATR
 """
 
@@ -60,9 +60,9 @@ class ScalpChannel(BaseChannel):
             return None
         sweep = sweeps[0]
 
-        # Momentum > 0.3 % over 3 candles
+        # Momentum > 0.15 % over 3 candles
         mom = ind.get("momentum_last")
-        if mom is None or abs(mom) < 0.3:
+        if mom is None or abs(mom) < 0.15:
             return None
 
         direction = sweep.direction

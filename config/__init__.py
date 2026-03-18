@@ -112,7 +112,7 @@ CHANNEL_SCALP = ChannelConfig(
     sl_pct_range=(0.05, 0.1),
     tp_ratios=[1.0, 1.5, 2.0],
     trailing_atr_mult=1.5,
-    adx_min=25,
+    adx_min=20,
     adx_max=100,
     spread_max=0.02,
     min_confidence=70,
@@ -143,7 +143,7 @@ CHANNEL_RANGE = ChannelConfig(
     tp_ratios=[1.0, 1.5],
     trailing_atr_mult=1.0,
     adx_min=0,
-    adx_max=20,
+    adx_max=25,
     spread_max=0.02,
     min_confidence=70,
     min_volume=1_000_000.0,
@@ -323,7 +323,7 @@ INVALIDATION_MIN_AGE_SECONDS: Dict[str, int] = {
     "360_SCALP": 300,       # was 120 — too aggressive for 1m candle noise
     "360_SWING": 300,
     "360_RANGE": 180,
-    "360_THE_TAPE": 180,    # increased from 120 — 1m candles are noisy
+    "360_THE_TAPE": 300,    # increased from 180 — regime flips happen at 180s boundary
     "360_SELECT": 180,
 }
 

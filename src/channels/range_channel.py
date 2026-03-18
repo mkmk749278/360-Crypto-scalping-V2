@@ -1,6 +1,6 @@
 """360_RANGE – M15 Mean-Reversion ⚖️
 
-Trigger : ADX < 20 + Bollinger Band rejection
+Trigger : ADX < 25 + Bollinger Band rejection (ADX 20-25 = borderline, -10 confidence penalty)
 Filters : SMA trend, RSI mean-reversion, ATR volatility, spread < 0.02 %
 Risk    : SL 0.1–0.2 %, TP1 0.75–1R, TP2 1.5R, TP3 optional
 """

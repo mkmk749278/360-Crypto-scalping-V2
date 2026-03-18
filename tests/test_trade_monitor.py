@@ -1632,3 +1632,56 @@ class TestSignalInvalidation:
         reason = monitor._check_invalidation(sig)
         assert reason is not None, "Invalidation must fire after DCA grace period expires"
         assert "TRENDING_DOWN" in reason
+
+    def test_microcap_momentum_threshold_scaled_down(self):
+        """Micro-cap tokens (entry < 0.001) use a 10× smaller momentum threshold."""
+        from config import INVALIDATION_MIN_AGE_SECONDS, INVALIDATION_MOMENTUM_THRESHOLD
+        channel = "360_THE_TAPE"
+        min_age = INVALIDATION_MIN_AGE_SECONDS[channel]
+        micro_entry = 0.0000064  # BONK-like price
+
+        sig = _make_signal(
+            channel=channel,
+            entry=micro_entry,
+            stop_loss=micro_entry * 0.95,
+            tp1=micro_entry * 1.05,
+            age_seconds=min_age + 10,
+        )
+
+        # Flat prices → zero momentum → below even the scaled threshold
+        closes = [30000.0] * 25
+        monitor, _, _ = self._build_monitor({sig.signal_id: sig}, candles_close=closes)
+
+        reason = monitor._check_invalidation(sig)
+        assert reason is not None
+        assert "momentum" in reason.lower()
+        # Verify the threshold reported in the message is the scaled value
+        base_threshold = INVALIDATION_MOMENTUM_THRESHOLD.get(channel, 0.15)
+        scaled_threshold = base_threshold * 0.1
+        assert f"{scaled_threshold}" in reason or f"{scaled_threshold:.4f}" in reason
+
+    def test_normal_cap_momentum_threshold_not_scaled(self):
+        """Standard-price tokens (entry >= 0.001) use the base momentum threshold."""
+        from config import INVALIDATION_MIN_AGE_SECONDS, INVALIDATION_MOMENTUM_THRESHOLD
+        channel = "360_THE_TAPE"
+        min_age = INVALIDATION_MIN_AGE_SECONDS[channel]
+        standard_entry = 1.5  # normal price like XRPUSDT
+
+        sig = _make_signal(
+            channel=channel,
+            entry=standard_entry,
+            stop_loss=standard_entry * 0.95,
+            tp1=standard_entry * 1.05,
+            age_seconds=min_age + 10,
+        )
+
+        # Flat prices → zero momentum
+        closes = [30000.0] * 25
+        monitor, _, _ = self._build_monitor({sig.signal_id: sig}, candles_close=closes)
+
+        reason = monitor._check_invalidation(sig)
+        assert reason is not None
+        assert "momentum" in reason.lower()
+        # The threshold in the reason message should be the base (unscaled) value
+        base_threshold = INVALIDATION_MOMENTUM_THRESHOLD.get(channel, 0.15)
+        assert f"{base_threshold}" in reason

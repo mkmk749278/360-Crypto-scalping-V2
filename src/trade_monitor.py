@@ -249,9 +249,16 @@ class TradeMonitor:
             except Exception as exc:
                 log.debug("indicators_fn failed for %s: %s", sig.symbol, exc)
 
-        # Fallback: derive EMA9/EMA21 and momentum from 1m candles in data store
+        # Fallback: derive EMA9/EMA21 and momentum from candles in data store.
+        # TAPE channel prefers 5m candles for regime detection — 1m flips every 2-3
+        # candles (noise). Fall back to 1m only if 5m is unavailable.
         if indicators is None and self._store is not None:
-            candles = self._store.get_candles(sig.symbol, "1m")
+            if sig.channel == "360_THE_TAPE":
+                candles = self._store.get_candles(sig.symbol, "5m")
+                if not (candles and len(candles.get("close", [])) >= 21):
+                    candles = self._store.get_candles(sig.symbol, "1m")
+            else:
+                candles = self._store.get_candles(sig.symbol, "1m")
             if candles and len(candles.get("close", [])) >= 21:
                 closes = np.asarray(candles["close"], dtype=np.float64)
                 ema9_arr = _compute_ema(closes, 9)
@@ -293,7 +300,14 @@ class TradeMonitor:
 
         # 3. Momentum loss – threshold is per-channel since different timeframes have
         # different noise characteristics (TAPE 1m candles have rapid oscillation).
+        # For micro-cap tokens (entry price < 0.001), scale threshold by 0.1 to
+        # avoid false invalidations on tiny absolute price moves (e.g. BONKUSDT).
         mom_threshold = INVALIDATION_MOMENTUM_THRESHOLD.get(sig.channel, 0.15)
+        # Prefer entry price; fall back to current_price only if entry is unset (0).
+        # The current_price check guards against a zero fallback.
+        entry_price = sig.entry if sig.entry > 0 else sig.current_price
+        if 0 < entry_price < 0.001:
+            mom_threshold *= 0.1
         if momentum is not None and abs(momentum) < mom_threshold:
             return (
                 f"momentum loss (|momentum|={abs(momentum):.3f} < "

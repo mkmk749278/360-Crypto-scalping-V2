@@ -62,6 +62,11 @@ _RANGING_ADX_SUPPRESS_THRESHOLD: float = 15.0
 # Confidence boost applied to RANGE channel when regime is RANGING
 _RANGING_RANGE_CONF_BOOST: float = 5.0
 
+# Confidence penalty applied to RANGE channel when ADX is in the borderline zone (20-25)
+_RANGE_BORDERLINE_ADX_PENALTY: float = 10.0
+_RANGE_BORDERLINE_ADX_LOW: float = 20.0
+_RANGE_BORDERLINE_ADX_HIGH: float = 25.0
+
 # Maximum number of symbols scanned concurrently
 _MAX_CONCURRENT_SCANS: int = 10
 
@@ -298,7 +303,7 @@ class Scanner:
 
     # Post-invalidation cooldown durations per channel (seconds)
     _INVALIDATION_COOLDOWN_SECONDS: Dict[str, int] = {
-        "360_THE_TAPE": 300,
+        "360_THE_TAPE": 600,
         "360_SCALP": 300,
         "360_RANGE": 300,
         "360_SWING": 600,
@@ -801,12 +806,14 @@ class Scanner:
         liq_parts = []
         if ctx.smc_result.sweeps:
             sweep = ctx.smc_result.sweeps[0]
+            fmt = price_decimal_fmt(sweep.sweep_level)
             liq_parts.append(
-                f"Sweep {sweep.direction.value} at {sweep.sweep_level:.4f}"
+                f"Sweep {sweep.direction.value} at {sweep.sweep_level:{fmt}}"
             )
         if ctx.smc_result.fvg:
             fvg = ctx.smc_result.fvg[0]
-            liq_parts.append(f"FVG {fvg.gap_high:.4f}-{fvg.gap_low:.4f}")
+            fmt = price_decimal_fmt(max(fvg.gap_high, fvg.gap_low))
+            liq_parts.append(f"FVG {fvg.gap_high:{fmt}}-{fvg.gap_low:{fmt}}")
         if liq_parts:
             sig.liquidity_info = " | ".join(liq_parts)
         sig.spread_pct = ctx.spread_pct
@@ -914,6 +921,23 @@ class Scanner:
         sig.quality_tier = setup_score.quality_tier.value
         sig.pre_ai_confidence = setup_score.total
         sig.confidence = setup_score.total
+        # Apply confidence penalty for RANGE signals in the borderline ADX zone (20-25).
+        # The channel now allows ADX up to 25, but a trending-leaning environment
+        # warrants a penalty to reflect reduced signal quality.
+        # Intentionally asymmetric: ADX <= 20 is clean range (no penalty); only
+        # ADX strictly above 20 up to and including 25 triggers the penalty.
+        if (
+            chan_name == "360_RANGE"
+            and ctx.adx_val is not None
+            and _RANGE_BORDERLINE_ADX_LOW < ctx.adx_val <= _RANGE_BORDERLINE_ADX_HIGH
+        ):
+            sig.confidence -= _RANGE_BORDERLINE_ADX_PENALTY
+            log.debug(
+                "RANGE borderline ADX penalty for {} (ADX={:.1f}): {:.1f}",
+                symbol,
+                ctx.adx_val,
+                sig.confidence,
+            )
         if not await self._apply_openai_adjustments(symbol, chan_name, sig, ctx):
             return None, cross_verified
         sig.confidence = self._clamp_confidence(sig.confidence)

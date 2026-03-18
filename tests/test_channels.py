@@ -61,7 +61,7 @@ class TestScalpChannel:
             sweep_level=99, close_price=99.05,
             wick_high=101, wick_low=98,
         )
-        indicators = {"5m": _make_indicators(adx_val=10)}  # below 25
+        indicators = {"5m": _make_indicators(adx_val=10)}  # below 20
         smc_data = {"sweeps": [sweep]}
         sig = ch.evaluate("BTCUSDT", candles, indicators, smc_data, {}, 0.01, 10_000_000)
         assert sig is None
