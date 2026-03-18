@@ -124,6 +124,9 @@ class CryptoSignalEngine:
         self._smc_detector = SMCDetector()
         self._regime_detector = MarketRegimeDetector()
 
+        # Wire regime detector into trade monitor for signal invalidation checks
+        self.monitor._regime_detector = self._regime_detector
+
         # Predictive AI engine
         self.predictive = PredictiveEngine()
 

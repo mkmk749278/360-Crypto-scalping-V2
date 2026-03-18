@@ -195,6 +195,11 @@ class Scanner:
             t0 = time.monotonic()
             self._order_book_fetches_this_cycle = 0
 
+            # Always clean up expired signals first (safety net for stuck slots)
+            expired_count = self.router.cleanup_expired()
+            if expired_count > 0:
+                log.info("Cleaned up {} expired signals at start of scan cycle", expired_count)
+
             # Skip scanning when circuit breaker is tripped
             if self.circuit_breaker and self.circuit_breaker.is_tripped():
                 log.warning("Circuit breaker tripped — skipping scan cycle")

@@ -373,20 +373,23 @@ class TestSignalRouter:
         assert "TEST-PIP-SL-SHORT" not in router.active_signals
 
     @pytest.mark.asyncio
-    async def test_global_position_cap_blocks_excess(self, queue, router, sent_messages):
-        """When MAX_CONCURRENT_SIGNALS positions are open, the next signal is blocked."""
-        from config import MAX_CONCURRENT_SIGNALS
+    async def test_per_channel_cap_blocks_excess_within_same_channel(self, queue, router, sent_messages):
+        """When a channel is full, additional signals for that channel are blocked."""
+        from config import MAX_CONCURRENT_SIGNALS_PER_CHANNEL
 
-        # Pre-fill active_signals to the cap using distinct symbols
-        for i in range(MAX_CONCURRENT_SIGNALS):
-            dummy = _make_signal(symbol=f"DUMMY{i}USDT", confidence=90)
+        channel = "360_SCALP"
+        cap = MAX_CONCURRENT_SIGNALS_PER_CHANNEL.get(channel, 5)
+
+        # Pre-fill the channel to its cap using distinct symbols
+        for i in range(cap):
+            dummy = _make_signal(symbol=f"DUMMY{i}USDT", channel=channel, confidence=90)
             dummy.signal_id = f"DUMMY-{i}"
             router._active_signals[dummy.signal_id] = dummy
             router._position_lock[dummy.symbol] = dummy.direction
 
-        # Now try to add one more signal for a brand-new symbol
+        # Now try to add one more signal for the same channel (brand-new symbol)
         sig = Signal(
-            channel="360_SCALP",
+            channel=channel,
             symbol="NEWUSDT",
             direction=Direction.LONG,
             entry=1.0000,
@@ -407,9 +410,53 @@ class TestSignalRouter:
         except asyncio.CancelledError:
             pass
 
-        # The new signal must be blocked; cap must not be exceeded
+        # The new signal must be blocked; channel cap must not be exceeded
         assert "TEST-NEW-CAP" not in router.active_signals
-        assert len(router.active_signals) == MAX_CONCURRENT_SIGNALS
+        channel_count = sum(
+            1 for s in router.active_signals.values() if s.channel == channel
+        )
+        assert channel_count == cap
+
+    @pytest.mark.asyncio
+    async def test_per_channel_cap_does_not_block_other_channels(self, queue, router, sent_messages):
+        """When one channel is full, signals from other channels are still accepted."""
+        from config import MAX_CONCURRENT_SIGNALS_PER_CHANNEL
+
+        scalp_channel = "360_SCALP"
+        scalp_cap = MAX_CONCURRENT_SIGNALS_PER_CHANNEL.get(scalp_channel, 5)
+
+        # Pre-fill the SCALP channel to its cap
+        for i in range(scalp_cap):
+            dummy = _make_signal(symbol=f"SCALP{i}USDT", channel=scalp_channel, confidence=90)
+            dummy.signal_id = f"SCALP-DUMMY-{i}"
+            router._active_signals[dummy.signal_id] = dummy
+            router._position_lock[dummy.symbol] = dummy.direction
+
+        # Now try to add a signal for a DIFFERENT channel (SWING)
+        sig = Signal(
+            channel="360_SWING",
+            symbol="SWINGUSDT",
+            direction=Direction.LONG,
+            entry=1.0000,
+            stop_loss=0.9900,
+            tp1=1.0200,
+            tp2=1.0300,
+            confidence=90,
+            signal_id="TEST-SWING-CROSS",
+            timestamp=utcnow(),
+        )
+        await queue.put(sig)
+        task = asyncio.create_task(router.start())
+        await asyncio.sleep(0.2)
+        await router.stop()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        # The SWING signal must be accepted even though SCALP is full
+        assert "TEST-SWING-CROSS" in router.active_signals
 
     @pytest.mark.asyncio
     async def test_failed_send_does_not_leave_active_signal_or_lock(self, queue, sent_messages, monkeypatch):

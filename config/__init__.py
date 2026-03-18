@@ -268,13 +268,13 @@ PERFORMANCE_TRACKER_PATH: str = os.getenv(
 )
 
 # ---------------------------------------------------------------------------
-# Max concurrent signals per channel
+# Max concurrent signals per channel (5 per channel, independently capped)
 # ---------------------------------------------------------------------------
 MAX_CONCURRENT_SIGNALS_PER_CHANNEL: Dict[str, int] = {
-    "360_SCALP": int(os.getenv("MAX_SCALP_SIGNALS", "3")),
-    "360_SWING": int(os.getenv("MAX_SWING_SIGNALS", "2")),
-    "360_RANGE": int(os.getenv("MAX_RANGE_SIGNALS", "3")),
-    "360_THE_TAPE": int(os.getenv("MAX_TAPE_SIGNALS", "2")),
+    "360_SCALP": int(os.getenv("MAX_SCALP_SIGNALS", "5")),
+    "360_SWING": int(os.getenv("MAX_SWING_SIGNALS", "5")),
+    "360_RANGE": int(os.getenv("MAX_RANGE_SIGNALS", "5")),
+    "360_THE_TAPE": int(os.getenv("MAX_TAPE_SIGNALS", "5")),
     "360_SELECT": int(os.getenv("MAX_SELECT_SIGNALS", "5")),
 }
 
@@ -302,9 +302,26 @@ MAX_SIGNAL_HOLD_SECONDS: Dict[str, int] = {
 }
 
 # ---------------------------------------------------------------------------
-# Concurrency cap – maximum number of open signals across all channels
+# Concurrency cap – DEPRECATED: replaced by per-channel cap above.
+# Kept for backwards-compatibility with any external tooling that imports it.
 # ---------------------------------------------------------------------------
 MAX_CONCURRENT_SIGNALS: int = 5
+
+# ---------------------------------------------------------------------------
+# Signal invalidation – minimum age before market-structure checks apply (secs)
+# ---------------------------------------------------------------------------
+INVALIDATION_MIN_AGE_SECONDS: Dict[str, int] = {
+    "360_SCALP": 120,
+    "360_SWING": 300,
+    "360_RANGE": 180,
+    "360_THE_TAPE": 60,
+    "360_SELECT": 180,
+}
+
+# Momentum threshold below which a signal is considered to have lost its thesis
+INVALIDATION_MOMENTUM_THRESHOLD: float = float(
+    os.getenv("INVALIDATION_MOMENTUM_THRESHOLD", "0.15")
+)
 
 # ---------------------------------------------------------------------------
 # Backtester – default slippage per trade (percent, e.g. 0.03 = 0.03 %)

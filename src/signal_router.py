@@ -23,7 +23,7 @@ from config import (
     ALL_CHANNELS,
     CHANNEL_COOLDOWN_SECONDS,
     CHANNEL_TELEGRAM_MAP,
-    MAX_CONCURRENT_SIGNALS,
+    MAX_CONCURRENT_SIGNALS_PER_CHANNEL,
     MAX_SIGNAL_HOLD_SECONDS,
     TELEGRAM_FREE_CHANNEL_ID,
 )
@@ -252,11 +252,15 @@ class SignalRouter:
                 )
                 return
 
-        # Global concurrent position cap
-        if len(self._active_signals) >= MAX_CONCURRENT_SIGNALS:
+        # Per-channel concurrent position cap
+        channel_count = sum(
+            1 for s in self._active_signals.values() if s.channel == signal.channel
+        )
+        channel_max = MAX_CONCURRENT_SIGNALS_PER_CHANNEL.get(signal.channel, 5)
+        if channel_count >= channel_max:
             log.info(
-                "Global position cap reached ({}/{}) – {} {} blocked",
-                len(self._active_signals), MAX_CONCURRENT_SIGNALS,
+                "Per-channel cap reached for {} ({}/{}) – {} {} blocked",
+                signal.channel, channel_count, channel_max,
                 signal.symbol, signal.direction.value,
             )
             return

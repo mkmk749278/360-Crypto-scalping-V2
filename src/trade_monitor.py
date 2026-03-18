@@ -13,6 +13,8 @@ from typing import Any, Callable, Coroutine, Dict, Optional
 from config import (
     ALL_CHANNELS,
     CHANNEL_TELEGRAM_MAP,
+    INVALIDATION_MIN_AGE_SECONDS,
+    INVALIDATION_MOMENTUM_THRESHOLD,
     MAX_SIGNAL_HOLD_SECONDS,
     MIN_SIGNAL_LIFESPAN_SECONDS,
     MONITOR_POLL_INTERVAL,
@@ -21,6 +23,8 @@ from config import (
 from src.channels.base import Signal
 from src.historical_data import HistoricalDataStore
 from src.indicators import atr as _compute_atr
+from src.indicators import ema as _compute_ema
+from src.indicators import momentum as _compute_momentum
 from src.performance_metrics import calculate_trade_pnl_pct, classify_trade_outcome
 from src.smc import Direction
 from src.utils import fmt_price, fmt_ts, get_logger, utcnow
@@ -50,6 +54,8 @@ class TradeMonitor:
         update_signal: Callable[[str], None],
         performance_tracker: Optional[Any] = None,
         circuit_breaker: Optional[Any] = None,
+        regime_detector: Optional[Any] = None,
+        indicators_fn: Optional[Callable] = None,
     ) -> None:
         self._store = data_store
         self._send = send_telegram
@@ -58,6 +64,8 @@ class TradeMonitor:
         self._update = update_signal
         self._performance_tracker = performance_tracker
         self._circuit_breaker = circuit_breaker
+        self._regime_detector = regime_detector
+        self._indicators_fn = indicators_fn
         self._running = False
         # Optional callback invoked with the symbol whenever a stop-loss is hit.
         # Set after construction (e.g. to scanner.set_symbol_sl_cooldown).
@@ -192,6 +200,79 @@ class TradeMonitor:
             return float(candles["close"][-1])
         return None
 
+    def _check_invalidation(self, sig: Signal) -> Optional[str]:
+        """Return an invalidation reason string if the signal's thesis is no longer valid.
+
+        Checks (in order):
+        1. Market regime flip against signal direction
+        2. EMA trend crossover against signal direction
+        3. Momentum loss (signal is flat with no movement)
+
+        Returns ``None`` if the signal is still valid.
+        """
+        is_long = sig.direction == Direction.LONG
+
+        # Build an indicators dict for regime detection and EMA/momentum checks.
+        # Priority: caller-supplied indicators_fn → data-store fallback.
+        indicators: Optional[dict] = None
+        if self._indicators_fn is not None:
+            try:
+                indicators = self._indicators_fn(sig.symbol)
+            except Exception as exc:
+                log.debug("indicators_fn failed for %s: %s", sig.symbol, exc)
+
+        # Fallback: derive EMA9/EMA21 and momentum from 1m candles in data store
+        if indicators is None and self._store is not None:
+            candles = self._store.get_candles(sig.symbol, "1m")
+            if candles and len(candles.get("close", [])) >= 21:
+                closes = np.asarray(candles["close"], dtype=np.float64)
+                ema9_arr = _compute_ema(closes, 9)
+                ema21_arr = _compute_ema(closes, 21)
+                mom_arr = _compute_momentum(closes, 3) if len(closes) >= 4 else np.array([])
+                indicators = {
+                    "ema9_last": float(ema9_arr[-1]) if len(ema9_arr) else None,
+                    "ema21_last": float(ema21_arr[-1]) if len(ema21_arr) else None,
+                    "momentum": float(mom_arr[-1]) if len(mom_arr) and not np.isnan(mom_arr[-1]) else None,
+                }
+
+        # 1. Market regime flip – use regime_detector.classify() with indicators
+        if self._regime_detector is not None and indicators is not None:
+            try:
+                result = self._regime_detector.classify(indicators)
+                regime_label = result.regime.value if result and result.regime else None
+                if is_long and regime_label == "TRENDING_DOWN":
+                    return f"regime shift to {regime_label} – LONG thesis no longer valid"
+                if not is_long and regime_label == "TRENDING_UP":
+                    return f"regime shift to {regime_label} – SHORT thesis no longer valid"
+            except Exception as exc:
+                log.debug("Regime detection failed for %s: %s", sig.symbol, exc)
+
+        if indicators is None:
+            return None
+
+        ema9 = indicators.get("ema9_last")
+        ema21 = indicators.get("ema21_last")
+        momentum = indicators.get("momentum")
+
+        # 2. EMA crossover against signal direction
+        if ema9 is not None and ema21 is not None:
+            if is_long and ema9 < ema21:
+                return "EMA bearish crossover (EMA9 < EMA21) – LONG thesis invalidated"
+            if not is_long and ema9 > ema21:
+                return "EMA bullish crossover (EMA9 > EMA21) – SHORT thesis invalidated"
+
+        # 3. Momentum loss – only applies after minimum invalidation age
+        if momentum is not None:
+            min_age = INVALIDATION_MIN_AGE_SECONDS.get(sig.channel, 120)
+            age_secs = (utcnow() - sig.timestamp).total_seconds()
+            if age_secs >= min_age and abs(momentum) < INVALIDATION_MOMENTUM_THRESHOLD:
+                return (
+                    f"momentum loss (|momentum|={abs(momentum):.3f} < "
+                    f"{INVALIDATION_MOMENTUM_THRESHOLD}) – signal thesis exhausted"
+                )
+
+        return None
+
     async def _evaluate_signal(self, sig: Signal) -> None:
         price = sig.current_price
         is_long = sig.direction == Direction.LONG
@@ -213,6 +294,18 @@ class TradeMonitor:
             self._set_realized_pnl(sig, price)
             sig.status = "EXPIRED"
             await self._post_update(sig, "⏰ EXPIRED (max hold time reached)")
+            self._record_outcome(sig, hit_tp=0, hit_sl=False)
+            self._remove(sig.signal_id)
+            return
+
+        # Market-structure invalidation – close stale signals whose thesis no
+        # longer holds (regime flip, momentum loss, EMA crossover).  Checked
+        # AFTER the min-lifespan guard but BEFORE SL/TP to free slots quickly.
+        invalidation_reason = self._check_invalidation(sig)
+        if invalidation_reason:
+            self._set_realized_pnl(sig, price)
+            sig.status = "INVALIDATED"
+            await self._post_update(sig, f"🔄 INVALIDATED ({invalidation_reason})")
             self._record_outcome(sig, hit_tp=0, hit_sl=False)
             self._remove(sig.signal_id)
             return

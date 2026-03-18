@@ -26,6 +26,8 @@ def _make_scanner(**kwargs) -> Scanner:
     """Create a minimal Scanner instance with mocked dependencies."""
     signal_queue = MagicMock()
     signal_queue.put = AsyncMock(return_value=True)
+    router_mock = MagicMock(active_signals={})
+    router_mock.cleanup_expired.return_value = 0
     defaults = dict(
         pair_mgr=MagicMock(),
         data_store=MagicMock(),
@@ -37,7 +39,7 @@ def _make_scanner(**kwargs) -> Scanner:
         spot_client=None,
         telemetry=MagicMock(),
         signal_queue=signal_queue,
-        router=MagicMock(active_signals={}),
+        router=router_mock,
     )
     defaults.update(kwargs)
     return Scanner(**defaults)
@@ -126,7 +128,7 @@ def _make_scan_ready_scanner(
             )
         ),
         signal_queue=signal_queue,
-        router=MagicMock(active_signals={}),
+        router=MagicMock(active_signals={}, cleanup_expired=MagicMock(return_value=0)),
         openai_evaluator=openai_evaluator,
         onchain_client=MagicMock(get_exchange_flow=AsyncMock(return_value=None)),
     )

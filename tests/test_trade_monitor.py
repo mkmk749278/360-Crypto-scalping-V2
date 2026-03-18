@@ -1147,3 +1147,265 @@ class TestSignalQualityPnL:
         assert cb_kwargs["pnl_pct"] == pytest.approx(0.0, abs=0.05)
         # Not a loss from circuit breaker's perspective (break-even)
         assert cb_kwargs["hit_sl"] is True
+
+
+# ---------------------------------------------------------------------------
+# Signal Invalidation Tests
+# ---------------------------------------------------------------------------
+
+class TestSignalInvalidation:
+    """Tests for TradeMonitor._check_invalidation() and its integration with
+    _evaluate_signal()."""
+
+    def _build_monitor(
+        self,
+        active: Dict[str, Signal],
+        candles_close=None,
+        regime_detector=None,
+        indicators_fn=None,
+    ):
+        removed = []
+        sent = []
+
+        async def mock_send(chat_id, text):
+            sent.append((chat_id, text))
+
+        data_store = MagicMock()
+        data_store.ticks = {}
+        if candles_close is not None:
+            closes = list(candles_close)
+            candles_dict = {
+                "close": closes,
+                "open": closes,
+                "high": closes,
+                "low": closes,
+                "volume": [1.0] * len(closes),
+            }
+            data_store.get_candles.return_value = candles_dict
+        else:
+            data_store.get_candles.return_value = None
+
+        monitor = TradeMonitor(
+            data_store=data_store,
+            send_telegram=mock_send,
+            get_active_signals=lambda: dict(active),
+            remove_signal=lambda sid: removed.append(sid),
+            update_signal=MagicMock(),
+            regime_detector=regime_detector,
+            indicators_fn=indicators_fn,
+        )
+        # Set current_price so _evaluate_signal can proceed
+        for sig in active.values():
+            if sig.current_price == 0.0:
+                sig.current_price = sig.entry
+        return monitor, removed, sent
+
+    # ------------------------------------------------------------------
+    # _check_invalidation unit tests
+    # ------------------------------------------------------------------
+
+    def test_no_invalidation_when_no_data(self):
+        """When no indicators are available, _check_invalidation returns None."""
+        sig = _make_signal(age_seconds=200.0)
+        monitor, _, _ = self._build_monitor({sig.signal_id: sig})
+        assert monitor._check_invalidation(sig) is None
+
+    def test_regime_flip_invalidates_long(self):
+        """LONG signal must be invalidated when regime detector returns TRENDING_DOWN."""
+        sig = _make_signal(direction=Direction.LONG, age_seconds=200.0)
+
+        regime_detector = MagicMock()
+        regime_result = MagicMock()
+        regime_result.regime.value = "TRENDING_DOWN"
+        regime_detector.classify.return_value = regime_result
+
+        closes = [30000.0] * 25  # enough data
+        monitor, _, _ = self._build_monitor(
+            {sig.signal_id: sig},
+            candles_close=closes,
+            regime_detector=regime_detector,
+        )
+        reason = monitor._check_invalidation(sig)
+        assert reason is not None
+        assert "TRENDING_DOWN" in reason
+        assert "LONG" in reason
+
+    def test_regime_flip_invalidates_short(self):
+        """SHORT signal must be invalidated when regime detector returns TRENDING_UP."""
+        sig = _make_signal(
+            direction=Direction.SHORT,
+            entry=30000.0,
+            stop_loss=30150.0,
+            tp1=29850.0,
+            age_seconds=200.0,
+        )
+
+        regime_detector = MagicMock()
+        regime_result = MagicMock()
+        regime_result.regime.value = "TRENDING_UP"
+        regime_detector.classify.return_value = regime_result
+
+        closes = [30000.0] * 25
+        monitor, _, _ = self._build_monitor(
+            {sig.signal_id: sig},
+            candles_close=closes,
+            regime_detector=regime_detector,
+        )
+        reason = monitor._check_invalidation(sig)
+        assert reason is not None
+        assert "TRENDING_UP" in reason
+        assert "SHORT" in reason
+
+    def test_ema_bearish_crossover_invalidates_long(self):
+        """LONG signal invalidated when EMA9 < EMA21 (bearish crossover)."""
+        sig = _make_signal(direction=Direction.LONG, age_seconds=200.0)
+
+        # Create a falling price sequence: EMA9 will be lower than EMA21
+        closes = [30000.0 - i * 10 for i in range(25)]  # descending
+        monitor, _, _ = self._build_monitor({sig.signal_id: sig}, candles_close=closes)
+        reason = monitor._check_invalidation(sig)
+        assert reason is not None
+        assert "EMA" in reason
+        assert "LONG" in reason
+
+    def test_ema_bullish_crossover_invalidates_short(self):
+        """SHORT signal invalidated when EMA9 > EMA21 (bullish crossover)."""
+        sig = _make_signal(
+            direction=Direction.SHORT,
+            entry=30000.0,
+            stop_loss=30150.0,
+            tp1=29850.0,
+            age_seconds=200.0,
+        )
+
+        # Rising prices: EMA9 > EMA21
+        closes = [30000.0 + i * 10 for i in range(25)]
+        monitor, _, _ = self._build_monitor({sig.signal_id: sig}, candles_close=closes)
+        reason = monitor._check_invalidation(sig)
+        assert reason is not None
+        assert "EMA" in reason
+        assert "SHORT" in reason
+
+    def test_momentum_loss_invalidates_after_min_age(self):
+        """Signal with flat momentum invalidated after INVALIDATION_MIN_AGE_SECONDS."""
+        from config import INVALIDATION_MIN_AGE_SECONDS
+        channel = "360_SCALP"
+        min_age = INVALIDATION_MIN_AGE_SECONDS[channel]
+        sig = _make_signal(channel=channel, age_seconds=min_age + 10)
+
+        # Flat prices → tiny momentum
+        closes = [30000.0] * 25  # all same → zero momentum
+        monitor, _, _ = self._build_monitor({sig.signal_id: sig}, candles_close=closes)
+
+        # Disable regime and EMA to isolate momentum check
+        # (flat prices mean EMA9 == EMA21, so no EMA invalidation)
+        reason = monitor._check_invalidation(sig)
+        # Flat → momentum ≈ 0 < threshold
+        assert reason is not None
+        assert "momentum" in reason.lower()
+
+    def test_momentum_not_invalidated_before_min_age(self):
+        """Momentum-loss check must NOT fire before INVALIDATION_MIN_AGE_SECONDS."""
+        from config import INVALIDATION_MIN_AGE_SECONDS
+        channel = "360_SCALP"
+        min_age = INVALIDATION_MIN_AGE_SECONDS[channel]
+        # Signal is 10s younger than the minimum age (always positive for min_age >= 10)
+        sig = _make_signal(channel=channel, age_seconds=min_age - 10)
+
+        closes = [30000.0] * 25  # flat → zero momentum, but EMA9 == EMA21 (no EMA invalidation)
+        monitor, _, _ = self._build_monitor({sig.signal_id: sig}, candles_close=closes)
+
+        # Regime detector is None → no regime check
+        # EMA9 == EMA21 for flat prices → no EMA crossover invalidation
+        # Momentum check is age-gated → must NOT fire before min_age
+        reason = monitor._check_invalidation(sig)
+        # Momentum invalidation must not occur before the minimum age
+        assert reason is None, (
+            f"Expected no invalidation before min_age ({min_age}s), got: {reason!r}"
+        )
+
+    # ------------------------------------------------------------------
+    # Integration tests: _check_invalidation called inside _evaluate_signal
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_invalidated_signal_is_removed_and_slot_freed(self):
+        """An invalidated signal must be removed from active signals."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            age_seconds=200.0,
+            entry=30000.0,
+            stop_loss=29850.0,
+            tp1=30150.0,
+        )
+        sig.current_price = 30000.0  # price near entry (not at SL/TP)
+
+        regime_detector = MagicMock()
+        regime_result = MagicMock()
+        regime_result.regime.value = "TRENDING_DOWN"
+        regime_detector.classify.return_value = regime_result
+
+        closes = [30000.0] * 25
+        active = {sig.signal_id: sig}
+        monitor, removed, sent = self._build_monitor(
+            active, candles_close=closes, regime_detector=regime_detector
+        )
+
+        await monitor._evaluate_signal(sig)
+
+        assert sig.signal_id in removed
+        assert sig.status == "INVALIDATED"
+        # Telegram send is skipped in tests (no CHANNEL_TELEGRAM_MAP entry),
+        # but the signal must be removed and status must be INVALIDATED.
+
+    @pytest.mark.asyncio
+    async def test_invalidated_signal_not_counted_as_sl_for_circuit_breaker(self):
+        """Invalidated signals must NOT count as stop-losses in the circuit breaker."""
+        sig = _make_signal(
+            channel="360_SCALP",
+            age_seconds=200.0,
+            entry=30000.0,
+            stop_loss=29850.0,
+            tp1=30150.0,
+        )
+        sig.current_price = 30000.0
+
+        cb = MagicMock()
+
+        regime_detector = MagicMock()
+        regime_result = MagicMock()
+        regime_result.regime.value = "TRENDING_DOWN"
+        regime_detector.classify.return_value = regime_result
+
+        closes = [30000.0] * 25
+        active = {sig.signal_id: sig}
+
+        async def mock_send(chat_id, text):
+            pass
+
+        data_store = MagicMock()
+        data_store.ticks = {}
+        candles_dict = {
+            "close": closes, "open": closes, "high": closes, "low": closes,
+            "volume": [1.0] * len(closes),
+        }
+        data_store.get_candles.return_value = candles_dict
+
+        monitor = TradeMonitor(
+            data_store=data_store,
+            send_telegram=mock_send,
+            get_active_signals=lambda: dict(active),
+            remove_signal=MagicMock(),
+            update_signal=MagicMock(),
+            circuit_breaker=cb,
+            regime_detector=regime_detector,
+        )
+        for s in active.values():
+            s.current_price = s.entry
+
+        await monitor._evaluate_signal(sig)
+
+        # circuit_breaker.record_outcome must be called with hit_sl=False
+        assert cb.record_outcome.called
+        call_kwargs = cb.record_outcome.call_args.kwargs
+        assert call_kwargs.get("hit_sl") is False
