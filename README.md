@@ -37,22 +37,48 @@ Binance WS ──► WebSocketManager (multi-conn, heartbeat, auto-reconnect)
                        ▼
                  TradeMonitor
            (TP/SL · Trailing · Updates)
+                       │
+           ┌───────────┼───────────────┐
+     PaperPortfolio  PerformanceTracker  CircuitBreaker
+     (virtual PnL)   (real stats)       (auto-pause)
+                       │
+                 SelectModeFilter
+           (premium 360_SELECT channel)
 ```
 
 ## Features
 
-| Feature | Description |
-|---|---|
-| **SMC Detection** | Liquidity Sweeps, Market Structure Shifts (MSS), Fair Value Gaps (FVG) |
-| **4 Channels** | SCALP (M1/M5), SWING (H1/H4), RANGE (M15), THE_TAPE (Tick) |
-| **AI Modules** | CryptoPanic news sentiment, LunarCrush social sentiment, Alternative.me Fear & Greed, whale detection |
-| **Confidence Scoring** | Multi-layer 0–100 with 7 sub-components |
-| **Dynamic Pairs** | Auto-fetch top 50–100 Spot & Futures pairs |
-| **WebSocket Resilience** | Multi-connection, heartbeat, exponential-backoff reconnect |
-| **Trade Monitoring** | Real-time TP/SL tracking, trailing stops, PnL updates |
-| **Free/Premium** | Top 1–2 daily signals to free channel |
-| **Telemetry** | CPU, memory, WS health, scan latency, API usage |
-| **Admin Commands** | `/view_dashboard`, `/update_pairs`, `/subscribe_alerts` |
+| Feature | Module | Description |
+|---|---|---|
+| **SMC Detection** | `src/smc.py` | Liquidity Sweeps, Market Structure Shifts (MSS), Fair Value Gaps (FVG) |
+| **4 Channels** | `src/channels/` | SCALP (M1/M5), SWING (H1/H4), RANGE (M15), THE_TAPE (Tick) |
+| **AI Modules** | `src/ai_engine.py` | CryptoPanic news sentiment, LunarCrush social sentiment, Alternative.me Fear & Greed, whale detection |
+| **Confidence Scoring** | `src/confidence.py` | Multi-layer 0–100 with 7 sub-components |
+| **Dynamic Pairs** | `src/pair_manager.py` | Auto-fetch top 50–100 Spot & Futures pairs |
+| **WebSocket Resilience** | `src/websocket_manager.py` | Multi-connection, heartbeat, exponential-backoff reconnect |
+| **Trade Monitoring** | `src/trade_monitor.py` | Real-time TP/SL tracking, trailing stops, PnL updates |
+| **Free/Premium** | `src/signal_router.py` | Top 1–2 daily signals to free channel |
+| **Telemetry** | `src/telemetry.py` | CPU, memory, WS health, scan latency, API usage |
+| **Admin Commands** | `src/commands.py` | Full suite of admin and user Telegram commands |
+| **Paper Trading** | `src/paper_portfolio.py` | Per-user, per-channel virtual portfolios with PnL tracking, leverage (1-20×), risk controls, leaderboard, and liquidation simulation. Storage: `data/paper_portfolios.json`. See [Paper Trading](#paper-trading) for full details. |
+| **Performance Tracker** | `src/performance_tracker.py` | Tracks real signal outcomes per channel — win rates, TP hit rates, signal quality scoring. Provides `/stats`, `/signal_stats`, `/tp_stats` commands. |
+| **Backtester** | `src/backtester.py` | Full backtesting engine that runs channel strategies against historical candle data. Configurable fee, slippage, lookahead candles, min window. Supports single-symbol and multi-symbol aggregate backtests. |
+| **Circuit Breaker** | `src/circuit_breaker.py` | Auto-pauses signal generation after consecutive losses (rolling window). Prevents compounding drawdowns. Admin can check status and manually reset. |
+| **Select Mode (360_SELECT)** | `src/select_mode.py` | Premium 5th channel that cherry-picks the highest-confidence signals across all 4 base channels. Configurable confidence threshold, toggle on/off via admin commands. |
+| **Signal Quality Scoring** | `src/signal_quality.py` | Advanced multi-factor signal quality analysis beyond basic confidence. |
+| **Predictive AI** | `src/predictive_ai.py` | ML-based price direction prediction using historical patterns. |
+| **OpenAI Evaluator** | `src/openai_evaluator.py` | GPT-powered signal evaluation for natural language trade rationale. |
+| **On-Chain Analysis** | `src/onchain.py` | On-chain data integration (whale movements, exchange flows). |
+| **Market Regime Detection** | `src/regime.py` | Classifies current market regime (trending, ranging, volatile) to adapt strategy behavior. |
+| **Cross-Pair Correlation** | `src/correlation.py` | Analyzes correlation between pairs to avoid overexposure and improve diversification. |
+| **DCA Engine** | `src/dca.py` | Dollar-cost averaging module for the RANGE channel's grid-based entries. |
+| **Performance Metrics** | `src/performance_metrics.py` | Sharpe ratio, Sortino ratio, and other quantitative portfolio metrics. |
+| **Exchange Abstraction** | `src/exchange.py` | Unified exchange interface abstracting Binance-specific API calls. |
+| **Redis Caching** | `src/redis_client.py` | Optional Redis-backed caching layer for signal state and AI results. |
+| **State Cache** | `src/state_cache.py` | In-memory state caching for scanner loop efficiency. |
+| **Risk Manager** | `src/risk.py` | Position sizing, stop-loss calculation, and risk-per-trade enforcement. |
+| **Signal Filters** | `src/filters.py` | Pre-signal filters (spread, volume, volatility checks). |
+| **Detector** | `src/detector.py` | Pattern detection utilities used by the scanner. |
 
 ## Channel Details
 
@@ -76,6 +102,83 @@ Binance WS ──► WebSocketManager (multi-conn, heartbeat, auto-reconnect)
 - **Trigger**: Trade > 1M USD or Volume Delta > 2× + Min 2× flow delta ratio
 - **Filters**: Order-book imbalance (1.5×), whale detection, AI sentiment, spread < 0.02%
 - **Risk**: SL 0.1–0.3%, TP1 1.5R, TP2 3R, TP3 5R, Trailing 2.5×ATR
+
+## Paper Trading
+
+The paper trading module gives every Telegram user a **virtual $1,000 USDT portfolio per channel**, letting them track signal performance without real funds.
+
+- **Starting balance**: $1,000 USDT per channel
+- **Fees**: 0.1% per side (open and close)
+- **Leverage**: 1–20× configurable per channel (`/set_leverage`)
+- **Risk per trade**: 0.5–10% of balance (`/set_risk`)
+- **Partial TP scaling**: 30% at TP1, 30% at TP2, 40% at TP3
+- **Tracked metrics**: PnL, win/loss/breakeven counts, peak balance, max drawdown, win streak, loss streak
+- **Liquidation simulation**: position wiped if loss exceeds margin
+- **Global leaderboard**: ranked by total PnL or ROI (`/leaderboard`)
+- **Storage**: `data/paper_portfolios.json`
+
+| Command | Description |
+|---|---|
+| `/portfolio [channel]` | View portfolio summary or per-channel detail |
+| `/reset_portfolio [channel]` | Reset one or all channel portfolios |
+| `/set_leverage <channel> <1-20>` | Set leverage |
+| `/set_risk <channel> <0.5-10>` | Set risk % per trade |
+| `/trade_history [channel]` | View recent paper trades |
+| `/leaderboard [pnl/roi]` | Global leaderboard |
+
+## Telegram Commands Reference
+
+### Admin Commands
+
+| Command | Description |
+|---|---|
+| `/view_dashboard` | Show telemetry dashboard |
+| `/update_pairs [spot/futures] [n]` | Refresh trading pairs |
+| `/subscribe_alerts` | Subscribe to admin alerts |
+| `/view_pairs [spot/futures]` | View active pairs (top 10 by volume) |
+| `/force_scan` | Trigger immediate scanner cycle |
+| `/pause_channel <name>` | Pause a channel |
+| `/resume_channel <name>` | Resume a paused channel |
+| `/set_confidence_threshold <channel> <value>` | Override confidence threshold |
+| `/engine_status` (alias: `/status`) | Show uptime, tasks, queue, WS health |
+| `/memory_usage` | Show RSS, VMS, CPU usage |
+| `/set_free_channel_limit <n>` | Set daily free signal limit |
+| `/force_update_ai` | Refresh AI/sentiment cache |
+| `/view_active_signals` | List all active signals with full detail |
+| `/view_logs [lines]` | View recent log file (1–200 lines) |
+| `/update_code` | Run `git pull` on the server |
+| `/restart_engine` | Restart all engine tasks |
+| `/rollback_code <commit>` | Checkout a specific commit |
+| `/circuit_breaker_status` | Show circuit breaker state |
+| `/reset_circuit_breaker` | Reset circuit breaker |
+| `/stats [channel]` | Show performance stats |
+| `/real_stats [channel]` | Show real signal stats |
+| `/reset_stats [channel]` | Clear performance records |
+| `/select_mode [on/off/status]` | Toggle 360_SELECT channel |
+| `/select_config <key> <value>` | Update select mode configuration |
+| `/backtest <symbol> [channel] [lookahead]` | Run backtest for a single symbol |
+| `/backtest_all [channel] [lookahead]` | Run backtest across all tracked symbols |
+| `/backtest_config [key] [value]` | View or update backtest parameters (fee, slippage, lookahead, min_window) |
+
+### User Commands
+
+| Command | Description |
+|---|---|
+| `/signals` | Show last 5 active signals |
+| `/free_signals` | Show today's free channel signals |
+| `/signal_info <id>` | Detailed info on a specific signal |
+| `/last_update` | Show last scan latency, pair count, active signal count |
+| `/subscribe` | Subscribe to premium signals |
+| `/unsubscribe` | Unsubscribe from premium signals |
+| `/signal_history` | Show last 10 completed signals |
+| `/signal_stats [channel]` | Show signal quality stats per channel |
+| `/tp_stats [channel]` | Show TP hit rates per channel |
+| `/portfolio [channel]` | Show paper portfolio summary or channel detail |
+| `/reset_portfolio [channel]` | Reset paper portfolio (all channels or one) |
+| `/set_leverage <channel> <1-20>` | Set paper trading leverage |
+| `/set_risk <channel> <0.5-10>` | Set risk per trade percentage |
+| `/trade_history [channel]` | Show recent paper trades |
+| `/leaderboard [pnl/roi]` | Show global paper trading leaderboard |
 
 ## AI Sentiment APIs
 
@@ -176,6 +279,7 @@ config/
   __init__.py          # All settings, channel configs, constants
 src/
   main.py              # Orchestrator & entry point
+  bootstrap.py         # Dependency wiring and initialisation
   indicators.py        # EMA, SMA, ADX, ATR, RSI, Bollinger, Momentum
   smc.py               # Liquidity Sweep, MSS, FVG detection
   confidence.py        # Multi-layer confidence scorer (0–100)
@@ -184,10 +288,34 @@ src/
   historical_data.py   # OHLCV & tick seeding
   websocket_manager.py # Multi-connection WS with resilience
   signal_router.py     # Queue-based signal dispatch
+  signal_queue.py      # Async signal queue with Redis fallback
   trade_monitor.py     # TP/SL/trailing real-time monitoring
   telegram_bot.py      # Rich signal formatting & admin commands
+  commands.py          # Full Telegram command handler routing
   telemetry.py         # System health monitoring
+  scanner.py           # Core scanner loop
+  detector.py          # Pattern detection utilities
+  filters.py           # Pre-signal filters (spread, volume, volatility)
+  risk.py              # Position sizing, SL calculation, risk enforcement
+  exchange.py          # Unified exchange interface (Binance abstraction)
+  binance.py           # Binance REST/WS API client
+  logger.py            # Centralised logging configuration
   utils.py             # Logging, formatting helpers
+  paper_portfolio.py   # Per-user virtual portfolio & leaderboard
+  performance_tracker.py # Real signal outcome tracking per channel
+  performance_metrics.py # Sharpe/Sortino ratio and quantitative metrics
+  backtester.py        # Historical backtest engine
+  circuit_breaker.py   # Auto-pause after consecutive losses
+  select_mode.py       # 360_SELECT premium channel filter
+  signal_quality.py    # Advanced multi-factor signal quality scoring
+  predictive_ai.py     # ML-based price direction prediction
+  openai_evaluator.py  # GPT-powered signal evaluation
+  onchain.py           # On-chain data integration (whale/exchange flows)
+  regime.py            # Market regime classification
+  correlation.py       # Cross-pair correlation analysis
+  dca.py               # DCA engine for RANGE channel grid entries
+  redis_client.py      # Optional Redis caching layer
+  state_cache.py       # In-memory state caching for scanner loop
   channels/
     base.py            # Signal model & base strategy
     scalp.py           # 360_SCALP strategy
