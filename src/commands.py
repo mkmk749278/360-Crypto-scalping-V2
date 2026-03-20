@@ -937,6 +937,14 @@ class CommandHandler:
                 msg = self._paper_portfolio.get_trade_history(chat_id, channel_arg)
                 await self._telegram.send_message(chat_id, msg)
 
+        elif cmd == "/leaderboard":
+            if self._paper_portfolio is None:
+                await self._telegram.send_message(chat_id, "ℹ️ Paper portfolio is not enabled.")
+            else:
+                sort_by = "roi" if len(parts) >= 2 and parts[1].lower() == "roi" else "pnl"
+                msg = self._paper_portfolio.get_leaderboard(sort_by=sort_by)
+                await self._telegram.send_message(chat_id, msg)
+
         else:
             await self._telegram.send_message(
                 chat_id,
@@ -983,5 +991,6 @@ class CommandHandler:
                 "/reset\\_portfolio [channel]\n"
                 "/set\\_leverage <channel> <1-20>\n"
                 "/set\\_risk <channel> <0.5-10>\n"
-                "/trade\\_history [channel]",
+                "/trade\\_history [channel]\n"
+                "/leaderboard [pnl|roi]",
             )

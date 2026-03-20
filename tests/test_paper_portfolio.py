@@ -451,3 +451,406 @@ class TestPaperPortfolioManager:
         history = mgr.get_trade_history("user1", channel="360_SCALP")
         assert "Trade History" in history
         assert "360_SCALP" in history
+
+    # -----------------------------------------------------------------------
+    # Phase 2: Leaderboard
+    # -----------------------------------------------------------------------
+
+    def test_leaderboard_empty(self, tmp_path):
+        """Leaderboard with no users shows helpful message."""
+        mgr = _make_manager(tmp_path)
+        result = mgr.get_leaderboard()
+        assert "No users registered yet" in result
+
+    def test_leaderboard_ranked_by_pnl(self, tmp_path):
+        """Users are ranked by total PnL (default sort)."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("uHigh")  # ≤6 chars → not anonymized
+        mgr.ensure_user("uLow")
+        # Give uHigh 5x leverage so same trade yields 5x more PnL
+        mgr.set_leverage("uHigh", "360_SCALP", 5)
+        # Record a win — updates both users, but uHigh has 5x leverage
+        _record_win(mgr)
+        result = mgr.get_leaderboard(sort_by="pnl")
+        assert "Leaderboard" in result
+        assert "PnL" in result
+        # Verify ordering: uHigh's entry comes before uLow's entry
+        assert result.index("uHigh") < result.index("uLow")
+
+    def test_leaderboard_ranked_by_roi(self, tmp_path):
+        """Users are ranked by ROI when sort_by='roi'."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        _record_win(mgr)
+        result = mgr.get_leaderboard(sort_by="roi")
+        assert "Leaderboard" in result
+        assert "ROI" in result
+
+    def test_leaderboard_anonymizes_chat_ids(self, tmp_path):
+        """Chat IDs longer than 6 chars are partially hidden in leaderboard."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user123456")
+        result = mgr.get_leaderboard()
+        # Full ID should not appear; truncated form should
+        assert "user123456" not in result
+        assert "user" in result  # first 4 chars
+
+    def test_leaderboard_shows_medal_emojis(self, tmp_path):
+        """Top 3 get 🥇🥈🥉 medals."""
+        mgr = _make_manager(tmp_path)
+        for uid in ["userA", "userB", "userC"]:
+            mgr.ensure_user(uid)
+            _record_win(mgr)
+        result = mgr.get_leaderboard()
+        assert "🥇" in result
+        assert "🥈" in result
+        assert "🥉" in result
+
+    # -----------------------------------------------------------------------
+    # Phase 2: Liquidation
+    # -----------------------------------------------------------------------
+
+    def test_liquidation_at_high_leverage(self, tmp_path):
+        """At 10x leverage, a -9% loss should trigger liquidation."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        mgr.set_leverage("user1", "360_SCALP", 10)
+        # threshold = (100/10)*0.9 = 9%
+        mgr.record_trade(
+            channel="360_SCALP",
+            signal_id="sig-liq",
+            symbol="BTCUSDT",
+            direction="LONG",
+            entry_price=30000.0,
+            exit_price=27300.0,
+            hit_tp=0,
+            hit_sl=True,
+            pnl_pct=-9.0,
+        )
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        assert p.is_liquidated is True
+        assert p.liquidation_count == 1
+
+    def test_no_liquidation_at_1x(self, tmp_path):
+        """At 1x leverage, even a -90% loss should NOT liquidate."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        # leverage=1 → liquidation check skipped
+        mgr.record_trade(
+            channel="360_SCALP",
+            signal_id="sig-big-loss",
+            symbol="BTCUSDT",
+            direction="LONG",
+            entry_price=30000.0,
+            exit_price=3000.0,
+            hit_tp=0,
+            hit_sl=True,
+            pnl_pct=-90.0,
+        )
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        assert p.is_liquidated is False
+
+    def test_liquidation_zeros_balance(self, tmp_path):
+        """After liquidation, balance is exactly 0."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        mgr.set_leverage("user1", "360_SCALP", 10)
+        mgr.record_trade(
+            channel="360_SCALP",
+            signal_id="sig-liq",
+            symbol="BTCUSDT",
+            direction="LONG",
+            entry_price=30000.0,
+            exit_price=27300.0,
+            hit_tp=0,
+            hit_sl=True,
+            pnl_pct=-9.0,
+        )
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        assert p.current_balance == 0.0
+
+    def test_liquidation_increments_count(self, tmp_path):
+        """liquidation_count increases on each liquidation after reset."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        mgr.set_leverage("user1", "360_SCALP", 10)
+        for _ in range(2):
+            mgr.record_trade(
+                channel="360_SCALP",
+                signal_id="sig-liq",
+                symbol="BTCUSDT",
+                direction="LONG",
+                entry_price=30000.0,
+                exit_price=27300.0,
+                hit_tp=0,
+                hit_sl=True,
+                pnl_pct=-9.0,
+            )
+            mgr.reset_portfolio("user1", "360_SCALP")
+        # After 2 liquidations + 2 resets the lifetime count should be 2
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        assert p.liquidation_count == 2
+
+    def test_liquidated_channel_skips_trades(self, tmp_path):
+        """After liquidation, new trades are skipped until reset."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        mgr.set_leverage("user1", "360_SCALP", 10)
+        mgr.record_trade(
+            channel="360_SCALP",
+            signal_id="sig-liq",
+            symbol="BTCUSDT",
+            direction="LONG",
+            entry_price=30000.0,
+            exit_price=27300.0,
+            hit_tp=0,
+            hit_sl=True,
+            pnl_pct=-9.0,
+        )
+        # Now try another trade — should be skipped
+        _record_win(mgr)
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        assert p.current_balance == 0.0  # still 0
+
+    def test_reset_clears_liquidation(self, tmp_path):
+        """Resetting a liquidated channel sets is_liquidated=False."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        mgr.set_leverage("user1", "360_SCALP", 10)
+        mgr.record_trade(
+            channel="360_SCALP",
+            signal_id="sig-liq",
+            symbol="BTCUSDT",
+            direction="LONG",
+            entry_price=30000.0,
+            exit_price=27300.0,
+            hit_tp=0,
+            hit_sl=True,
+            pnl_pct=-9.0,
+        )
+        mgr.reset_portfolio("user1", "360_SCALP")
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        assert p.is_liquidated is False
+        assert p.current_balance == 1000.0
+
+    def test_liquidation_preserves_count_on_reset(self, tmp_path):
+        """Resetting does NOT zero the liquidation_count (lifetime stat)."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        mgr.set_leverage("user1", "360_SCALP", 10)
+        mgr.record_trade(
+            channel="360_SCALP",
+            signal_id="sig-liq",
+            symbol="BTCUSDT",
+            direction="LONG",
+            entry_price=30000.0,
+            exit_price=27300.0,
+            hit_tp=0,
+            hit_sl=True,
+            pnl_pct=-9.0,
+        )
+        mgr.reset_portfolio("user1", "360_SCALP")
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        assert p.liquidation_count == 1  # preserved across reset
+
+    # -----------------------------------------------------------------------
+    # Phase 2: Partial TP Scaling
+    # -----------------------------------------------------------------------
+
+    def test_partial_tp_scaling_tp3(self, tmp_path):
+        """With TP prices and hit_tp=3, PnL uses 30/30/40 blended scaling."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        entry = 30000.0
+        tp1 = 30300.0  # +1%
+        tp2 = 30600.0  # +2%
+        tp3 = 31500.0  # +5%
+        mgr.record_trade(
+            channel="360_SCALP",
+            signal_id="sig-tp3",
+            symbol="BTCUSDT",
+            direction="LONG",
+            entry_price=entry,
+            exit_price=tp3,
+            hit_tp=3,
+            hit_sl=False,
+            pnl_pct=5.0,
+            tp_prices=[tp1, tp2, tp3],
+        )
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        # Blended = 30%*1% + 30%*2% + 40%*5% = 0.3+0.6+2.0 = 2.9% effective
+        # Without scaling it would be 5% straight
+        assert p.win_count == 1
+        # The effective PnL should be less than pure 5% due to blending
+        risk_amount = 1000.0 * 0.02
+        position = risk_amount * 1
+        straight_pnl = position * 0.05  # 5%
+        assert p.total_pnl < straight_pnl  # blended is less than straight 5%
+
+    def test_partial_tp_scaling_tp1_then_sl(self, tmp_path):
+        """TP1 hit then effectively SL: 30% at TP1 price, 70% at final price."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        entry = 30000.0
+        tp1 = 30300.0   # +1%
+        sl_exit = 29700.0  # -1%
+        # hit_tp=1 means TP1 was hit; final exit at sl_exit price
+        mgr.record_trade(
+            channel="360_SCALP",
+            signal_id="sig-tp1sl",
+            symbol="BTCUSDT",
+            direction="LONG",
+            entry_price=entry,
+            exit_price=sl_exit,
+            hit_tp=1,
+            hit_sl=True,
+            pnl_pct=-1.0,  # final signal pnl
+            tp_prices=[tp1],
+        )
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        # Blended: 30%*+1% + 70%*(-1%) = 0.3 - 0.7 = -0.4% effective → still a loss
+        assert p.loss_count == 1
+
+    def test_partial_tp_no_prices_fallback(self, tmp_path):
+        """Without tp_prices, falls back to single-exit PnL calculation."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        _record_win(mgr)  # uses no tp_prices
+
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        # Standard 1.5% win: position=20, raw=0.30, fee=0.04, net≈0.26
+        risk = 1000.0 * 0.02
+        pos = risk * 1
+        expected_net = pos * 0.015 - pos * 0.001 * 2
+        assert abs(p.total_pnl - expected_net) < 1e-6
+
+    # -----------------------------------------------------------------------
+    # Phase 2: Streak Tracking
+    # -----------------------------------------------------------------------
+
+    def test_win_streak_increments(self, tmp_path):
+        """Consecutive wins increase current_streak."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        _record_win(mgr)
+        _record_win(mgr)
+        _record_win(mgr)
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        assert p.current_streak == 3
+
+    def test_loss_streak_decrements(self, tmp_path):
+        """Consecutive losses decrease current_streak (negative)."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        _record_loss(mgr)
+        _record_loss(mgr)
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        assert p.current_streak == -2
+
+    def test_streak_resets_on_opposite(self, tmp_path):
+        """A loss after wins resets streak to -1."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        _record_win(mgr)
+        _record_win(mgr)
+        _record_loss(mgr)
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        assert p.current_streak == -1
+
+    def test_best_win_streak_tracked(self, tmp_path):
+        """best_win_streak captures the longest win run."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        _record_win(mgr)
+        _record_win(mgr)
+        _record_win(mgr)
+        _record_loss(mgr)
+        _record_win(mgr)
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        assert p.best_win_streak == 3
+
+    def test_worst_loss_streak_tracked(self, tmp_path):
+        """worst_loss_streak captures the longest loss run (most negative)."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        _record_loss(mgr)
+        _record_loss(mgr)
+        _record_win(mgr)
+        _record_loss(mgr)
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        assert p.worst_loss_streak == -2
+
+    def test_breakeven_does_not_break_streak(self, tmp_path):
+        """BREAKEVEN trades don't reset the current streak."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        _record_win(mgr)
+        _record_win(mgr)
+        # Record a breakeven
+        mgr.record_trade(
+            channel="360_SCALP",
+            signal_id="sig-be",
+            symbol="BTCUSDT",
+            direction="LONG",
+            entry_price=30000.0,
+            exit_price=30000.0,
+            hit_tp=0,
+            hit_sl=False,
+            pnl_pct=0.0,
+        )
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        assert p.current_streak == 2  # streak unchanged by breakeven
+
+    def test_streak_reset_on_portfolio_reset(self, tmp_path):
+        """Resetting portfolio zeros all streak counters."""
+        mgr = _make_manager(tmp_path)
+        mgr.ensure_user("user1")
+        _record_win(mgr)
+        _record_win(mgr)
+        mgr.reset_portfolio("user1", "360_SCALP")
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        assert p.current_streak == 0
+        assert p.best_win_streak == 0
+        assert p.worst_loss_streak == 0
+
+    # -----------------------------------------------------------------------
+    # Phase 2: Backward compatibility
+    # -----------------------------------------------------------------------
+
+    def test_old_json_loads_without_new_fields(self, tmp_path):
+        """A JSON file from Phase 1 (without Phase-2 fields) loads without errors."""
+        import json
+
+        path = tmp_path / "old_portfolios.json"
+        # Simulate a Phase-1 JSON (no Phase-2 fields)
+        old_data = {
+            "user1": {
+                "360_SCALP": {
+                    "channel": "360_SCALP",
+                    "initial_balance": 1000.0,
+                    "current_balance": 1050.0,
+                    "leverage": 1,
+                    "risk_per_trade_pct": 2.0,
+                    "trades": [],
+                    "total_fees": 0.04,
+                    "total_pnl": 50.0,
+                    "win_count": 3,
+                    "loss_count": 1,
+                    "breakeven_count": 0,
+                    "reset_count": 0,
+                    "peak_balance": 1050.0,
+                    "max_drawdown_pct": 1.2,
+                    # No: liquidation_count, is_liquidated, current_streak,
+                    #     best_win_streak, worst_loss_streak
+                }
+            }
+        }
+        path.write_text(json.dumps(old_data))
+        mgr = PaperPortfolioManager(storage_path=str(path))
+        p = mgr._portfolios["user1"]["360_SCALP"]
+        assert p.current_balance == 1050.0
+        assert p.liquidation_count == 0
+        assert p.is_liquidated is False
+        assert p.current_streak == 0
+        assert p.best_win_streak == 0
+        assert p.worst_loss_streak == 0
