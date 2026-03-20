@@ -10,7 +10,9 @@ import numpy as np
 
 from src.regime import MarketRegime
 from src.smc import Direction
-from src.utils import price_decimal_fmt
+from src.utils import get_logger, price_decimal_fmt
+
+log = get_logger("signal_quality")
 
 
 class SetupClass(str, Enum):
@@ -93,6 +95,15 @@ REGIME_SETUP_COMPATIBILITY: Dict[MarketState, set[SetupClass]] = {
         SetupClass.LIQUIDITY_SWEEP_REVERSAL,
     },
     MarketState.VOLATILE_UNSUITABLE: set(),
+}
+
+# Maximum SL distance (as a percentage of entry) allowed per channel.
+# Signals whose structure-based SL would exceed this cap are clamped.
+_MAX_SL_PCT_BY_CHANNEL: Dict[str, float] = {
+    "360_THE_TAPE": 0.5,
+    "360_SCALP": 1.0,
+    "360_RANGE": 1.5,
+    "360_SWING": 3.0,
 }
 
 
@@ -442,6 +453,7 @@ def build_risk_plan(
     smc_data: Dict[str, Any],
     setup: SetupClass,
     spread_pct: float,
+    channel: Optional[str] = None,
 ) -> RiskAssessment:
     primary_tf = "15m" if signal.channel == "360_RANGE" else "1h" if signal.channel == "360_SWING" else "1m" if signal.channel == "360_THE_TAPE" else "5m"
     primary = indicators.get(primary_tf, indicators.get("5m", indicators.get("1m", {})))
@@ -463,6 +475,27 @@ def build_risk_plan(
     else:
         structure = structure if structure > signal.entry else signal.entry + atr_val
         stop_loss = round(structure + buffer, 8)
+
+    # Channel-aware hard cap on SL distance – clamp oversized stops before
+    # they inflate risk and produce trades that hit SL within seconds.
+    _chan = channel or getattr(signal, "channel", None) or ""
+    _max_sl_pct = _MAX_SL_PCT_BY_CHANNEL.get(_chan, 5.0) / 100.0
+    if signal.entry > 0:
+        _sl_dist_pct = abs(signal.entry - stop_loss) / signal.entry
+        if _sl_dist_pct > _max_sl_pct:
+            _capped_dist = signal.entry * _max_sl_pct
+            if signal.direction == Direction.LONG:
+                stop_loss = round(signal.entry - _capped_dist, 8)
+            else:
+                stop_loss = round(signal.entry + _capped_dist, 8)
+            log.warning(
+                "SL capped for %s %s: %.2f%% > %.2f%% max (capped to %.8f)",
+                _chan,
+                signal.direction.value,
+                _sl_dist_pct * 100,
+                _max_sl_pct * 100,
+                stop_loss,
+            )
 
     # Directional sanity check – reject immediately if the computed SL is on
     # the wrong side of the entry price (can happen with unusual price action

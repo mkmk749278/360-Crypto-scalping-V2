@@ -725,3 +725,179 @@ class TestSpreadCacheFailureTTL:
         assert mock_spot.fetch_order_book.await_count == 1
         assert mock_futures.fetch_order_book.await_count == 0
         assert spread > 0
+
+
+# ---------------------------------------------------------------------------
+# Bug 1: Regime stability tracker
+# ---------------------------------------------------------------------------
+
+
+class TestRegimeStabilityTracker:
+    """Tests for _regime_history and _is_regime_unstable."""
+
+    def test_regime_history_initialized_empty(self):
+        scanner = _make_scanner()
+        assert scanner._regime_history == {}
+
+    def test_not_unstable_with_no_history(self):
+        scanner = _make_scanner()
+        assert scanner._is_regime_unstable("ETHUSDT") is False
+
+    def test_not_unstable_with_single_entry(self):
+        scanner = _make_scanner()
+        scanner._regime_history["ETHUSDT"] = [(time.monotonic(), "RANGING")]
+        assert scanner._is_regime_unstable("ETHUSDT") is False
+
+    def test_not_unstable_below_max_flips(self):
+        scanner = _make_scanner()
+        now = time.monotonic()
+        # 2 flips (below max_flips=2 — not strictly greater)
+        scanner._regime_history["ETHUSDT"] = [
+            (now - 1000, "RANGING"),
+            (now - 800, "TRENDING_UP"),
+            (now - 600, "RANGING"),
+        ]
+        assert scanner._is_regime_unstable("ETHUSDT", window_minutes=30, max_flips=2) is False
+
+    def test_unstable_when_exceeds_max_flips(self):
+        scanner = _make_scanner()
+        now = time.monotonic()
+        # 3 flips > max_flips=2
+        scanner._regime_history["ETHUSDT"] = [
+            (now - 1500, "RANGING"),
+            (now - 1200, "TRENDING_UP"),
+            (now - 900, "RANGING"),
+            (now - 600, "TRENDING_DOWN"),
+        ]
+        assert scanner._is_regime_unstable("ETHUSDT", window_minutes=30, max_flips=2) is True
+
+    def test_old_entries_excluded_from_window(self):
+        scanner = _make_scanner()
+        now = time.monotonic()
+        # The flips happen outside the 30-min window
+        scanner._regime_history["ETHUSDT"] = [
+            (now - 3600, "RANGING"),
+            (now - 3000, "TRENDING_UP"),
+            (now - 2400, "RANGING"),
+            (now - 1800, "TRENDING_DOWN"),
+            # Only one entry within the 30-min window → no flips
+            (now - 100, "RANGING"),
+        ]
+        assert scanner._is_regime_unstable("ETHUSDT", window_minutes=30, max_flips=2) is False
+
+    def test_should_skip_tape_when_regime_unstable(self):
+        """_should_skip_channel returns True for TAPE when regime is unstable."""
+        scanner = _make_scanner()
+        now = time.monotonic()
+        # Inject 3 flips within window → unstable
+        scanner._regime_history["ETHUSDT"] = [
+            (now - 1500, "RANGING"),
+            (now - 1200, "TRENDING_UP"),
+            (now - 900, "RANGING"),
+            (now - 600, "TRENDING_DOWN"),
+        ]
+        ctx = MagicMock()
+        ctx.pair_quality.passed = True
+        ctx.market_state = MagicMock()
+        ctx.market_state.__eq__ = lambda self, other: False
+        ctx.regime_result.regime.value = "RANGING"
+        scanner.circuit_breaker = None
+        scanner.router.active_signals = {}
+        ctx.is_ranging = False
+        ctx.adx_val = 25.0
+        result = scanner._should_skip_channel("ETHUSDT", "360_THE_TAPE", ctx)
+        assert result is True
+
+    def test_should_not_skip_non_tape_when_regime_unstable(self):
+        """Regime instability check is only applied to 360_THE_TAPE."""
+        scanner = _make_scanner()
+        now = time.monotonic()
+        # Inject 3 flips within window → unstable
+        scanner._regime_history["ETHUSDT"] = [
+            (now - 1500, "RANGING"),
+            (now - 1200, "TRENDING_UP"),
+            (now - 900, "RANGING"),
+            (now - 600, "TRENDING_DOWN"),
+        ]
+        ctx = MagicMock()
+        ctx.pair_quality.passed = True
+        ctx.market_state = MagicMock()
+        ctx.market_state.__eq__ = lambda self, other: False
+        ctx.regime_result.regime.value = "RANGING"
+        scanner.circuit_breaker = None
+        scanner.router.active_signals = {}
+        ctx.is_ranging = False
+        ctx.adx_val = 25.0
+        # SCALP should not be blocked by regime instability
+        result = scanner._should_skip_channel("ETHUSDT", "360_SCALP", ctx)
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Bug 2: Direction-agnostic invalidation pair cooldown
+# ---------------------------------------------------------------------------
+
+
+class TestInvalidationPairCooldown:
+    """Tests for _invalidation_pair_cooldown_until set by set_invalidation_cooldown."""
+
+    def test_pair_cooldown_initialized_empty(self):
+        scanner = _make_scanner()
+        assert scanner._invalidation_pair_cooldown_until == {}
+
+    def test_set_invalidation_cooldown_also_sets_pair_cooldown(self):
+        scanner = _make_scanner()
+        scanner.set_invalidation_cooldown("ETHUSDT", "360_THE_TAPE", "LONG")
+        pair_key = ("ETHUSDT", "360_THE_TAPE")
+        assert pair_key in scanner._invalidation_pair_cooldown_until
+
+    def test_pair_cooldown_is_half_of_direction_cooldown(self):
+        scanner = _make_scanner()
+        scanner.set_invalidation_cooldown("ETHUSDT", "360_THE_TAPE", "LONG")
+        direction_expiry = scanner._invalidation_cooldown_until[
+            ("ETHUSDT", "360_THE_TAPE", "LONG")
+        ]
+        pair_expiry = scanner._invalidation_pair_cooldown_until[("ETHUSDT", "360_THE_TAPE")]
+        full_duration = scanner._INVALIDATION_COOLDOWN_SECONDS.get("360_THE_TAPE", 300)
+        direction_remaining = direction_expiry - time.monotonic()
+        pair_remaining = pair_expiry - time.monotonic()
+        assert abs(direction_remaining - full_duration) < 2
+        assert abs(pair_remaining - full_duration // 2) < 2
+
+    def test_pair_cooldown_blocks_opposite_direction(self):
+        """After LONG invalidated, SHORT is blocked by pair cooldown in _should_skip_channel."""
+        scanner = _make_scanner()
+        scanner.set_invalidation_cooldown("ETHUSDT", "360_THE_TAPE", "LONG")
+        ctx = MagicMock()
+        ctx.pair_quality.passed = True
+        ctx.market_state = MagicMock()
+        ctx.market_state.__eq__ = lambda self, other: False
+        ctx.regime_result.regime.value = "RANGING"
+        scanner.circuit_breaker = None
+        scanner.router.active_signals = {}
+        ctx.is_ranging = False
+        ctx.adx_val = 25.0
+        # _regime_history empty → not unstable
+        result = scanner._should_skip_channel("ETHUSDT", "360_THE_TAPE", ctx)
+        assert result is True
+
+    def test_pair_cooldown_expires_and_allows_signal(self):
+        scanner = _make_scanner()
+        # Inject already-expired pair cooldown
+        scanner._invalidation_pair_cooldown_until[("ETHUSDT", "360_THE_TAPE")] = (
+            time.monotonic() - 1
+        )
+        ctx = MagicMock()
+        ctx.pair_quality.passed = True
+        ctx.market_state = MagicMock()
+        ctx.market_state.__eq__ = lambda self, other: False
+        ctx.regime_result.regime.value = "RANGING"
+        scanner.circuit_breaker = None
+        scanner.router.active_signals = {}
+        ctx.is_ranging = False
+        ctx.adx_val = 25.0
+        # Expired pair cooldown should be cleaned up; no regime instability
+        result = scanner._should_skip_channel("ETHUSDT", "360_THE_TAPE", ctx)
+        assert result is False
+        # Entry should be removed after expiry
+        assert ("ETHUSDT", "360_THE_TAPE") not in scanner._invalidation_pair_cooldown_until

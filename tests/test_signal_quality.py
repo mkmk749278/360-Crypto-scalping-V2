@@ -331,3 +331,151 @@ class TestBuildRiskPlanSLDirectionValidation:
         )
         if risk.passed:
             assert risk.stop_loss > sig.entry
+
+
+# ---------------------------------------------------------------------------
+# Bug 5: Channel-aware SL cap in build_risk_plan
+# ---------------------------------------------------------------------------
+
+
+class TestSLCap:
+    """Tests for the channel-specific maximum SL distance cap."""
+
+    def _make_signal_with_wide_structure(
+        self,
+        channel: str,
+        direction: Direction = Direction.LONG,
+    ):
+        """Create a signal whose structure would produce a very wide SL."""
+        sig = SimpleNamespace(
+            channel=channel,
+            direction=direction,
+            entry=100.0,
+            stop_loss=95.0,
+            tp1=110.0,
+            tp2=120.0,
+            tp3=130.0,
+        )
+        return sig
+
+    def _wide_candles(self, base: float = 100.0, n: int = 60) -> dict:
+        """Candles with extreme swing highs/lows to produce a wide structure SL."""
+        close = [base] * n
+        high = [base + 10.0] * n  # very wide
+        low = [base - 10.0] * n
+        return {"high": high, "low": low, "close": close, "volume": [1000.0] * n}
+
+    def _wide_indicators(self) -> dict:
+        return {
+            "1m": {"ema9_last": 100.0, "ema21_last": 100.0, "atr_last": 0.5,
+                   "momentum_last": 0.1},
+            "5m": {"ema9_last": 100.0, "ema21_last": 100.0, "atr_last": 0.5,
+                   "momentum_last": 0.1, "bb_upper_last": 110.0,
+                   "bb_mid_last": 100.0, "bb_lower_last": 90.0},
+            "15m": {"ema9_last": 100.0, "ema21_last": 100.0, "atr_last": 0.5,
+                    "momentum_last": 0.1, "bb_upper_last": 110.0,
+                    "bb_mid_last": 100.0, "bb_lower_last": 90.0},
+            "1h": {"ema9_last": 100.0, "ema21_last": 100.0, "atr_last": 0.5,
+                   "momentum_last": 0.1, "bb_upper_last": 110.0,
+                   "bb_mid_last": 100.0, "bb_lower_last": 90.0},
+        }
+
+    def test_scalp_sl_capped_to_1pct(self):
+        """SCALP channel SL must not exceed 1% of entry."""
+        sig = self._make_signal_with_wide_structure("360_SCALP")
+        risk = build_risk_plan(
+            signal=sig,
+            indicators=self._wide_indicators(),
+            candles={"5m": self._wide_candles()},
+            smc_data={"sweeps": [], "mss": None, "fvg": []},
+            setup=SetupClass.TREND_PULLBACK_CONTINUATION,
+            spread_pct=0.01,
+            channel="360_SCALP",
+        )
+        sl_pct = abs(sig.entry - risk.stop_loss) / sig.entry
+        assert sl_pct <= 0.01 + 1e-9, f"SCALP SL pct {sl_pct:.4f} exceeds 1%"
+
+    def test_tape_sl_capped_to_0_5pct(self):
+        """TAPE channel SL must not exceed 0.5% of entry."""
+        sig = self._make_signal_with_wide_structure("360_THE_TAPE")
+        risk = build_risk_plan(
+            signal=sig,
+            indicators=self._wide_indicators(),
+            candles={"1m": self._wide_candles()},
+            smc_data={"sweeps": [], "mss": None, "fvg": []},
+            setup=SetupClass.MOMENTUM_EXPANSION,
+            spread_pct=0.01,
+            channel="360_THE_TAPE",
+        )
+        sl_pct = abs(sig.entry - risk.stop_loss) / sig.entry
+        assert sl_pct <= 0.005 + 1e-9, f"TAPE SL pct {sl_pct:.4f} exceeds 0.5%"
+
+    def test_swing_sl_capped_to_3pct(self):
+        """SWING channel SL must not exceed 3% of entry."""
+        sig = self._make_signal_with_wide_structure("360_SWING")
+        risk = build_risk_plan(
+            signal=sig,
+            indicators=self._wide_indicators(),
+            candles={"1h": self._wide_candles()},
+            smc_data={"sweeps": [], "mss": None, "fvg": []},
+            setup=SetupClass.TREND_PULLBACK_CONTINUATION,
+            spread_pct=0.01,
+            channel="360_SWING",
+        )
+        sl_pct = abs(sig.entry - risk.stop_loss) / sig.entry
+        assert sl_pct <= 0.03 + 1e-9, f"SWING SL pct {sl_pct:.4f} exceeds 3%"
+
+    def test_channel_param_overrides_signal_channel(self):
+        """Explicitly passing channel= overrides signal.channel for SL cap."""
+        sig = self._make_signal_with_wide_structure("360_SWING")
+        risk = build_risk_plan(
+            signal=sig,
+            indicators=self._wide_indicators(),
+            candles={"5m": self._wide_candles()},
+            smc_data={"sweeps": [], "mss": None, "fvg": []},
+            setup=SetupClass.TREND_PULLBACK_CONTINUATION,
+            spread_pct=0.01,
+            channel="360_SCALP",  # tighter cap overrides signal.channel
+        )
+        sl_pct = abs(sig.entry - risk.stop_loss) / sig.entry
+        assert sl_pct <= 0.01 + 1e-9
+
+    def test_no_cap_applied_when_sl_within_limit(self):
+        """When the structure-based SL is already within limits, it is not altered."""
+        sig = _signal(channel="360_SWING")
+        risk_no_channel = build_risk_plan(
+            signal=sig,
+            indicators=_indicators(),
+            candles={"1h": _candles()},
+            smc_data=_smc(Direction.LONG),
+            setup=SetupClass.TREND_PULLBACK_CONTINUATION,
+            spread_pct=0.01,
+        )
+        risk_with_channel = build_risk_plan(
+            signal=sig,
+            indicators=_indicators(),
+            candles={"1h": _candles()},
+            smc_data=_smc(Direction.LONG),
+            setup=SetupClass.TREND_PULLBACK_CONTINUATION,
+            spread_pct=0.01,
+            channel="360_SWING",
+        )
+        # When SL is already within the cap, both should be equal
+        assert risk_no_channel.stop_loss == risk_with_channel.stop_loss
+
+    def test_short_sl_capped_correctly(self):
+        """For a SHORT, the capped SL should be above entry (not below)."""
+        sig = self._make_signal_with_wide_structure("360_SCALP", direction=Direction.SHORT)
+        risk = build_risk_plan(
+            signal=sig,
+            indicators=self._wide_indicators(),
+            candles={"5m": self._wide_candles()},
+            smc_data={"sweeps": [], "mss": None, "fvg": []},
+            setup=SetupClass.TREND_PULLBACK_CONTINUATION,
+            spread_pct=0.01,
+            channel="360_SCALP",
+        )
+        # For a SHORT, SL is above entry
+        if sig.entry != 0:  # entry is always non-zero in practice
+            sl_pct = abs(sig.entry - risk.stop_loss) / sig.entry
+            assert sl_pct <= 0.01 + 1e-9

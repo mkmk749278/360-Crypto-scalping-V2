@@ -129,6 +129,54 @@ class TestMarketRegimeDetector:
         assert hasattr(result, "regime")
         assert isinstance(result.regime, MarketRegime)
 
+    # ------------------------------------------------------------------
+    # Bug 4: timeframe parameter and 1m wider EMA slope threshold
+    # ------------------------------------------------------------------
+
+    def test_1m_timeframe_uses_wider_threshold_stays_ranging(self):
+        """On 1m data, an EMA slope of ±0.1% should NOT trigger a trending regime
+        (it would with the default ±0.05% threshold on 5m data)."""
+        det = MarketRegimeDetector()
+        # ema_slope = (100.1 - 100.0) / 100.0 * 100 = 0.1% — above 0.05 but below 0.15
+        ind = {"ema9_last": 100.1, "ema21_last": 100.0}
+        result_5m = det.classify(ind, timeframe="5m")
+        result_1m = det.classify(ind, timeframe="1m")
+        # 5m uses 0.05 threshold → slope 0.1 > 0.05 → TRENDING_UP
+        assert result_5m.regime == MarketRegime.TRENDING_UP
+        # 1m uses 0.15 threshold → slope 0.1 < 0.15 → RANGING
+        assert result_1m.regime == MarketRegime.RANGING
+
+    def test_1m_timeframe_triggers_trending_above_wider_threshold(self):
+        """On 1m data, an EMA slope beyond ±0.15% should still trigger a trending regime."""
+        det = MarketRegimeDetector()
+        # ema_slope = (100.2 - 100.0) / 100.0 * 100 = 0.2% — above 0.15
+        ind = {"ema9_last": 100.2, "ema21_last": 100.0}
+        result_1m = det.classify(ind, timeframe="1m")
+        assert result_1m.regime == MarketRegime.TRENDING_UP
+
+    def test_5m_timeframe_is_default_backward_compatible(self):
+        """Calling classify() without timeframe behaves identically to timeframe='5m'."""
+        det = MarketRegimeDetector()
+        ind = {"ema9_last": 100.1, "ema21_last": 100.0}
+        assert det.classify(ind).regime == det.classify(ind, timeframe="5m").regime
+
+    def test_1m_negative_slope_ranging_within_threshold(self):
+        """Negative slope within 1m threshold (-0.1%) stays RANGING."""
+        det = MarketRegimeDetector()
+        ind = {"ema9_last": 99.9, "ema21_last": 100.0}
+        result = det.classify(ind, timeframe="1m")
+        assert result.regime == MarketRegime.RANGING
+
+    def test_adx_based_regime_unaffected_by_timeframe(self):
+        """When ADX is decisive, the timeframe parameter does not change the outcome."""
+        det = MarketRegimeDetector()
+        ind = {"adx_last": 30.0, "ema9_last": 102.0, "ema21_last": 100.0}
+        result_5m = det.classify(ind, timeframe="5m")
+        result_1m = det.classify(ind, timeframe="1m")
+        # High ADX always returns TRENDING_UP regardless of timeframe
+        assert result_5m.regime == MarketRegime.TRENDING_UP
+        assert result_1m.regime == MarketRegime.TRENDING_UP
+
 
 # ---------------------------------------------------------------------------
 # Filters
@@ -409,3 +457,16 @@ class TestStablecoinBlacklist:
         assert "BTCUSDT" in symbols
         assert "SOLUSDT" in symbols
         assert "USD1USDT" not in symbols
+
+    def test_rlusdusdt_in_blacklist(self):
+        """Bug 3: RLUSDUSDT (Ripple's RLUSD stablecoin) must be blacklisted."""
+        from src.pair_manager import _STABLECOIN_BLACKLIST
+        assert "RLUSDUSDT" in _STABLECOIN_BLACKLIST
+
+    def test_new_stablecoins_in_blacklist(self):
+        """All newly added stablecoins from Bug 3 must be in the blacklist."""
+        from src.pair_manager import _STABLECOIN_BLACKLIST
+        new_coins = {"RLUSDUSDT", "PYUSDUSDT", "USDDUSDT", "GUSDUSDT",
+                     "FRAXUSDT", "LUSDUSDT", "SUSDUSDT", "CUSDUSDT"}
+        for coin in new_coins:
+            assert coin in _STABLECOIN_BLACKLIST, f"{coin} not in blacklist"

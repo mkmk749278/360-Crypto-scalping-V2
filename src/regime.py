@@ -58,6 +58,7 @@ class MarketRegimeDetector:
         self,
         indicators: Dict[str, Any],
         candles: Optional[Dict[str, Any]] = None,
+        timeframe: str = "5m",
     ) -> RegimeResult:
         """Classify market regime from *indicators* dict.
 
@@ -68,6 +69,10 @@ class MarketRegimeDetector:
           - ``bb_upper_last``   – Bollinger upper band
           - ``bb_mid_last``     – Bollinger middle band
           - ``bb_lower_last``   – Bollinger lower band
+
+        The *timeframe* parameter adjusts EMA slope thresholds: on 1-minute
+        data the threshold is widened (±0.15 %) to reduce noise-driven regime
+        flips that would otherwise occur every few candles.
         """
         adx_val: Optional[float] = indicators.get("adx_last")
         ema_fast: Optional[float] = indicators.get("ema9_last")
@@ -97,7 +102,7 @@ class MarketRegimeDetector:
         if bb_upper is not None and bb_lower is not None and bb_mid and bb_mid != 0.0:
             bb_width_pct = (bb_upper - bb_lower) / bb_mid * 100.0
 
-        regime = self._decide(adx_val, ema_slope, bb_width_pct)
+        regime = self._decide(adx_val, ema_slope, bb_width_pct, timeframe=timeframe)
 
         return RegimeResult(
             regime=regime,
@@ -113,7 +118,10 @@ class MarketRegimeDetector:
         adx: Optional[float],
         ema_slope: Optional[float],
         bb_width_pct: Optional[float],
+        timeframe: str = "5m",
     ) -> MarketRegime:
+        # EMA slope threshold – wider for 1m data to reduce noise-driven flips
+        ema_slope_threshold = 0.15 if timeframe == "1m" else 0.05
         # Volatility check (Bollinger width) takes priority
         if bb_width_pct is not None:
             if bb_width_pct >= _BB_WIDTH_VOLATILE_PCT:
@@ -133,9 +141,9 @@ class MarketRegimeDetector:
 
         # Fall back to EMA slope when ADX is borderline
         if ema_slope is not None:
-            if ema_slope > 0.05:
+            if ema_slope > ema_slope_threshold:
                 return MarketRegime.TRENDING_UP
-            if ema_slope < -0.05:
+            if ema_slope < -ema_slope_threshold:
                 return MarketRegime.TRENDING_DOWN
 
         return MarketRegime.RANGING

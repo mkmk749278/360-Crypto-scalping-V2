@@ -27,6 +27,9 @@ log = get_logger("pair_manager")
 _STABLECOIN_BLACKLIST: frozenset = frozenset({
     "USDCUSDT", "BUSDUSDT", "TUSDUSDT", "USDPUSDT", "FDUSDUSDT",
     "USD1USDT", "DAIUSDT", "EURUSDT", "USDCBUSD", "USDTDAI",
+    # USD-pegged stablecoins that produce untradeable signals against USDT
+    "RLUSDUSDT", "PYUSDUSDT", "USDDUSDT", "GUSDUSDT",
+    "FRAXUSDT", "LUSDUSDT", "SUSDUSDT", "CUSDUSDT",
 })
 
 

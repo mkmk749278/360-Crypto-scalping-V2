@@ -196,9 +196,18 @@ class Scanner:
         # Prevents rapid re-fire of the same thesis after invalidation.
         self._invalidation_cooldown_until: Dict[Tuple[str, str, str], float] = {}
 
+        # Post-invalidation pair cooldown: (symbol, channel) → monotonic expiry
+        # Prevents any direction from firing on the same (symbol, channel) pair
+        # for a shorter window after an invalidation (half the direction cooldown).
+        self._invalidation_pair_cooldown_until: Dict[Tuple[str, str], float] = {}
+
         # Thesis-based cooldown: (symbol, channel, direction, setup_class) → expiry
         # Prevents the same failing thesis from re-firing after an SL hit.
         self._thesis_cooldown_until: Dict[Tuple[str, str, str, str], float] = {}
+
+        # Regime history: symbol → list of (monotonic_time, regime_value) tuples
+        # Used to detect oscillating / unstable regimes (too many flips in window).
+        self._regime_history: Dict[str, List[Tuple[float, str]]] = {}
 
         # Semaphore to limit concurrent symbol scans
         self._scan_semaphore: asyncio.Semaphore = asyncio.Semaphore(_MAX_CONCURRENT_SCANS)
@@ -331,6 +340,9 @@ class Scanner:
         Prevents the same thesis from re-firing immediately after a signal is
         invalidated (e.g., EMA crossover kills BNBUSDT SHORT, then it fires again
         within minutes with the same parameters).
+
+        Also sets a shorter any-direction cooldown on (symbol, channel) so that
+        an opposing direction cannot fire immediately after the invalidation.
         """
         duration_s = self._INVALIDATION_COOLDOWN_SECONDS.get(channel, 300)
         key = (symbol, channel, direction)
@@ -339,6 +351,40 @@ class Scanner:
             "Post-invalidation cooldown set for {} {} {} ({:.0f}s)",
             symbol, channel, direction, duration_s,
         )
+        # Pair-level (any-direction) cooldown at half the direction-specific duration
+        pair_duration_s = duration_s // 2
+        pair_key = (symbol, channel)
+        self._invalidation_pair_cooldown_until[pair_key] = time.monotonic() + pair_duration_s
+        log.debug(
+            "Post-invalidation pair cooldown set for {} {} ({:.0f}s)",
+            symbol, channel, pair_duration_s,
+        )
+
+    def _count_regime_flips(self, symbol: str, window_minutes: int = 30) -> int:
+        """Return the number of regime transitions within the rolling window."""
+        history = self._regime_history.get(symbol, [])
+        if len(history) < 2:
+            return 0
+        cutoff = time.monotonic() - window_minutes * 60
+        recent = [r for t, r in history if t >= cutoff]
+        if len(recent) < 2:
+            return 0
+        return sum(1 for i in range(1, len(recent)) if recent[i] != recent[i - 1])
+
+    def _is_regime_unstable(
+        self,
+        symbol: str,
+        window_minutes: int = 30,
+        max_flips: int = 2,
+    ) -> bool:
+        """Return True if the regime for *symbol* has flipped more than *max_flips*
+        times within the last *window_minutes* minutes.
+
+        A regime "flip" is any transition between distinct regime values in the
+        recorded history.  When the count of flips exceeds the threshold the
+        symbol is considered too noisy for TAPE-style signals.
+        """
+        return self._count_regime_flips(symbol, window_minutes) > max_flips
 
     def notify_sl_hit(
         self,
@@ -546,10 +592,19 @@ class Scanner:
         smc_result = self.smc_detector.detect(symbol, candles, ticks)
         smc_data = smc_result.as_dict()
 
+        regime_tf = "5m" if "5m" in indicators else "1m"
         regime_ind = indicators.get("5m", indicators.get("1m", {}))
         regime_candles = candles.get("5m", candles.get("1m"))
-        regime_result = self.regime_detector.classify(regime_ind, regime_candles)
+        regime_result = self.regime_detector.classify(regime_ind, regime_candles, timeframe=regime_tf)
         log.debug("{} regime: {}", symbol, regime_result.regime.value)
+
+        # Record regime history for oscillation / instability detection
+        _now = time.monotonic()
+        history = self._regime_history.setdefault(symbol, [])
+        history.append((_now, regime_result.regime.value))
+        # Prune entries older than 30 minutes
+        _cutoff = _now - 30 * 60
+        self._regime_history[symbol] = [(t, r) for t, r in history if t >= _cutoff]
 
         ind_for_predict = indicators.get("5m", indicators.get("1m", {}))
         candle_total = sum(len(cd.get("close", [])) for cd in candles.values())
@@ -613,6 +668,17 @@ class Scanner:
         if self._is_in_cooldown(symbol, chan_name):
             log.debug("Cooldown active: skipping {} {}", symbol, chan_name)
             return True
+        # Post-invalidation pair cooldown: any-direction suppression after an
+        # invalidation, so the opposite direction cannot fire immediately.
+        pair_inv_expiry = self._invalidation_pair_cooldown_until.get((symbol, chan_name))
+        if pair_inv_expiry is not None:
+            if time.monotonic() < pair_inv_expiry:
+                log.debug(
+                    "Post-invalidation pair cooldown: skipping {} {}",
+                    symbol, chan_name,
+                )
+                return True
+            del self._invalidation_pair_cooldown_until[(symbol, chan_name)]
         # Per-symbol SL cooldown: suppress all channels briefly after an SL event
         sl_expiry = self._symbol_sl_cooldown_until.get(symbol)
         if sl_expiry is not None:
@@ -657,6 +723,15 @@ class Scanner:
                 current_regime,
             )
             return True
+        # TAPE channel: skip when regime oscillates too rapidly (more than 2 flips
+        # in the last 30 minutes), which causes signals to be invalidated immediately.
+        if chan_name == "360_THE_TAPE" and self._is_regime_unstable(symbol):
+            flips = self._count_regime_flips(symbol)
+            log.debug(
+                "Regime unstable: skipping {} {} ({} flips in last 30min)",
+                symbol, chan_name, flips,
+            )
+            return True
         return False
 
     def _evaluate_setup(
@@ -692,6 +767,7 @@ class Scanner:
         sig: Any,
         ctx: ScanContext,
         setup: SetupAssessment,
+        chan_name: str = "",
     ) -> RiskAssessment:
         return build_risk_plan(
             signal=sig,
@@ -700,6 +776,7 @@ class Scanner:
             smc_data=ctx.smc_data,
             setup=setup.setup_class,
             spread_pct=ctx.spread_pct,
+            channel=chan_name or sig.channel,
         )
 
     def _apply_risk_plan_to_signal(
@@ -969,7 +1046,7 @@ class Scanner:
             log.debug("Rejected {} {} execution: {}", symbol, chan_name, execution.reason)
             return None, None
 
-        risk = self._evaluate_risk(sig, ctx, setup)
+        risk = self._evaluate_risk(sig, ctx, setup, chan_name=chan_name)
         if not risk.passed:
             log.debug("Rejected {} {} risk: {}", symbol, chan_name, risk.reason)
             return None, None
