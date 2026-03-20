@@ -186,6 +186,10 @@ class Scanner:
         self._order_book_cache: Dict[str, Tuple[float, float]] = {}
         self._order_book_fetches_this_cycle: int = 0
 
+        # Order book depth cache: symbol → (bids, asks, expiry_monotonic_time)
+        # Stores the raw top-level bids/asks for Order Book Imbalance filtering.
+        self._order_book_depth_cache: Dict[str, Tuple[list, list, float]] = {}
+
         # Cooldown tracking: (symbol, channel_name) → monotonic expiry time
         self._cooldown_until: Dict[Tuple[str, str], float] = {}
 
@@ -512,15 +516,23 @@ class Scanner:
                 if self.spot_client is None:
                     self.spot_client = BinanceClient("spot")
                 client = self.spot_client
-            book = await client.fetch_order_book(symbol, limit=5)
+            # Fetch 20 levels: top-of-book bids/asks give the spread while
+            # the full depth is used for Order Book Imbalance (OBI) filtering.
+            book = await client.fetch_order_book(symbol, limit=20)
             if book and book.get("bids") and book.get("asks"):
                 best_bid = float(book["bids"][0][0])
                 best_ask = float(book["asks"][0][0])
                 mid = (best_bid + best_ask) / 2.0
                 if mid > 0:
                     spread_pct = (best_ask - best_bid) / mid * 100.0
-                # Successful fetch: cache with normal TTL
+                # Cache spread with normal TTL
                 self._order_book_cache[symbol] = (spread_pct, now + _SPREAD_CACHE_TTL)
+                # Cache raw depth for OBI filtering (same TTL)
+                self._order_book_depth_cache[symbol] = (
+                    book["bids"],
+                    book["asks"],
+                    now + _SPREAD_CACHE_TTL,
+                )
             else:
                 # Failed fetch (e.g. futures-only symbol on spot endpoint):
                 # cache with a longer TTL to avoid hammering the endpoint every cycle.
@@ -528,6 +540,16 @@ class Scanner:
         except Exception:
             self._order_book_cache[symbol] = (spread_pct, now + _SPREAD_FAIL_CACHE_TTL)
         return spread_pct
+
+    def _get_order_book_depth(self, symbol: str) -> Optional[dict]:
+        """Return the most recent cached order book depth for *symbol*, or ``None``."""
+        cached = self._order_book_depth_cache.get(symbol)
+        if cached is None:
+            return None
+        bids, asks, expiry = cached
+        if time.monotonic() >= expiry:
+            return None
+        return {"bids": bids, "asks": asks}
 
     async def _fetch_onchain_data(self, symbol: str) -> Any:
         try:
@@ -923,6 +945,9 @@ class Scanner:
         sig.volume_24h_usd = volume_24h
         sig.pair_quality_score = ctx.pair_quality.score
         sig.pair_quality_label = ctx.pair_quality.label
+        # Attach the cached order book depth snapshot so downstream filters
+        # (RiskManager OBI check) can evaluate it without an extra fetch.
+        sig.order_book = self._get_order_book_depth(sig.symbol)
 
     @staticmethod
     def _has_higher_timeframe_alignment(sig: Any, indicators: Dict[str, Dict[str, Any]]) -> bool:

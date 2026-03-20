@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from config import ChannelConfig
 from src.smc import Direction
@@ -55,6 +55,9 @@ class Signal:
     # Scanner-enriched market context (set before enqueuing)
     spread_pct: float = 0.0
     volume_24h_usd: float = 0.0
+    # Level-2 order book snapshot attached by the scanner for OBI filtering.
+    # Format: {"bids": [[price, qty], ...], "asks": [[price, qty], ...]}
+    order_book: Optional[Dict[str, List[Any]]] = None
     # Best TP level reached during this signal's lifetime (0 = none, 1 = TP1, 2 = TP2)
     best_tp_hit: int = 0
     # PnL % frozen at the moment the highest TP was hit (used for signal quality stats)

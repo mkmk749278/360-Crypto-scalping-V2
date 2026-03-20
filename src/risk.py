@@ -13,6 +13,9 @@ from src.utils import get_logger
 
 log = get_logger("risk")
 
+# Order book imbalance filter (imported here to avoid circular imports)
+from src.order_book import check_order_book_execution  # noqa: E402
+
 # Minimum required 24h volume (USD) to be considered adequately liquid
 _MIN_VOLUME_LOW_RISK: float = 50_000_000    # > $50M  → Low risk
 _MIN_VOLUME_MED_RISK: float = 10_000_000    # > $10M  → Medium risk
@@ -118,6 +121,20 @@ class RiskManager:
         if rr < _MIN_RR_FLOOR:
             allowed = False
             reason = f"Insufficient R:R ({rr:.2f} < {_MIN_RR_FLOOR})"
+
+        # Order book imbalance check — final execution gate.
+        # Reads the order book snapshot from the signal (attached by the
+        # scanner).  Fails open when data is unavailable.
+        if allowed:
+            ob_data = getattr(signal, "order_book", None)
+            ob_allowed, ob_reason = check_order_book_execution(direction_val, ob_data)
+            if not ob_allowed:
+                allowed = False
+                reason = ob_reason
+                log.debug(
+                    "OBI filter blocked {} {}: {}",
+                    symbol, direction_val, ob_reason,
+                )
 
         return RiskAssessment(
             risk_label=risk_label,
