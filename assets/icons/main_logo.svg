@@ -1,0 +1,257 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Deep black background -->
+    <radialGradient id="bg-grad" cx="50%" cy="45%" r="65%">
+      <stop offset="0%" stop-color="#0F0F20"/>
+      <stop offset="100%" stop-color="#0A0A0A"/>
+    </radialGradient>
+    <!-- Outer ring glow gradient -->
+    <radialGradient id="ring-grad" cx="50%" cy="50%" r="50%">
+      <stop offset="70%" stop-color="#00A3FF" stop-opacity="0"/>
+      <stop offset="90%" stop-color="#00A3FF" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#0040AA" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Gold gradient -->
+    <linearGradient id="gold-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFF176"/>
+      <stop offset="40%" stop-color="#FFD700"/>
+      <stop offset="100%" stop-color="#B8860B"/>
+    </linearGradient>
+    <!-- Electric blue gradient -->
+    <linearGradient id="blue-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#40C4FF"/>
+      <stop offset="100%" stop-color="#00A3FF"/>
+    </linearGradient>
+    <!-- Iris gradient -->
+    <radialGradient id="iris-grad" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#1A3A6A"/>
+      <stop offset="60%" stop-color="#00A3FF"/>
+      <stop offset="100%" stop-color="#004080"/>
+    </radialGradient>
+    <!-- Pupil gradient -->
+    <radialGradient id="pupil-grad" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#1A1A2E"/>
+      <stop offset="100%" stop-color="#050510"/>
+    </radialGradient>
+    <!-- Eye whites gradient -->
+    <linearGradient id="sclera-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#D4A800"/>
+      <stop offset="50%" stop-color="#FFD700"/>
+      <stop offset="100%" stop-color="#B8860B"/>
+    </linearGradient>
+    <!-- Central glow -->
+    <radialGradient id="center-glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00A3FF" stop-opacity="0.5"/>
+      <stop offset="60%" stop-color="#0060CC" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#003366" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Light ray gradient -->
+    <linearGradient id="ray-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#FFD700"/>
+      <stop offset="100%" stop-color="#FFD700" stop-opacity="0"/>
+    </linearGradient>
+    <!-- Eye glow filter -->
+    <filter id="eye-glow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <!-- Strong glow filter -->
+    <filter id="strong-glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="12" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <!-- Text glow -->
+    <filter id="text-glow" x="-20%" y="-50%" width="140%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <!-- Particle glow -->
+    <filter id="particle-glow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="3.5" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <!-- Node glow -->
+    <filter id="node-glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" fill="url(#bg-grad)" rx="32"/>
+
+  <!-- Orbiting glow ring background -->
+  <circle cx="256" cy="220" r="195" fill="url(#ring-grad)"/>
+
+  <!-- Radiating light rays from eye center -->
+  <g opacity="0.3" filter="url(#strong-glow)">
+    <!-- 16 rays at equal angles -->
+    <line x1="256" y1="220" x2="256" y2="50" stroke="#FFD700" stroke-width="2" opacity="0.6"/>
+    <line x1="256" y1="220" x2="308" y2="56" stroke="#FFD700" stroke-width="1.5" opacity="0.5"/>
+    <line x1="256" y1="220" x2="356" y2="74" stroke="#FFD700" stroke-width="1.5" opacity="0.5"/>
+    <line x1="256" y1="220" x2="404" y2="118" stroke="#FFD700" stroke-width="1.5" opacity="0.5"/>
+    <line x1="256" y1="220" x2="424" y2="172" stroke="#FFD700" stroke-width="2" opacity="0.5"/>
+    <line x1="256" y1="220" x2="424" y2="268" stroke="#FFD700" stroke-width="1.5" opacity="0.5"/>
+    <line x1="256" y1="220" x2="404" y2="322" stroke="#FFD700" stroke-width="1.5" opacity="0.5"/>
+    <line x1="256" y1="220" x2="356" y2="366" stroke="#FFD700" stroke-width="1.5" opacity="0.4"/>
+    <line x1="256" y1="220" x2="308" y2="384" stroke="#FFD700" stroke-width="1.5" opacity="0.4"/>
+    <line x1="256" y1="220" x2="204" y2="56" stroke="#FFD700" stroke-width="1.5" opacity="0.5"/>
+    <line x1="256" y1="220" x2="156" y2="74" stroke="#FFD700" stroke-width="1.5" opacity="0.5"/>
+    <line x1="256" y1="220" x2="108" y2="118" stroke="#FFD700" stroke-width="1.5" opacity="0.5"/>
+    <line x1="256" y1="220" x2="88" y2="172" stroke="#FFD700" stroke-width="2" opacity="0.5"/>
+    <line x1="256" y1="220" x2="88" y2="268" stroke="#FFD700" stroke-width="1.5" opacity="0.5"/>
+    <line x1="256" y1="220" x2="108" y2="322" stroke="#FFD700" stroke-width="1.5" opacity="0.5"/>
+    <line x1="256" y1="220" x2="156" y2="366" stroke="#FFD700" stroke-width="1.5" opacity="0.4"/>
+  </g>
+
+  <!-- 360-degree circular orbit ring -->
+  <g filter="url(#eye-glow)">
+    <circle cx="256" cy="220" r="165" fill="none" stroke="#FFD700" stroke-width="2" opacity="0.6"
+            stroke-dasharray="12,6"/>
+    <circle cx="256" cy="220" r="168" fill="none" stroke="#00A3FF" stroke-width="1" opacity="0.4"/>
+  </g>
+
+  <!-- Blockchain nodes on the orbit ring -->
+  <g filter="url(#node-glow)">
+    <!-- Node at top -->
+    <circle cx="256" cy="55" r="8" fill="#FFD700"/>
+    <circle cx="256" cy="55" r="4" fill="#FFF176"/>
+    <!-- Node at top-right -->
+    <circle cx="368" cy="92" r="6" fill="#00A3FF"/>
+    <circle cx="368" cy="92" r="3" fill="#40C4FF"/>
+    <!-- Node at right -->
+    <circle cx="421" cy="220" r="8" fill="#FFD700"/>
+    <circle cx="421" cy="220" r="4" fill="#FFF176"/>
+    <!-- Node at bottom-right -->
+    <circle cx="368" cy="348" r="6" fill="#00A3FF"/>
+    <circle cx="368" cy="348" r="3" fill="#40C4FF"/>
+    <!-- Node at left -->
+    <circle cx="91" cy="220" r="8" fill="#FFD700"/>
+    <circle cx="91" cy="220" r="4" fill="#FFF176"/>
+    <!-- Node at top-left -->
+    <circle cx="144" cy="92" r="6" fill="#00A3FF"/>
+    <circle cx="144" cy="92" r="3" fill="#40C4FF"/>
+    <!-- Node at bottom-left -->
+    <circle cx="144" cy="348" r="6" fill="#00A3FF"/>
+    <circle cx="144" cy="348" r="3" fill="#40C4FF"/>
+  </g>
+
+  <!-- Connection lines between blockchain nodes -->
+  <g stroke="#00A3FF" stroke-width="1" opacity="0.25">
+    <line x1="256" y1="55" x2="368" y2="92"/>
+    <line x1="368" y1="92" x2="421" y2="220"/>
+    <line x1="421" y1="220" x2="368" y2="348"/>
+    <line x1="256" y1="55" x2="144" y2="92"/>
+    <line x1="144" y1="92" x2="91" y2="220"/>
+    <line x1="91" y1="220" x2="144" y2="348"/>
+    <!-- Cross connections -->
+    <line x1="256" y1="55" x2="421" y2="220"/>
+    <line x1="256" y1="55" x2="91" y2="220"/>
+    <line x1="368" y1="92" x2="144" y2="348"/>
+    <line x1="144" y1="92" x2="368" y2="348"/>
+  </g>
+
+  <!-- EYE - outer gold almond shape (sclera/outline) -->
+  <g filter="url(#strong-glow)" opacity="0.4">
+    <path d="M90,220 Q140,140 256,145 Q372,140 422,220 Q372,300 256,295 Q140,300 90,220 Z"
+          fill="#FFD700"/>
+  </g>
+
+  <!-- EYE - main almond shape (gold outline) -->
+  <g filter="url(#eye-glow)">
+    <path d="M95,220 Q145,148 256,150 Q367,148 417,220 Q367,292 256,290 Q145,292 95,220 Z"
+          fill="url(#sclera-grad)" stroke="#FFD700" stroke-width="3"/>
+  </g>
+
+  <!-- EYE - iris (electric blue circle) -->
+  <circle cx="256" cy="220" r="65" fill="url(#iris-grad)" filter="url(#eye-glow)"/>
+
+  <!-- Iris detail rings -->
+  <circle cx="256" cy="220" r="65" fill="none" stroke="#40C4FF" stroke-width="2" opacity="0.5"/>
+  <circle cx="256" cy="220" r="55" fill="none" stroke="#00A3FF" stroke-width="1" opacity="0.4"/>
+  <circle cx="256" cy="220" r="48" fill="none" stroke="#40C4FF" stroke-width="0.8" opacity="0.3"/>
+
+  <!-- Iris radial lines (detail) -->
+  <g stroke="#40C4FF" stroke-width="0.8" opacity="0.3">
+    <line x1="256" y1="155" x2="256" y2="175"/>
+    <line x1="302" y1="166" x2="294" y2="183"/>
+    <line x1="335" y1="194" x2="319" y2="204"/>
+    <line x1="335" y1="246" x2="319" y2="236"/>
+    <line x1="302" y1="274" x2="294" y2="257"/>
+    <line x1="256" y1="285" x2="256" y2="265"/>
+    <line x1="210" y1="274" x2="218" y2="257"/>
+    <line x1="177" y1="246" x2="193" y2="236"/>
+    <line x1="177" y1="194" x2="193" y2="204"/>
+    <line x1="210" y1="166" x2="218" y2="183"/>
+  </g>
+
+  <!-- EYE - pupil (deep black) -->
+  <circle cx="256" cy="220" r="34" fill="url(#pupil-grad)" filter="url(#eye-glow)"/>
+
+  <!-- Pupil inner ring detail -->
+  <circle cx="256" cy="220" r="34" fill="none" stroke="#0040AA" stroke-width="1.5" opacity="0.5"/>
+
+  <!-- Central eye glow -->
+  <circle cx="256" cy="220" r="200" fill="url(#center-glow)"/>
+
+  <!-- Eye highlight (catch light) -->
+  <ellipse cx="240" cy="205" rx="12" ry="8" fill="white" opacity="0.25" transform="rotate(-20,240,205)"/>
+  <circle cx="272" cy="235" r="4" fill="white" opacity="0.12"/>
+
+  <!-- Eyelashes / lash lines -->
+  <g stroke="#FFD700" stroke-width="2" opacity="0.6">
+    <!-- Upper lashes -->
+    <line x1="176" y1="178" x2="166" y2="162"/>
+    <line x1="200" y1="162" x2="194" y2="145"/>
+    <line x1="228" y1="152" x2="226" y2="136"/>
+    <line x1="256" y1="150" x2="256" y2="133"/>
+    <line x1="284" y1="152" x2="286" y2="136"/>
+    <line x1="312" y1="162" x2="318" y2="145"/>
+    <line x1="336" y1="178" x2="346" y2="162"/>
+    <!-- Lower lashes (shorter) -->
+    <line x1="186" y1="266" x2="178" y2="278"/>
+    <line x1="220" y1="285" x2="216" y2="298"/>
+    <line x1="256" y1="290" x2="256" y2="304"/>
+    <line x1="292" y1="285" x2="296" y2="298"/>
+    <line x1="326" y1="266" x2="334" y2="278"/>
+  </g>
+
+  <!-- Orbiting particles (small spheres) -->
+  <g filter="url(#particle-glow)">
+    <!-- Inner orbit particles -->
+    <circle cx="256" cy="130" r="5" fill="#00A3FF" opacity="0.9"/>
+    <circle cx="350" cy="155" r="4" fill="#FFD700" opacity="0.8"/>
+    <circle cx="388" cy="240" r="4" fill="#00A3FF" opacity="0.8"/>
+    <circle cx="350" cy="305" r="4" fill="#FFD700" opacity="0.7"/>
+    <circle cx="162" cy="155" r="4" fill="#00A3FF" opacity="0.8"/>
+    <circle cx="124" cy="240" r="4" fill="#FFD700" opacity="0.8"/>
+    <circle cx="162" cy="305" r="4" fill="#00A3FF" opacity="0.7"/>
+    <!-- Outer small particles -->
+    <circle cx="60" cy="150" r="2.5" fill="#FFD700" opacity="0.5"/>
+    <circle cx="452" cy="150" r="2.5" fill="#FFD700" opacity="0.5"/>
+    <circle cx="60" cy="290" r="2" fill="#00A3FF" opacity="0.5"/>
+    <circle cx="452" cy="290" r="2" fill="#00A3FF" opacity="0.5"/>
+    <circle cx="180" cy="60" r="2.5" fill="#00A3FF" opacity="0.5"/>
+    <circle cx="330" cy="60" r="2.5" fill="#FFD700" opacity="0.5"/>
+  </g>
+
+  <!-- "360 CRYPTO EYE" text -->
+  <g filter="url(#text-glow)">
+    <text x="256" y="388" font-family="'Arial Black', 'Arial', sans-serif" font-size="30" font-weight="900"
+          fill="url(#gold-grad)" text-anchor="middle" letter-spacing="3">360 CRYPTO EYE</text>
+  </g>
+  <!-- Text underline bar -->
+  <rect x="68" y="398" width="376" height="3" rx="1.5" fill="#00A3FF" opacity="0.8"/>
+
+  <!-- Bottom tagline -->
+  <text x="256" y="430" font-family="'Arial', sans-serif" font-size="14" font-weight="400"
+        fill="#00A3FF" text-anchor="middle" letter-spacing="4" opacity="0.65">SIGNAL ENGINE</text>
+
+  <!-- Corner decoration marks -->
+  <g stroke="#FFD700" stroke-width="2" fill="none" opacity="0.45">
+    <path d="M30,30 L30,55 M30,30 L55,30"/>
+    <path d="M482,30 L482,55 M482,30 L457,30"/>
+    <path d="M30,482 L30,457 M30,482 L55,482"/>
+    <path d="M482,482 L482,457 M482,482 L457,482"/>
+  </g>
+</svg>

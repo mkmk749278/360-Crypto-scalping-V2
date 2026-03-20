@@ -1,0 +1,169 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Dark navy background gradient -->
+    <radialGradient id="bg-grad" cx="50%" cy="40%" r="75%">
+      <stop offset="0%" stop-color="#112060"/>
+      <stop offset="100%" stop-color="#0A0A2E"/>
+    </radialGradient>
+    <!-- Gold gradient -->
+    <linearGradient id="gold-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFF176"/>
+      <stop offset="40%" stop-color="#FFD700"/>
+      <stop offset="100%" stop-color="#B8860B"/>
+    </linearGradient>
+    <!-- Royal blue gradient -->
+    <linearGradient id="blue-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#4D6FDB"/>
+      <stop offset="100%" stop-color="#1A47B8"/>
+    </linearGradient>
+    <!-- Pillar gradient (3D effect) -->
+    <linearGradient id="pillar-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#B8860B"/>
+      <stop offset="25%" stop-color="#FFD700"/>
+      <stop offset="75%" stop-color="#FFD700"/>
+      <stop offset="100%" stop-color="#8B6914"/>
+    </linearGradient>
+    <!-- Glow filter for pillars -->
+    <filter id="pillar-glow" x="-20%" y="-10%" width="140%" height="120%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <!-- Gold glow filter -->
+    <filter id="gold-glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="8" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <!-- Text glow -->
+    <filter id="text-glow" x="-20%" y="-50%" width="140%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <!-- Soft glow for chart lines -->
+    <filter id="chart-glow" x="-20%" y="-30%" width="140%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" fill="url(#bg-grad)" rx="32"/>
+
+  <!-- Subtle upward trending chart lines in background -->
+  <g filter="url(#chart-glow)" opacity="0.25" stroke="#1A47B8" stroke-width="1.5" fill="none">
+    <polyline points="40,370 100,340 150,355 200,310 250,290 300,260 350,240 400,210 460,185"/>
+    <polyline points="40,395 90,368 140,380 195,340 248,318 300,295 355,270 410,245 460,220"/>
+    <polyline points="40,345 95,315 148,330 200,285 252,268 305,240 358,218 412,195 460,170"/>
+  </g>
+
+  <!-- Stars / particles in background -->
+  <g opacity="0.4">
+    <circle cx="50" cy="60" r="1.5" fill="#FFD700"/>
+    <circle cx="100" cy="90" r="1" fill="#4D6FDB"/>
+    <circle cx="460" cy="70" r="1.5" fill="#FFD700"/>
+    <circle cx="415" cy="100" r="1" fill="#4D6FDB"/>
+    <circle cx="75" cy="140" r="1" fill="#FFD700"/>
+    <circle cx="440" cy="140" r="1" fill="#FFD700"/>
+    <circle cx="130" cy="60" r="1" fill="#4D6FDB"/>
+    <circle cx="380" cy="60" r="1" fill="#4D6FDB"/>
+  </g>
+
+  <!-- Temple pediment (triangular roof) -->
+  <g filter="url(#gold-glow)" opacity="0.9">
+    <polygon points="256,80 80,175 432,175" fill="url(#gold-grad)" opacity="0.95"/>
+  </g>
+  <!-- Pediment inner triangle (decorative) -->
+  <polygon points="256,102 110,172 402,172" fill="#0A0A2E" opacity="0.6"/>
+  <!-- Gold star / emblem inside pediment -->
+  <g filter="url(#gold-glow)">
+    <polygon points="256,118 262,136 280,136 266,146 272,164 256,154 240,164 246,146 232,136 250,136"
+             fill="#FFD700"/>
+  </g>
+
+  <!-- Entablature (horizontal bar under pediment) -->
+  <rect x="80" y="175" width="352" height="22" fill="url(#gold-grad)" rx="2"/>
+  <rect x="80" y="175" width="352" height="8" fill="#FFF176" opacity="0.3" rx="2"/>
+
+  <!-- Temple columns (5 pillars) -->
+  <g filter="url(#pillar-glow)">
+    <!-- Column 1 -->
+    <rect x="95" y="197" width="38" height="160" fill="url(#pillar-grad)" rx="3"/>
+    <rect x="95" y="197" width="38" height="10" fill="url(#gold-grad)" rx="2"/>
+    <rect x="95" y="347" width="38" height="10" fill="url(#gold-grad)" rx="2"/>
+    <!-- Column 2 -->
+    <rect x="168" y="197" width="38" height="160" fill="url(#pillar-grad)" rx="3"/>
+    <rect x="168" y="197" width="38" height="10" fill="url(#gold-grad)" rx="2"/>
+    <rect x="168" y="347" width="38" height="10" fill="url(#gold-grad)" rx="2"/>
+    <!-- Column 3 (center) -->
+    <rect x="237" y="197" width="38" height="160" fill="url(#pillar-grad)" rx="3"/>
+    <rect x="237" y="197" width="38" height="10" fill="url(#gold-grad)" rx="2"/>
+    <rect x="237" y="347" width="38" height="10" fill="url(#gold-grad)" rx="2"/>
+    <!-- Column 4 -->
+    <rect x="306" y="197" width="38" height="160" fill="url(#pillar-grad)" rx="3"/>
+    <rect x="306" y="197" width="38" height="10" fill="url(#gold-grad)" rx="2"/>
+    <rect x="306" y="347" width="38" height="10" fill="url(#gold-grad)" rx="2"/>
+    <!-- Column 5 -->
+    <rect x="379" y="197" width="38" height="160" fill="url(#pillar-grad)" rx="3"/>
+    <rect x="379" y="197" width="38" height="10" fill="url(#gold-grad)" rx="2"/>
+    <rect x="379" y="347" width="38" height="10" fill="url(#gold-grad)" rx="2"/>
+  </g>
+
+  <!-- Column shadow lines (fluting detail) -->
+  <g opacity="0.25" stroke="#0A0A2E" stroke-width="1.5">
+    <line x1="107" y1="207" x2="107" y2="347"/>
+    <line x1="114" y1="207" x2="114" y2="347"/>
+    <line x1="121" y1="207" x2="121" y2="347"/>
+    <line x1="180" y1="207" x2="180" y2="347"/>
+    <line x1="187" y1="207" x2="187" y2="347"/>
+    <line x1="194" y1="207" x2="194" y2="347"/>
+    <line x1="249" y1="207" x2="249" y2="347"/>
+    <line x1="256" y1="207" x2="256" y2="347"/>
+    <line x1="263" y1="207" x2="263" y2="347"/>
+    <line x1="318" y1="207" x2="318" y2="347"/>
+    <line x1="325" y1="207" x2="325" y2="347"/>
+    <line x1="332" y1="207" x2="332" y2="347"/>
+    <line x1="391" y1="207" x2="391" y2="347"/>
+    <line x1="398" y1="207" x2="398" y2="347"/>
+    <line x1="405" y1="207" x2="405" y2="347"/>
+  </g>
+
+  <!-- Candlestick chart integrated between columns -->
+  <g filter="url(#chart-glow)">
+    <!-- Green candle 1 -->
+    <rect x="130" y="240" width="14" height="55" fill="#00C853" rx="1"/>
+    <line x1="137" y1="235" x2="137" y2="240" stroke="#00C853" stroke-width="1.5"/>
+    <line x1="137" y1="295" x2="137" y2="308" stroke="#00C853" stroke-width="1.5"/>
+    <!-- Red candle 2 -->
+    <rect x="200" y="255" width="14" height="40" fill="#F44336" rx="1"/>
+    <line x1="207" y1="248" x2="207" y2="255" stroke="#F44336" stroke-width="1.5"/>
+    <line x1="207" y1="295" x2="207" y2="305" stroke="#F44336" stroke-width="1.5"/>
+    <!-- Green candle 3 -->
+    <rect x="270" y="220" width="14" height="70" fill="#00C853" rx="1"/>
+    <line x1="277" y1="210" x2="277" y2="220" stroke="#00C853" stroke-width="1.5"/>
+    <line x1="277" y1="290" x2="277" y2="305" stroke="#00C853" stroke-width="1.5"/>
+    <!-- Green candle 4 -->
+    <rect x="340" y="208" width="14" height="80" fill="#00C853" rx="1"/>
+    <line x1="347" y1="198" x2="347" y2="208" stroke="#00C853" stroke-width="1.5"/>
+    <line x1="347" y1="288" x2="347" y2="302" stroke="#00C853" stroke-width="1.5"/>
+  </g>
+
+  <!-- Step/platform base of temple -->
+  <rect x="65" y="357" width="382" height="14" fill="url(#gold-grad)" rx="2"/>
+  <rect x="50" y="371" width="412" height="12" fill="url(#gold-grad)" rx="2"/>
+  <rect x="40" y="383" width="432" height="10" fill="url(#gold-grad)" rx="2"/>
+
+  <!-- "SWING" text -->
+  <g filter="url(#text-glow)">
+    <text x="256" y="446" font-family="Georgia, 'Times New Roman', serif" font-size="54" font-weight="bold"
+          fill="url(#gold-grad)" text-anchor="middle" letter-spacing="4">SWING</text>
+  </g>
+  <!-- Text underline -->
+  <rect x="112" y="455" width="288" height="3" rx="1.5" fill="#1A47B8" opacity="0.8"/>
+
+  <!-- Corner decoration -->
+  <g stroke="#FFD700" stroke-width="2" fill="none" opacity="0.4">
+    <path d="M30,30 L30,55 M30,30 L55,30"/>
+    <path d="M482,30 L482,55 M482,30 L457,30"/>
+    <path d="M30,482 L30,457 M30,482 L55,482"/>
+    <path d="M482,482 L482,457 M482,482 L457,482"/>
+  </g>
+</svg>

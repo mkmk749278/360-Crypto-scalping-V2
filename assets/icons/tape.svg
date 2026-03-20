@@ -1,0 +1,196 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Deep ocean dark background -->
+    <radialGradient id="bg-grad" cx="50%" cy="60%" r="75%">
+      <stop offset="0%" stop-color="#05102A"/>
+      <stop offset="60%" stop-color="#050E20"/>
+      <stop offset="100%" stop-color="#050520"/>
+    </radialGradient>
+    <!-- Ocean mid-layer gradient -->
+    <linearGradient id="ocean-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#001A4D" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#001240" stop-opacity="0.8"/>
+    </linearGradient>
+    <!-- Gold gradient -->
+    <linearGradient id="gold-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFF176"/>
+      <stop offset="40%" stop-color="#FFD700"/>
+      <stop offset="100%" stop-color="#B8860B"/>
+    </linearGradient>
+    <!-- Whale body gradient -->
+    <linearGradient id="whale-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1A3A8A"/>
+      <stop offset="50%" stop-color="#0A2060"/>
+      <stop offset="100%" stop-color="#05103A"/>
+    </linearGradient>
+    <!-- Blue glow gradient -->
+    <linearGradient id="blue-glow-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0040FF" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#0060FF"/>
+      <stop offset="100%" stop-color="#0040FF" stop-opacity="0"/>
+    </linearGradient>
+    <!-- Data stream glow filter -->
+    <filter id="stream-glow" x="-20%" y="-30%" width="140%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <!-- Whale glow -->
+    <filter id="whale-glow" x="-15%" y="-15%" width="130%" height="130%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="8" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <!-- Bioluminescent particle glow -->
+    <filter id="bio-glow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <!-- Text glow -->
+    <filter id="text-glow" x="-20%" y="-50%" width="140%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <!-- Gold glow -->
+    <filter id="gold-glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" fill="url(#bg-grad)" rx="32"/>
+
+  <!-- Ocean depth layers -->
+  <ellipse cx="256" cy="400" rx="300" ry="180" fill="url(#ocean-grad)"/>
+
+  <!-- Deep water ripples / current lines -->
+  <g opacity="0.15" stroke="#0040FF" stroke-width="1" fill="none">
+    <path d="M30,310 Q130,295 256,310 Q382,325 480,310"/>
+    <path d="M30,340 Q130,325 256,340 Q382,355 480,340"/>
+    <path d="M30,370 Q130,355 256,370 Q382,385 480,370"/>
+    <path d="M30,395 Q130,380 256,395 Q382,410 480,395"/>
+  </g>
+
+  <!-- Data stream flow lines (behind whale) -->
+  <g filter="url(#stream-glow)" opacity="0.6">
+    <!-- Horizontal data streams -->
+    <line x1="30" y1="195" x2="120" y2="195" stroke="#0040FF" stroke-width="1.5" stroke-dasharray="4,3"/>
+    <line x1="30" y1="215" x2="110" y2="215" stroke="#0060FF" stroke-width="1" stroke-dasharray="6,4"/>
+    <line x1="30" y1="235" x2="115" y2="235" stroke="#0040FF" stroke-width="1.5" stroke-dasharray="3,5"/>
+    <line x1="30" y1="255" x2="105" y2="255" stroke="#FFD700" stroke-width="1" stroke-dasharray="8,3" opacity="0.5"/>
+    <line x1="30" y1="275" x2="112" y2="275" stroke="#0040FF" stroke-width="1.5" stroke-dasharray="4,3"/>
+
+    <!-- Trailing data streams on right of whale -->
+    <line x1="400" y1="190" x2="480" y2="180" stroke="#0040FF" stroke-width="1" stroke-dasharray="5,4"/>
+    <line x1="410" y1="210" x2="482" y2="200" stroke="#0060FF" stroke-width="1.5" stroke-dasharray="4,3"/>
+    <line x1="415" y1="230" x2="480" y2="225" stroke="#FFD700" stroke-width="1" stroke-dasharray="7,4" opacity="0.5"/>
+    <line x1="420" y1="250" x2="482" y2="248" stroke="#0040FF" stroke-width="1.5" stroke-dasharray="3,5"/>
+    <line x1="418" y1="270" x2="480" y2="272" stroke="#0060FF" stroke-width="1" stroke-dasharray="6,3"/>
+  </g>
+
+  <!-- Whale glow aura (blue) -->
+  <g filter="url(#whale-glow)" opacity="0.35">
+    <ellipse cx="256" cy="230" rx="170" ry="80" fill="#0040FF"/>
+  </g>
+
+  <!-- Whale body - main silhouette -->
+  <g filter="url(#whale-glow)">
+    <!-- Main whale body -->
+    <path d="M100,230
+             C110,180 160,160 220,165
+             C260,168 300,170 340,175
+             C380,178 420,185 440,200
+             C460,215 465,235 450,250
+             C435,265 400,270 360,268
+             C320,266 280,265 240,268
+             C220,270 200,275 180,275
+             C160,275 130,270 110,255
+             C95,243 95,248 100,230 Z"
+          fill="url(#whale-grad)" stroke="#1A4A9A" stroke-width="1.5"/>
+
+    <!-- Whale belly / underside -->
+    <path d="M140,255
+             C170,268 220,272 280,270
+             C320,268 360,266 395,260
+             C380,268 340,275 280,278
+             C220,280 170,275 140,265 Z"
+          fill="#0A2560" opacity="0.6"/>
+
+    <!-- Whale eye (golden) -->
+    <circle cx="200" cy="205" r="10" fill="#0A1840"/>
+    <circle cx="200" cy="205" r="7" fill="#FFD700"/>
+    <circle cx="200" cy="205" r="4" fill="#0A0820"/>
+    <circle cx="198" cy="203" r="1.5" fill="white" opacity="0.8"/>
+
+    <!-- Whale mouth / smile line -->
+    <path d="M130,225 Q145,232 155,228" stroke="#FFD700" stroke-width="2" fill="none" opacity="0.6"/>
+
+    <!-- Tail fin -->
+    <path d="M440,220
+             C460,200 490,185 500,175
+             C495,190 492,205 488,215
+             C500,210 510,220 510,232
+             C505,228 498,225 490,228
+             C486,240 483,252 480,260
+             C475,248 468,238 460,232
+             C455,242 448,248 440,250 Z"
+          fill="url(#whale-grad)" stroke="#1A4A9A" stroke-width="1.5"/>
+
+    <!-- Dorsal fin -->
+    <path d="M300,168 C310,130 325,110 340,105 C350,115 348,145 345,168 Z"
+          fill="url(#whale-grad)" stroke="#1A4A9A" stroke-width="1.5"/>
+
+    <!-- Pectoral fin (left) -->
+    <path d="M200,265 C185,290 175,315 180,330 C195,310 215,285 225,270 Z"
+          fill="url(#whale-grad)" stroke="#1A4A9A" stroke-width="1.5"/>
+  </g>
+
+  <!-- Bioluminescent particles -->
+  <g filter="url(#bio-glow)">
+    <!-- Around the whale -->
+    <circle cx="85" cy="180" r="3" fill="#00A8FF" opacity="0.8"/>
+    <circle cx="70" cy="220" r="2" fill="#0060FF" opacity="0.7"/>
+    <circle cx="78" cy="260" r="2.5" fill="#00A8FF" opacity="0.8"/>
+    <circle cx="60" cy="300" r="2" fill="#FFD700" opacity="0.6"/>
+    <circle cx="90" cy="310" r="2" fill="#0040FF" opacity="0.7"/>
+    <circle cx="465" cy="175" r="2.5" fill="#00A8FF" opacity="0.8"/>
+    <circle cx="480" cy="290" r="3" fill="#0060FF" opacity="0.7"/>
+    <circle cx="468" cy="310" r="2" fill="#FFD700" opacity="0.6"/>
+    <!-- Underwater particles -->
+    <circle cx="120" cy="340" r="2" fill="#0060FF" opacity="0.6"/>
+    <circle cx="200" cy="360" r="2.5" fill="#00A8FF" opacity="0.5"/>
+    <circle cx="300" cy="350" r="2" fill="#0060FF" opacity="0.6"/>
+    <circle cx="380" cy="360" r="2" fill="#FFD700" opacity="0.5"/>
+    <circle cx="420" cy="345" r="2.5" fill="#00A8FF" opacity="0.6"/>
+    <!-- Upper particles -->
+    <circle cx="150" cy="130" r="2" fill="#0060FF" opacity="0.5"/>
+    <circle cx="380" cy="120" r="2" fill="#00A8FF" opacity="0.5"/>
+    <circle cx="256" cy="100" r="2.5" fill="#FFD700" opacity="0.5"/>
+  </g>
+
+  <!-- Gold accent glow around whale eye -->
+  <g filter="url(#gold-glow)" opacity="0.5">
+    <circle cx="200" cy="205" r="14" fill="#FFD700"/>
+  </g>
+
+  <!-- Whale gold outline highlight -->
+  <path d="M100,230
+           C110,180 160,160 220,165
+           C260,168 300,170 340,175"
+        stroke="#FFD700" stroke-width="1.5" fill="none" opacity="0.3"/>
+
+  <!-- "THE TAPE" text -->
+  <g filter="url(#text-glow)">
+    <text x="256" y="440" font-family="'Arial Black', 'Arial', sans-serif" font-size="44" font-weight="900"
+          fill="url(#gold-grad)" text-anchor="middle" letter-spacing="3">THE TAPE</text>
+  </g>
+  <!-- Text underline -->
+  <rect x="80" y="450" width="352" height="3" rx="1.5" fill="#0040FF" opacity="0.8"/>
+
+  <!-- Corner decoration -->
+  <g stroke="#FFD700" stroke-width="2" fill="none" opacity="0.4">
+    <path d="M30,30 L30,55 M30,30 L55,30"/>
+    <path d="M482,30 L482,55 M482,30 L457,30"/>
+    <path d="M30,482 L30,457 M30,482 L55,482"/>
+    <path d="M482,482 L482,457 M482,482 L457,482"/>
+  </g>
+</svg>
