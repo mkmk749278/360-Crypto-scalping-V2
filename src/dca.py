@@ -33,6 +33,7 @@ def compute_dca_zone(
     stop_loss: float,
     direction: Direction,
     zone_range: Tuple[float, float] = (0.30, 0.70),
+    regime: Optional[str] = None,
 ) -> Tuple[float, float]:
     """Compute the DCA entry zone bounds.
 
@@ -45,6 +46,14 @@ def compute_dca_zone(
     * Entries too close to the stop-loss (> 70 %) are ignored — the trade is
       near structural invalidation and DCA would be risky.
 
+    When *regime* is provided the zone is adjusted automatically:
+
+    * ``VOLATILE`` or ``TRENDING``: zone pushed deeper ``(0.50, 0.85)`` because
+      volatile wicks will often reach 50 % drawdown before reversing.  Entering
+      too early in these regimes risks a false DCA that gets stopped out.
+    * ``RANGING``: tighter zone ``(0.30, 0.60)`` — ranging markets reverse more
+      predictably, so waiting too deep wastes opportunity.
+
     Parameters
     ----------
     entry:
@@ -55,7 +64,12 @@ def compute_dca_zone(
         Trade direction (LONG or SHORT).
     zone_range:
         ``(lower_fraction, upper_fraction)`` of the SL distance that defines
-        the DCA zone.  Defaults to ``(0.30, 0.70)``.
+        the DCA zone.  Defaults to ``(0.30, 0.70)``.  Overridden by *regime*
+        when provided.
+    regime:
+        Optional market regime string (case-insensitive).  Accepted values:
+        ``"VOLATILE"``, ``"TRENDING"``, ``"RANGING"``.  Any other value leaves
+        *zone_range* unchanged.
 
     Returns
     -------
@@ -64,6 +78,14 @@ def compute_dca_zone(
         For a LONG trade, zone_lower < zone_upper < entry.
         For a SHORT trade, entry < zone_lower < zone_upper.
     """
+    # Apply regime-specific zone overrides
+    if regime is not None:
+        regime_upper = regime.upper()
+        if regime_upper in ("VOLATILE", "TRENDING"):
+            zone_range = (0.50, 0.85)
+        elif regime_upper == "RANGING":
+            zone_range = (0.30, 0.60)
+
     sl_dist = abs(entry - stop_loss)
     lo_frac, hi_frac = zone_range
 
@@ -247,6 +269,31 @@ def check_dca_entry(
                 sig.direction.value,
             )
             return None
+
+    # Volume delta check — avoid DCAing into heavy, aggressive counter-pressure.
+    # A strongly negative delta while we're LONG (or positive while SHORT) means
+    # smart money is actively selling/buying against our position.
+    # Only the first timeframe with volume_delta data is checked, consistent
+    # with the momentum check above.
+    if indicators is not None:
+        for tf_ind in indicators.values():
+            vd = tf_ind.get("volume_delta")
+            if vd is not None:
+                if sig.direction == Direction.LONG and vd < -0.7:
+                    log.debug(
+                        "DCA rejected for %s LONG — heavy selling pressure (volume_delta=%.2f)",
+                        sig.symbol,
+                        vd,
+                    )
+                    return None
+                if sig.direction == Direction.SHORT and vd > 0.7:
+                    log.debug(
+                        "DCA rejected for %s SHORT — heavy buying pressure (volume_delta=%.2f)",
+                        sig.symbol,
+                        vd,
+                    )
+                    return None
+                break  # only check the first timeframe with delta data
 
     # Structure re-validation (optional — skip when smc_data not available)
     if smc_data is not None:

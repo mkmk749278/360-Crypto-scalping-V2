@@ -1,6 +1,7 @@
 """Tests for src.smc – Smart Money Concepts detection."""
 
 import numpy as np
+import pytest
 
 from src.smc import (
     Direction,
@@ -85,8 +86,8 @@ class TestMSS:
             wick_high=105,
             wick_low=93,
         )
-        # Midpoint = (105 + 93) / 2 = 99
-        ltf_close = np.array([94.0, 95.0, 100.0])  # last close > 99
+        # body_top = close_price = 95.04 (no open_price); last close 100 > 95.04
+        ltf_close = np.array([94.0, 95.0, 100.0])  # last close > body_top
         mss = detect_mss(sweep, ltf_close)
         assert mss is not None
         assert mss.direction == Direction.LONG
@@ -100,8 +101,8 @@ class TestMSS:
             wick_high=107,
             wick_low=95,
         )
-        # Midpoint = (107 + 95) / 2 = 101
-        ltf_close = np.array([106.0, 105.0, 99.0])  # last close < 101
+        # body_bottom = close_price = 105.04 (no open_price); last close 99 < 105.04
+        ltf_close = np.array([106.0, 105.0, 99.0])  # last close < body_bottom
         mss = detect_mss(sweep, ltf_close)
         assert mss is not None
         assert mss.direction == Direction.SHORT
@@ -115,7 +116,9 @@ class TestMSS:
             wick_high=105,
             wick_low=93,
         )
-        ltf_close = np.array([94.0, 95.0, 96.0])  # 96 < 99 midpoint → not confirmed
+        # body_top = close_price = 95.04 (no open_price);
+        # last close at 94.5 is below body_top → not confirmed
+        ltf_close = np.array([94.0, 94.5, 94.5])
         mss = detect_mss(sweep, ltf_close)
         assert mss is None
 
@@ -191,7 +194,7 @@ class TestNonFlatArrayInputs:
             wick_high=105,
             wick_low=93,
         )
-        # Midpoint = 99; pass last_close > 99 as a 2-D array
+        # body_top = close_price = 95.04; pass last_close > 95.04 as a 2-D array
         ltf_close = np.array([[94.0], [95.0], [100.0]])
         mss = detect_mss(sweep, ltf_close)
         assert mss is not None
@@ -337,3 +340,135 @@ class TestVolumeConfirmation:
 
         sweeps = detect_liquidity_sweeps(high, low, close, lookback=50)
         assert any(s.direction == Direction.LONG for s in sweeps)
+
+
+# ---------------------------------------------------------------------------
+# MSS body-based confirmation (replaces 50% wick midpoint logic)
+# ---------------------------------------------------------------------------
+
+
+class TestMSSBodyConfirmation:
+    """detect_mss must require LTF close to break the sweep candle's structural
+    body (Open/Close range), not merely the 50% wick midpoint."""
+
+    def _make_sweep(
+        self,
+        direction: Direction,
+        close_price: float,
+        wick_high: float,
+        wick_low: float,
+        open_price: float = 0.0,
+    ) -> LiquiditySweep:
+        return LiquiditySweep(
+            index=59,
+            direction=direction,
+            sweep_level=close_price,
+            close_price=close_price,
+            wick_high=wick_high,
+            wick_low=wick_low,
+            open_price=open_price,
+        )
+
+    # --- With open_price available ---
+
+    def test_long_confirmed_with_open_price(self):
+        """LONG MSS confirmed when LTF close > max(open, close) of sweep candle."""
+        sweep = self._make_sweep(Direction.LONG, close_price=95.0, wick_high=105.0, wick_low=93.0, open_price=94.0)
+        # body_top = max(94, 95) = 95; last close 96 > 95
+        mss = detect_mss(sweep, np.array([93.0, 94.0, 96.0]))
+        assert mss is not None
+        assert mss.direction == Direction.LONG
+        assert mss.midpoint == pytest.approx(95.0)  # body_top stored in midpoint
+
+    def test_long_rejected_between_midpoint_and_body(self):
+        """Close above wick midpoint but below body top must NOT trigger MSS."""
+        # Sweep candle: wick_low=93, wick_high=105, open=94, close=95 → body_top=95
+        # Old logic midpoint = (93+105)/2 = 99; 97 > 99 is False anyway — use a
+        # case where close is between body_top and midpoint.
+        sweep = self._make_sweep(Direction.LONG, close_price=98.0, wick_high=105.0, wick_low=93.0, open_price=96.0)
+        # body_top = max(96, 98) = 98; wick midpoint = 99; close=97 is between them
+        mss = detect_mss(sweep, np.array([94.0, 96.0, 97.0]))
+        assert mss is None  # 97 < body_top=98 → not confirmed
+
+    def test_short_confirmed_with_open_price(self):
+        """SHORT MSS confirmed when LTF close < min(open, close) of sweep candle."""
+        sweep = self._make_sweep(Direction.SHORT, close_price=105.0, wick_high=107.0, wick_low=95.0, open_price=106.0)
+        # body_bottom = min(106, 105) = 105; last close 104 < 105
+        mss = detect_mss(sweep, np.array([106.0, 105.5, 104.0]))
+        assert mss is not None
+        assert mss.direction == Direction.SHORT
+        assert mss.midpoint == pytest.approx(105.0)
+
+    def test_doji_sweep_is_stricter_than_midpoint(self):
+        """Doji candle (open ≈ close) at midpoint: old midpoint logic would pass,
+        body logic correctly rejects a close that only reaches the midpoint."""
+        # Doji: open=99.5, close=100.0 → body_top=100.0, body_bottom=99.5
+        # Wick: low=93, high=107 → old midpoint=100
+        sweep = self._make_sweep(Direction.LONG, close_price=100.0, wick_high=107.0, wick_low=93.0, open_price=99.5)
+        # LTF close at exactly the wick midpoint (100.0) — old logic: 100 > 100 is False (boundary)
+        # New logic: body_top=100.0; 100.0 is NOT strictly > 100.0
+        mss = detect_mss(sweep, np.array([95.0, 99.0, 100.0]))
+        assert mss is None  # at the body boundary, not past it
+
+    def test_doji_mss_confirmed_past_body(self):
+        """Doji sweep: close strictly past body top is confirmed."""
+        sweep = self._make_sweep(Direction.LONG, close_price=100.0, wick_high=107.0, wick_low=93.0, open_price=99.5)
+        # LTF close at 100.1 > body_top=100.0 → confirmed
+        mss = detect_mss(sweep, np.array([95.0, 99.0, 100.1]))
+        assert mss is not None
+        assert mss.direction == Direction.LONG
+
+    # --- Without open_price (fallback to close_price) ---
+
+    def test_long_fallback_uses_close_price_as_body(self):
+        """Without open_price, close_price acts as body_top for LONG sweeps."""
+        sweep = self._make_sweep(Direction.LONG, close_price=95.04, wick_high=105.0, wick_low=93.0)
+        # body_top = close_price = 95.04; last close 95.1 > 95.04 → confirmed
+        mss = detect_mss(sweep, np.array([94.0, 95.0, 95.1]))
+        assert mss is not None
+
+    def test_short_fallback_uses_close_price_as_body(self):
+        """Without open_price, close_price acts as body_bottom for SHORT sweeps."""
+        sweep = self._make_sweep(Direction.SHORT, close_price=105.04, wick_high=107.0, wick_low=95.0)
+        # body_bottom = close_price = 105.04; last close 104.9 < 105.04 → confirmed
+        mss = detect_mss(sweep, np.array([106.0, 105.5, 104.9]))
+        assert mss is not None
+
+    def test_open_price_stored_in_sweep(self):
+        """open_prices passed to detect_liquidity_sweeps must be stored in sweeps."""
+        n = 60
+        high = np.ones(n) * 105.0
+        low = np.ones(n) * 95.0
+        close = np.ones(n) * 100.0
+        open_arr = np.ones(n) * 99.5  # open below close
+
+        low[-1] = 93.0
+        close[-1] = 95.04
+        open_arr[-1] = 94.0  # known open for sweep candle
+
+        sweeps = detect_liquidity_sweeps(high, low, close, lookback=50, open_prices=open_arr)
+        long_sweeps = [s for s in sweeps if s.direction == Direction.LONG]
+        assert len(long_sweeps) >= 1
+        assert long_sweeps[0].open_price == pytest.approx(94.0)
+
+    def test_bearish_sweep_candle_uses_open_as_body_top(self):
+        """Bearish sweep candle (open > close): body_top = open_price, not close_price."""
+        # Bearish sweep candle: open=98, close=95 → body_top=98 (open), body_bottom=95
+        sweep = self._make_sweep(Direction.LONG, close_price=95.0, wick_high=105.0, wick_low=93.0, open_price=98.0)
+        # body_top = max(98, 95) = 98; LTF close at 97 < 98 → NOT confirmed
+        mss_rejected = detect_mss(sweep, np.array([94.0, 96.0, 97.0]))
+        assert mss_rejected is None  # 97 < body_top=98
+
+        # LTF close at 99 > 98 → confirmed
+        mss_confirmed = detect_mss(sweep, np.array([94.0, 96.0, 99.0]))
+        assert mss_confirmed is not None
+        assert mss_confirmed.midpoint == pytest.approx(98.0)  # body_top stored
+
+    def test_bullish_sweep_candle_uses_close_as_body_top(self):
+        """Bullish sweep candle (close > open): body_top = close_price."""
+        # Bullish sweep candle: open=94, close=95 → body_top=95 (close)
+        sweep = self._make_sweep(Direction.LONG, close_price=95.0, wick_high=105.0, wick_low=93.0, open_price=94.0)
+        # body_top = max(94, 95) = 95
+        mss = detect_mss(sweep, np.array([94.0, 95.5, 96.0]))
+        assert mss is not None
+        assert mss.midpoint == pytest.approx(95.0)

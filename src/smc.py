@@ -1,8 +1,9 @@
 """Smart Money Concepts (SMC) detection algorithms.
 
 * Liquidity Sweep – wick pierces recent high/low, close inside ±0.05 %
-* Market Structure Shift (MSS) – close beyond 50 % midpoint of sweep candle
-  on a lower timeframe
+* Market Structure Shift (MSS) – lower-timeframe close breaks beyond the
+  structural body (Open/Close range) of the sweep candle, not merely the 50 %
+  wick midpoint.  This prevents false signals on doji candles.
 * Fair Value Gap (FVG) – imbalance gap between candles (used for TP3/exit)
 """
 
@@ -34,6 +35,7 @@ class LiquiditySweep:
     close_price: float
     wick_high: float
     wick_low: float
+    open_price: float = 0.0  # open of the sweep candle; used for MSS body check
 
 
 @dataclass
@@ -67,6 +69,7 @@ def detect_liquidity_sweeps(
     scan_window: int = 5,
     volume: Optional[NDArray] = None,
     volume_multiplier: float = 1.2,
+    open_prices: Optional[NDArray] = None,
 ) -> List[LiquiditySweep]:
     """Detect liquidity sweeps over the last *scan_window* candles.
 
@@ -89,6 +92,10 @@ def detect_liquidity_sweeps(
     volume_multiplier:
         Minimum ratio of sweep-candle volume to recent average volume.
         Defaults to 1.2 (sweep candle must be at least 20 % above average).
+    open_prices:
+        Optional open price array.  When provided, the open of each sweep
+        candle is stored in :attr:`LiquiditySweep.open_price` and used by
+        :func:`detect_mss` to determine the candle's structural body.
     """
     h = np.asarray(high, dtype=np.float64).ravel()
     l = np.asarray(low, dtype=np.float64).ravel()
@@ -97,6 +104,10 @@ def detect_liquidity_sweeps(
     vol: Optional[NDArray] = None
     if volume is not None:
         vol = np.asarray(volume, dtype=np.float64).ravel()
+
+    op: Optional[NDArray] = None
+    if open_prices is not None:
+        op = np.asarray(open_prices, dtype=np.float64).ravel()
 
     sweeps: List[LiquiditySweep] = []
     n = len(c)
@@ -140,6 +151,7 @@ def detect_liquidity_sweeps(
                 close_price=c[idx],
                 wick_high=h[idx],
                 wick_low=l[idx],
+                open_price=float(op[idx]) if op is not None else 0.0,
             ))
 
         # Bullish sweep (wick below recent low, close back inside)
@@ -153,6 +165,7 @@ def detect_liquidity_sweeps(
                 close_price=c[idx],
                 wick_high=h[idx],
                 wick_low=l[idx],
+                open_price=float(op[idx]) if op is not None else 0.0,
             ))
 
     return sweeps
@@ -166,31 +179,49 @@ def detect_mss(
     sweep: LiquiditySweep,
     ltf_close: NDArray,
 ) -> Optional[MSSSignal]:
-    """Check if the lower-timeframe close confirms MSS.
+    """Check if the lower-timeframe close confirms a true Market Structure Shift.
 
-    MSS = close beyond 50 % midpoint of the sweep candle.
+    A true MSS requires the lower-timeframe close to break beyond the structural
+    body (Open/Close range) of the sweep candle.  Using the full body rather
+    than the 50 % wick midpoint prevents false signals on doji candles, where
+    the body is negligible and the midpoint sits in dead air.
+
+    When ``sweep.open_price`` is not available (0.0), the sweep candle's
+    ``close_price`` is used as the body reference — still stricter than the
+    wick midpoint for most candle shapes.
     """
     c = np.asarray(ltf_close, dtype=np.float64).ravel()
     if len(c) < 2:
         return None
 
-    midpoint = (sweep.wick_high + sweep.wick_low) / 2.0
     last_close = c[-1]
 
+    # Determine the structural body boundary of the sweep candle.
+    # When open_price is available, use the full Open/Close body range.
+    # When it is absent (0.0), fall back to close_price as the body reference.
+    if sweep.open_price > 0.0:
+        body_top = max(sweep.open_price, sweep.close_price)
+        body_bottom = min(sweep.open_price, sweep.close_price)
+    else:
+        body_top = sweep.close_price
+        body_bottom = sweep.close_price
+
     if sweep.direction == Direction.LONG:
-        if last_close > midpoint:
+        # LONG MSS: LTF close must break above the sweep candle's body top
+        if last_close > body_top:
             return MSSSignal(
                 index=len(c) - 1,
                 direction=Direction.LONG,
-                midpoint=midpoint,
+                midpoint=body_top,   # stores body_top for downstream anchor use
                 confirm_close=last_close,
             )
     else:
-        if last_close < midpoint:
+        # SHORT MSS: LTF close must break below the sweep candle's body bottom
+        if last_close < body_bottom:
             return MSSSignal(
                 index=len(c) - 1,
                 direction=Direction.SHORT,
-                midpoint=midpoint,
+                midpoint=body_bottom,  # stores body_bottom for downstream use
                 confirm_close=last_close,
             )
     return None

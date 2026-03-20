@@ -97,7 +97,7 @@ class SMCDetector:
             if cd is None or len(cd.get("close", [])) < 51:
                 continue
 
-            sweeps = detect_liquidity_sweeps(cd["high"], cd["low"], cd["close"])
+            sweeps = detect_liquidity_sweeps(cd["high"], cd["low"], cd["close"], open_prices=cd.get("open"))
             if not sweeps:
                 continue
 

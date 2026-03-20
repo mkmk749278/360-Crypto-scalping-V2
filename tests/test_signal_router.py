@@ -54,7 +54,7 @@ def _make_signal(channel="360_SCALP", symbol="BTCUSDT", direction=Direction.LONG
         direction=direction,
         entry=32000,
         stop_loss=31900,
-        tp1=32100,
+        tp1=32150,  # sl_dist=100, tp_dist=150 → R:R=1.5 ≥ 1.2 floor
         tp2=32200,
         confidence=confidence,
         signal_id=f"TEST-{symbol}-001",

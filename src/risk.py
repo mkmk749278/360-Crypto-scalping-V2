@@ -28,6 +28,9 @@ _DEFAULT_ACCOUNT_RISK_PCT: float = 1.0
 _MAX_CONCURRENT_SAME_DIRECTION: int = 1
 _MAX_CONCURRENT_PER_SYMBOL: int = 2
 
+# Minimum acceptable Risk:Reward ratio — trades below this floor are hard-rejected
+_MIN_RR_FLOOR: float = 1.2
+
 
 @dataclass
 class RiskAssessment:
@@ -92,6 +95,15 @@ class RiskManager:
         # Position sizing
         position_size_pct = self._position_size(entry, sl)
 
+        # Spread-based position size penalty: high-spread pairs reduce position
+        # more aggressively than the risk-label adjustment alone.
+        spread_pct: float = float(getattr(signal, "spread_pct", 0.0))
+        if spread_pct > 0.02:
+            # Each 0.01 above the 0.02 baseline costs ~5 % of position size,
+            # floored at 50 % to keep minimum exposure meaningful.
+            spread_factor = max(0.5, 1.0 - (spread_pct - 0.02) * 5)
+            position_size_pct = round(position_size_pct * spread_factor, 2)
+
         # Risk label
         atr_val: Optional[float] = indicators.get("atr_last")
         risk_label = self._classify_risk(entry, atr_val, volume_24h_usd, signal)
@@ -100,6 +112,12 @@ class RiskManager:
         allowed, reason = self._validate_concurrent(
             symbol, direction_val, active_signals or {}
         )
+
+        # R:R floor — hard-reject trades with insufficient reward-to-risk.
+        # Scalping with an inverted R:R is a guaranteed path to account bleed.
+        if rr < _MIN_RR_FLOOR:
+            allowed = False
+            reason = f"Insufficient R:R ({rr:.2f} < {_MIN_RR_FLOOR})"
 
         return RiskAssessment(
             risk_label=risk_label,

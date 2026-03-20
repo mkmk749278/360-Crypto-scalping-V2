@@ -540,3 +540,118 @@ class TestDcaTimestamp:
         # Each DCA call stamps the current time, so the second stamp >= first
         assert sig.dca_timestamp is not None
         assert sig.dca_timestamp >= first_ts
+
+
+# ---------------------------------------------------------------------------
+# Regime-aware DCA zones
+# ---------------------------------------------------------------------------
+
+
+class TestRegimeAwareDcaZone:
+    """compute_dca_zone must adjust zones based on market regime."""
+
+    def test_default_zone_no_regime(self):
+        """Without regime, default zone (0.30, 0.70) is used."""
+        lower, upper = compute_dca_zone(100.0, 90.0, Direction.LONG)
+        assert upper == pytest.approx(100.0 - 0.30 * 10.0)  # 97.0
+        assert lower == pytest.approx(100.0 - 0.70 * 10.0)  # 93.0
+
+    def test_volatile_regime_pushes_zone_deeper(self):
+        """VOLATILE regime must use (0.50, 0.85) zone range."""
+        lower, upper = compute_dca_zone(100.0, 90.0, Direction.LONG, regime="VOLATILE")
+        assert upper == pytest.approx(100.0 - 0.50 * 10.0)  # 95.0
+        assert lower == pytest.approx(100.0 - 0.85 * 10.0)  # 91.5
+
+    def test_trending_regime_pushes_zone_deeper(self):
+        """TRENDING regime must also use (0.50, 0.85) zone range."""
+        lower, upper = compute_dca_zone(100.0, 90.0, Direction.LONG, regime="TRENDING")
+        assert upper == pytest.approx(100.0 - 0.50 * 10.0)  # 95.0
+        assert lower == pytest.approx(100.0 - 0.85 * 10.0)  # 91.5
+
+    def test_ranging_regime_tightens_zone(self):
+        """RANGING regime must use (0.30, 0.60) zone range."""
+        lower, upper = compute_dca_zone(100.0, 90.0, Direction.LONG, regime="RANGING")
+        assert upper == pytest.approx(100.0 - 0.30 * 10.0)  # 97.0
+        assert lower == pytest.approx(100.0 - 0.60 * 10.0)  # 94.0
+
+    def test_unknown_regime_keeps_default(self):
+        """Unknown regime strings must leave zone_range unchanged."""
+        lower, upper = compute_dca_zone(100.0, 90.0, Direction.LONG, regime="UNKNOWN")
+        assert upper == pytest.approx(100.0 - 0.30 * 10.0)  # default 97.0
+        assert lower == pytest.approx(100.0 - 0.70 * 10.0)  # default 93.0
+
+    def test_regime_case_insensitive(self):
+        """Regime string matching is case-insensitive."""
+        lower_upper, upper_upper = compute_dca_zone(100.0, 90.0, Direction.LONG, regime="volatile")
+        lower_mixed, upper_mixed = compute_dca_zone(100.0, 90.0, Direction.LONG, regime="Volatile")
+        assert lower_upper == pytest.approx(lower_mixed)
+        assert upper_upper == pytest.approx(upper_mixed)
+
+    def test_volatile_zone_short(self):
+        """VOLATILE regime produces deeper zone for SHORT trades too."""
+        lower, upper = compute_dca_zone(100.0, 110.0, Direction.SHORT, regime="VOLATILE")
+        assert lower == pytest.approx(100.0 + 0.50 * 10.0)  # 105.0
+        assert upper == pytest.approx(100.0 + 0.85 * 10.0)  # 108.5
+
+    def test_custom_zone_range_overridden_by_regime(self):
+        """When regime is provided, zone_range default is overridden."""
+        # Custom zone (0.20, 0.50) with VOLATILE regime → should become (0.50, 0.85)
+        lower, upper = compute_dca_zone(
+            100.0, 90.0, Direction.LONG, zone_range=(0.20, 0.50), regime="VOLATILE"
+        )
+        assert upper == pytest.approx(100.0 - 0.50 * 10.0)  # 95.0 not 96.0
+        assert lower == pytest.approx(100.0 - 0.85 * 10.0)  # 91.5 not 90.0
+
+
+# ---------------------------------------------------------------------------
+# Volume delta check in check_dca_entry
+# ---------------------------------------------------------------------------
+
+
+class TestVolumeDeltaCheck:
+    """check_dca_entry must reject DCA when volume_delta indicates heavy
+    counter-directional pressure."""
+
+    def test_long_rejected_on_heavy_selling(self):
+        """LONG DCA must be rejected when volume_delta <= -0.7 (heavy selling)."""
+        sig = _make_long_signal(entry=2300.0, stop_loss=2280.0)
+        indicators = {"5m": {"momentum_last": 0.5, "volume_delta": -0.8}}
+        result = check_dca_entry(sig, 2290.0, indicators=indicators)
+        assert result is None
+
+    def test_short_rejected_on_heavy_buying(self):
+        """SHORT DCA must be rejected when volume_delta >= 0.7 (heavy buying)."""
+        sig = _make_short_signal(entry=2300.0, stop_loss=2320.0)
+        indicators = {"5m": {"momentum_last": -0.5, "volume_delta": 0.8}}
+        result = check_dca_entry(sig, 2306.0, indicators=indicators)
+        assert result is None
+
+    def test_long_allowed_on_neutral_delta(self):
+        """LONG DCA must be allowed when volume_delta is neutral (between -0.7 and 0)."""
+        sig = _make_long_signal(entry=2300.0, stop_loss=2280.0)
+        indicators = {"5m": {"momentum_last": 0.5, "volume_delta": -0.5}}
+        result = check_dca_entry(sig, 2290.0, indicators=indicators)
+        assert result == pytest.approx(2290.0)
+
+    def test_short_allowed_on_neutral_delta(self):
+        """SHORT DCA must be allowed when volume_delta is neutral (between 0 and 0.7)."""
+        sig = _make_short_signal(entry=2300.0, stop_loss=2320.0)
+        indicators = {"5m": {"momentum_last": -0.5, "volume_delta": 0.5}}
+        result = check_dca_entry(sig, 2306.0, indicators=indicators)
+        assert result == pytest.approx(2306.0)
+
+    def test_no_volume_delta_key_skips_check(self):
+        """When volume_delta is not in indicators, the check is skipped."""
+        sig = _make_long_signal(entry=2300.0, stop_loss=2280.0)
+        # No volume_delta key → check skipped, DCA proceeds normally
+        indicators = {"5m": {"momentum_last": 0.5}}
+        result = check_dca_entry(sig, 2290.0, indicators=indicators)
+        assert result == pytest.approx(2290.0)
+
+    def test_long_boundary_delta_at_threshold_allowed(self):
+        """volume_delta exactly at -0.7 satisfies strict inequality (< -0.7 is False) — allowed."""
+        sig = _make_long_signal(entry=2300.0, stop_loss=2280.0)
+        indicators = {"5m": {"momentum_last": 0.5, "volume_delta": -0.7}}
+        # -0.7 < -0.7 evaluates to False (strict less-than), so check passes
+        result = check_dca_entry(sig, 2290.0, indicators=indicators)
+        assert result == pytest.approx(2290.0)

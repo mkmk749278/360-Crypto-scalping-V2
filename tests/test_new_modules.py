@@ -301,7 +301,7 @@ def _make_signal_obj(
     direction: str = "LONG",
     entry: float = 50000.0,
     sl: float = 49500.0,
-    tp1: float = 50500.0,
+    tp1: float = 50750.0,  # sl_dist=500, tp_dist=750 → R:R=1.5 ≥ 1.2 floor
     confidence: float = 75.0,
 ):
     class _FakeDir:
