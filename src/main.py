@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import time
 from typing import Dict, List, Optional, Set
 
 from config import (
@@ -36,6 +37,7 @@ from src.exchange import ExchangeManager
 from src.historical_data import HistoricalDataStore
 from src.onchain import OnChainClient
 from src.openai_evaluator import OpenAIEvaluator
+from src.order_flow import LiquidationEvent, OrderFlowStore, OIPoller
 from src.pair_manager import PairManager
 from src.paper_portfolio import PaperPortfolioManager
 from src.performance_tracker import PerformanceTracker
@@ -151,6 +153,13 @@ class CryptoSignalEngine:
         # On-chain intelligence client (optional — no-op if key is absent)
         self._onchain_client = OnChainClient(api_key=ONCHAIN_API_KEY)
 
+        # Order flow analytics: OI tracking, liquidations, CVD divergence
+        self._order_flow_store = OrderFlowStore()
+        self._oi_poller = OIPoller(
+            store=self._order_flow_store,
+            futures_rest_base=os.getenv("BINANCE_FUTURES_REST_BASE", "https://fapi.binance.com"),
+        )
+
         # Multi-exchange verification
         self._exchange_mgr = ExchangeManager(
             second_exchange_url=os.getenv("SECOND_EXCHANGE_URL")
@@ -186,6 +195,7 @@ class CryptoSignalEngine:
             router=self.router,
             openai_evaluator=self._openai_evaluator,
             onchain_client=self._onchain_client,
+            order_flow_store=self._order_flow_store,
         )
         # Share mutable state with scanner
         self._scanner.paused_channels = self._paused_channels
@@ -290,7 +300,7 @@ class CryptoSignalEngine:
     # ------------------------------------------------------------------
 
     async def _on_ws_message(self, data: dict) -> None:
-        """Handle a raw WebSocket message (kline or trade)."""
+        """Handle a raw WebSocket message (kline, trade, or forceOrder)."""
         event = data.get("e")
         symbol = data.get("s", "").upper()
 
@@ -306,6 +316,8 @@ class CryptoSignalEngine:
             }
             if k.get("x"):  # candle closed
                 self.data_store.update_candle(symbol, interval, candle)
+                # Snapshot CVD at candle close to align with OHLCV for divergence detection
+                self._order_flow_store.snapshot_cvd_at_candle_close(symbol)
 
         elif event == "trade":
             tick = {
@@ -315,6 +327,32 @@ class CryptoSignalEngine:
                 "time": data.get("T", 0),
             }
             self.data_store.append_tick(symbol, tick)
+            # Update running CVD from this tick
+            price = tick["price"]
+            qty = tick["qty"]
+            vol_usd = price * qty
+            if tick["isBuyerMaker"]:
+                self._order_flow_store.update_cvd_from_tick(symbol, 0.0, vol_usd)
+            else:
+                self._order_flow_store.update_cvd_from_tick(symbol, vol_usd, 0.0)
+
+        elif event == "forceOrder":
+            # Binance Futures liquidation event
+            order = data.get("o", {})
+            liq_sym = order.get("s", "").upper()
+            side = order.get("S", "")
+            qty = float(order.get("q", 0))
+            avg_price = float(order.get("ap") or order.get("p") or 0)
+            if liq_sym and side and qty > 0 and avg_price > 0:
+                self._order_flow_store.add_liquidation(
+                    LiquidationEvent(
+                        timestamp=time.monotonic(),
+                        symbol=liq_sym,
+                        side=side,
+                        qty=qty,
+                        price=avg_price,
+                    )
+                )
 
     # ------------------------------------------------------------------
     # Scanner loop (delegated to Scanner)

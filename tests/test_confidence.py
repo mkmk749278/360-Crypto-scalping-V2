@@ -10,6 +10,7 @@ from src.confidence import (
     score_data_sufficiency,
     score_liquidity,
     score_multi_exchange,
+    score_order_flow,
     score_smc,
     score_spread,
     score_trend,
@@ -233,3 +234,76 @@ class TestGetSessionMultiplier:
         us_t = datetime(2024, 1, 15, 18, 0, 0, tzinfo=timezone.utc)
         result = compute_confidence(inp, session_now=us_t)
         assert result.total <= 100.0
+
+
+# ---------------------------------------------------------------------------
+# score_order_flow
+# ---------------------------------------------------------------------------
+
+
+class TestScoreOrderFlow:
+    _EU = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+
+    def test_no_data_zero(self):
+        assert score_order_flow() == 0.0
+
+    def test_falling_oi_no_liquidations(self):
+        # OI falling but zero liq → only the base OI bonus (5)
+        assert score_order_flow(oi_trend="FALLING", liq_vol_usd=0.0) == pytest.approx(5.0)
+
+    def test_falling_oi_with_liquidations(self):
+        # OI falling + large liq → up to 10 (5 base + up to 5 liq bonus)
+        score = score_order_flow(oi_trend="FALLING", liq_vol_usd=500_000.0)
+        assert score == pytest.approx(10.0)
+
+    def test_falling_oi_partial_liquidations(self):
+        # 250k USD liq = 50% of 500k cap → 2.5 liq bonus, total = 5+2.5 = 7.5
+        score = score_order_flow(oi_trend="FALLING", liq_vol_usd=250_000.0)
+        assert score == pytest.approx(7.5)
+
+    def test_cvd_divergence_bonus(self):
+        # CVD divergence alone (+5 regardless of OI)
+        assert score_order_flow(cvd_divergence="BULLISH") == pytest.approx(5.0)
+        assert score_order_flow(cvd_divergence="BEARISH") == pytest.approx(5.0)
+
+    def test_squeeze_plus_cvd(self):
+        # Full squeeze (10) + CVD divergence (5) = 15, capped at 15
+        score = score_order_flow(
+            oi_trend="FALLING",
+            liq_vol_usd=500_000.0,
+            cvd_divergence="BULLISH",
+        )
+        assert score == pytest.approx(15.0)
+
+    def test_rising_oi_zero(self):
+        # Rising OI → no squeeze bonus (returns 0 for OI component)
+        assert score_order_flow(oi_trend="RISING", liq_vol_usd=1_000_000.0) == 0.0
+
+    def test_order_flow_score_in_confidence_breakdown(self):
+        """order_flow_score must appear in the confidence breakdown dict."""
+        inp = ConfidenceInput(smc_score=20, order_flow_score=10.0)
+        result = compute_confidence(inp, session_now=self._EU)
+        assert "order_flow" in result.breakdown
+        assert result.breakdown["order_flow"] == pytest.approx(10.0)
+
+    def test_order_flow_boosts_total(self):
+        """order_flow_score must contribute to the total confidence."""
+        base = ConfidenceInput(smc_score=20, trend_score=15)
+        with_of = ConfidenceInput(smc_score=20, trend_score=15, order_flow_score=15.0)
+        r_base = compute_confidence(base, session_now=self._EU)
+        r_of = compute_confidence(with_of, session_now=self._EU)
+        assert r_of.total > r_base.total
+
+    def test_squeeze_pushes_confidence_near_max(self):
+        """A full squeeze scenario should push algorithmic confidence close to 100."""
+        inp = ConfidenceInput(
+            smc_score=30,       # max SMC
+            trend_score=25,     # max trend
+            liquidity_score=20, # max liquidity
+            spread_score=10,    # max spread
+            data_sufficiency=5,
+            multi_exchange=5,
+            order_flow_score=15.0,  # full squeeze + CVD divergence
+        )
+        result = compute_confidence(inp, session_now=self._EU)
+        assert result.total >= 95.0

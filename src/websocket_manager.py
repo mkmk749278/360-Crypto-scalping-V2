@@ -374,6 +374,16 @@ class WebSocketManager:
     def build_depth_stream(self, symbol: str, level: int = 5) -> str:
         return f"{symbol.lower()}@depth{level}@100ms"
 
+    def build_force_order_stream(self, symbol: str) -> str:
+        """Return the Binance Futures liquidation stream name for *symbol*.
+
+        Subscribing to this stream delivers ``forceOrder`` events whenever a
+        position in *symbol* is force-liquidated.  The event payload includes
+        the order side (``"BUY"`` = short liq'd, ``"SELL"`` = long liq'd),
+        quantity, and average fill price.
+        """
+        return f"{symbol.lower()}@forceOrder"
+
     @property
     def stream_count(self) -> int:
         return sum(len(c.streams) for c in self._connections)

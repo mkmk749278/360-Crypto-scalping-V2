@@ -23,6 +23,9 @@ from typing import Dict, Optional
 
 from config import NEW_PAIR_MIN_CONFIDENCE
 
+# USD liquidation volume at which the order-flow liq bonus is maximised (5 pts).
+_ORDER_FLOW_LIQ_CAP_USD: float = 500_000.0
+
 
 @dataclass
 class ConfidenceInput:
@@ -34,6 +37,7 @@ class ConfidenceInput:
     data_sufficiency: float = 0.0   # 0-10
     multi_exchange: float = 0.0     # 0-5
     onchain_score: float = 0.0      # 0-5 (populated by score_onchain(); 0 = no data)
+    order_flow_score: float = 0.0   # 0-15 (OI squeeze + CVD divergence bonus)
     has_enough_history: bool = True
     opposing_position_open: bool = False
 
@@ -164,6 +168,54 @@ def score_multi_exchange(verified: Optional[bool] = None) -> float:
     return 2.5  # None → neutral
 
 
+def score_order_flow(
+    oi_trend: str = "NEUTRAL",
+    liq_vol_usd: float = 0.0,
+    cvd_divergence: Optional[str] = None,
+) -> float:
+    """Order-flow component (max 15).
+
+    Rewards institutional-grade squeeze confirmation (falling OI + liquidations)
+    and CVD divergence signals.
+
+    Parameters
+    ----------
+    oi_trend:
+        One of ``"RISING"``, ``"FALLING"``, or ``"NEUTRAL"`` (as returned by
+        :func:`src.order_flow.classify_oi_trend`).
+    liq_vol_usd:
+        Total USD liquidation volume for this symbol in the recent window
+        (as returned by :meth:`src.order_flow.OrderFlowStore.get_recent_liq_volume_usd`).
+    cvd_divergence:
+        ``"BULLISH"``, ``"BEARISH"``, or ``None`` (as returned by
+        :func:`src.order_flow.detect_cvd_divergence`).
+
+    Returns
+    -------
+    float
+        0–15 score representing order-flow confirmation quality.
+        * Squeeze confirmed (OI falling + liquidations) → up to 10.
+        * CVD divergence aligned with signal → +5.
+    """
+    s = 0.0
+
+    # Squeeze component: falling OI + liquidation activity (0–10)
+    if oi_trend == "FALLING":
+        # Base squeeze bonus: OI is declining (positions closing / exhaustion)
+        s += 5.0
+        if liq_vol_usd > 0:
+            # Additional bonus for confirmed liquidation activity
+            # Scales with USD volume, capped at 5 extra points
+            liq_bonus = min(liq_vol_usd / _ORDER_FLOW_LIQ_CAP_USD, 1.0) * 5.0
+            s += liq_bonus
+
+    # CVD divergence component (+5 when present)
+    if cvd_divergence is not None:
+        s += 5.0
+
+    return min(s, 15.0)
+
+
 def get_session_multiplier(now: Optional[datetime] = None) -> float:
     """Return a confidence multiplier based on the current trading session.
 
@@ -220,6 +272,7 @@ def compute_confidence(
         "data_sufficiency": inp.data_sufficiency,
         "multi_exchange": inp.multi_exchange,
         "onchain": inp.onchain_score,
+        "order_flow": inp.order_flow_score,
     }
     total = sum(breakdown.values())
 

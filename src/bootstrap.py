@@ -147,7 +147,7 @@ class Bootstrap:
             The running task objects for the engine's background loops.
         """
         engine = self._engine
-        return [
+        tasks = [
             asyncio.create_task(engine.router.start()),
             asyncio.create_task(engine.monitor.start()),
             asyncio.create_task(engine.telemetry.start()),
@@ -161,6 +161,12 @@ class Bootstrap:
             asyncio.create_task(engine._snapshot_loop()),
             asyncio.create_task(engine._macro_watchdog.start()),
         ]
+
+        # OI poller – background REST polling for Binance Futures Open Interest
+        if getattr(engine, "_oi_poller", None) is not None:
+            tasks.append(asyncio.create_task(engine._oi_poller.start()))
+
+        return tasks
 
     async def shutdown(self) -> None:
         """Gracefully shut down all engine components."""
@@ -199,6 +205,11 @@ class Bootstrap:
                 await engine._macro_watchdog.stop()
             except Exception as exc:
                 log.warning("Failed to stop MacroWatchdog: {}", exc)
+        if getattr(engine, "_oi_poller", None) is not None:
+            try:
+                await engine._oi_poller.stop()
+            except Exception as exc:
+                log.warning("Failed to stop OIPoller: {}", exc)
         if getattr(engine, "_onchain_client", None) is not None:
             try:
                 await engine._onchain_client.close()
@@ -223,13 +234,16 @@ class Bootstrap:
             spot_streams.append(f"{s}@kline_5m")
             spot_streams.append(f"{s}@trade")
 
-        for sym in engine.pair_mgr.futures_symbols[:50]:
+        futures_syms = engine.pair_mgr.futures_symbols[:50]
+        for sym in futures_syms:
             s = sym.lower()
             futures_streams.append(f"{s}@kline_1m")
             futures_streams.append(f"{s}@kline_5m")
             # Skip @trade for futures — high-volume trade streams cause
             # connection instability; kline streams suffice for all
             # futures channel strategies.
+            # Subscribe to forceOrder (liquidation) stream for OI-squeeze detection
+            futures_streams.append(f"{s}@forceOrder")
 
         engine._ws_spot = WebSocketManager(
             engine._on_ws_message,
@@ -260,3 +274,7 @@ class Bootstrap:
         # Wire WS managers into the scanner
         engine._scanner.ws_spot = engine._ws_spot
         engine._scanner.ws_futures = engine._ws_futures
+
+        # Register futures symbols with the OI poller so it knows what to poll
+        if getattr(engine, "_oi_poller", None) is not None:
+            engine._oi_poller.set_symbols(list(futures_syms))

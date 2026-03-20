@@ -24,6 +24,7 @@ from src.confidence import (
     score_data_sufficiency,
     score_liquidity,
     score_multi_exchange,
+    score_order_flow,
     score_smc,
     score_spread,
     score_trend,
@@ -146,6 +147,7 @@ class Scanner:
         router: Any,
         openai_evaluator: Optional[Any] = None,
         onchain_client: Optional[Any] = None,
+        order_flow_store: Optional[Any] = None,
     ) -> None:
         self.pair_mgr = pair_mgr
         self.data_store = data_store
@@ -161,6 +163,7 @@ class Scanner:
         self.router = router
         self.openai_evaluator: Optional[Any] = openai_evaluator
         self.onchain_client: Optional[Any] = onchain_client
+        self.order_flow_store: Optional[Any] = order_flow_store
 
         # Mutable state shared with the engine / command handler
         self.paused_channels: Set[str] = set()
@@ -573,7 +576,7 @@ class Scanner:
             return None
         indicators = self._compute_indicators(candles)
         ticks = self.data_store.ticks.get(symbol, [])
-        smc_result = self.smc_detector.detect(symbol, candles, ticks)
+        smc_result = self.smc_detector.detect(symbol, candles, ticks, self.order_flow_store)
         smc_data = smc_result.as_dict()
 
         regime_tf = "5m" if "5m" in indicators else "1m"
@@ -782,6 +785,14 @@ class Scanner:
         ctx: ScanContext,
         cross_verified: Optional[bool],
     ) -> Optional[float]:
+        # Gate: if OI is rising against the sweep direction, block the signal
+        if ctx.smc_data.get("oi_invalidated", False):
+            log.debug(
+                "{}: signal blocked – OI rising against {} sweep direction",
+                symbol, sig.direction.value,
+            )
+            return None
+
         has_sweep = bool(ctx.smc_data["sweeps"])
         has_mss = ctx.smc_data["mss"] is not None
         has_fvg = bool(ctx.smc_data["fvg"])
@@ -819,6 +830,18 @@ class Scanner:
                 if atr_val and atr_val > 0:
                     fvg_atr_ratio = fvg_size / atr_val
 
+        # Order flow score: OI trend + liquidations + CVD divergence
+        of_score = 0.0
+        if self.order_flow_store is not None:
+            oi_trend = self.order_flow_store.get_oi_trend(symbol)
+            liq_vol = self.order_flow_store.get_recent_liq_volume_usd(symbol)
+            cvd_div = ctx.smc_data.get("cvd_divergence")
+            of_score = score_order_flow(
+                oi_trend=oi_trend.value,
+                liq_vol_usd=liq_vol,
+                cvd_divergence=cvd_div,
+            )
+
         cinp = ConfidenceInput(
             smc_score=score_smc(
                 has_sweep, has_mss, has_fvg,
@@ -835,6 +858,7 @@ class Scanner:
             data_sufficiency=score_data_sufficiency(ctx.candle_total),
             multi_exchange=score_multi_exchange(verified=cross_verified),
             onchain_score=score_onchain(ctx.onchain_data),
+            order_flow_score=of_score,
             has_enough_history=self.pair_mgr.has_enough_history(symbol),
             opposing_position_open=any(
                 s.symbol == symbol and s.direction.value != sig.direction.value
