@@ -45,11 +45,16 @@ from src.signal_quality import (
     execution_quality_check,
     score_signal_components,
 )
+from src.cluster_suppression import ClusterSuppressor
+from src.confidence_decay import apply_confidence_decay
 from src.cross_asset import AssetState, check_cross_asset_gate
+from src.feedback_loop import FeedbackLoop
 from src.kill_zone import check_kill_zone_gate
 from src.mtf import check_mtf_gate
 from src.oi_filter import analyse_oi, check_oi_gate
+from src.spoof_detect import check_spoof_gate
 from src.utils import get_logger, price_decimal_fmt
+from src.volume_divergence import check_volume_divergence_gate
 from src.vwap import check_vwap_extension, compute_vwap
 
 log = get_logger("scanner")
@@ -169,6 +174,10 @@ class Scanner:
         self.openai_evaluator: Optional[Any] = openai_evaluator
         self.onchain_client: Optional[Any] = onchain_client
         self.order_flow_store: Optional[Any] = order_flow_store
+
+        # Stateful signal-quality enhancement modules
+        self.feedback_loop: FeedbackLoop = FeedbackLoop()
+        self.cluster_suppressor: ClusterSuppressor = ClusterSuppressor()
 
         # Mutable state shared with the engine / command handler
         self.paused_channels: Set[str] = set()
@@ -1015,6 +1024,7 @@ class Scanner:
         chan: Any,
         ctx: ScanContext,
     ) -> Tuple[Optional[Any], Optional[bool]]:
+        t0_signal = time.monotonic()
         chan_name = chan.config.name
         try:
             sig = chan.evaluate(
@@ -1152,6 +1162,45 @@ class Scanner:
                     "Cross-asset gate error for {} {} (fail open): {}", symbol, chan_name, _ca_exc
                 )
 
+        # ── Filter 6: Spoofing / Layering Detection ───────────────────────
+        try:
+            _ob = self._get_order_book_depth(symbol)
+            spoof_allowed, spoof_reason = check_spoof_gate(
+                sig.direction.value, _ob, sig.entry
+            )
+            if not spoof_allowed:
+                log.debug("Spoof gate blocked {} {}: {}", symbol, chan_name, spoof_reason)
+                return None, None
+        except Exception as _spoof_exc:
+            log.debug(
+                "Spoof gate error for {} {} (fail open): {}", symbol, chan_name, _spoof_exc
+            )
+
+        # ── Filter 7: Cross-Timeframe Volume Divergence ───────────────────
+        try:
+            _vol_primary_tf = self._get_primary_timeframe(chan_name)
+            vol_div_allowed, vol_div_reason = check_volume_divergence_gate(
+                sig.direction.value, ctx.candles, _vol_primary_tf
+            )
+            if not vol_div_allowed:
+                log.debug(
+                    "Volume divergence gate blocked {} {}: {}", symbol, chan_name, vol_div_reason
+                )
+                return None, None
+        except Exception as _vol_div_exc:
+            log.debug(
+                "Volume divergence gate error for {} {} (fail open): {}",
+                symbol, chan_name, _vol_div_exc,
+            )
+
+        # ── Filter 8: Signal Clustering Suppression ───────────────────────
+        cluster_allowed, cluster_reason = self.cluster_suppressor.check_cluster_gate(
+            symbol, sig.direction.value
+        )
+        if not cluster_allowed:
+            log.debug("Cluster gate blocked {} {}: {}", symbol, chan_name, cluster_reason)
+            return None, None
+
         risk = self._evaluate_risk(sig, ctx, setup, chan_name=chan_name)
         if not risk.passed:
             log.debug("Rejected {} {} risk: {}", symbol, chan_name, risk.reason)
@@ -1189,6 +1238,25 @@ class Scanner:
         sig.quality_tier = setup_score.quality_tier.value
         sig.pre_ai_confidence = setup_score.total
         sig.confidence = setup_score.total
+        # Apply ML feedback adjustment based on historical outcomes for this
+        # channel / setup combination.
+        fb_adj = self.feedback_loop.get_confidence_adjustment(
+            setup_score.components, chan_name, setup.setup_class.value
+        )
+        if fb_adj != 0.0:
+            sig.confidence += fb_adj
+            log.debug(
+                "Feedback adjustment for {} {} {}: {:+.1f} → {:.1f}",
+                symbol, chan_name, setup.setup_class.value, fb_adj, sig.confidence,
+            )
+        # Apply adaptive confidence decay based on signal freshness.
+        # apply_confidence_decay clamps the final value to [0, 100].
+        sig.confidence = apply_confidence_decay(
+            confidence=sig.confidence,
+            signal_generated_at=t0_signal,
+            current_time=time.monotonic(),
+            channel=chan_name,
+        )
         # Apply confidence penalty for RANGE signals in the borderline ADX zone (20-25).
         # The channel now allows ADX up to 25, but a trending-leaning environment
         # warrants a penalty to reflect reduced signal quality.
@@ -1236,6 +1304,7 @@ class Scanner:
             if not await self._enqueue_signal(sig):
                 continue
             self._set_cooldown(symbol, chan_name)
+            self.cluster_suppressor.record_signal(symbol, sig.direction.value)
 
             # Select-mode: if enabled and signal passes stricter filters,
             # also enqueue a copy to 360_SELECT channel.
