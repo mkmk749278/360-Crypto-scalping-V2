@@ -1466,3 +1466,79 @@ class TestCrossAssetGateInScanner:
         signal_queue.put.assert_awaited_once()
 
 
+class TestNormalizeCandles:
+    """_normalize_candle_dict must flatten 2-D numpy arrays to 1-D Python lists."""
+
+    def test_2d_arrays_are_flattened(self):
+        """2-D shape (n, 1) arrays must be converted to flat 1-D lists."""
+        import numpy as np
+        from src.scanner import _normalize_candle_dict
+
+        n = 10
+        raw = {
+            "open":   np.arange(n, dtype=np.float64).reshape(n, 1),
+            "high":   np.arange(n, dtype=np.float64).reshape(n, 1),
+            "low":    np.arange(n, dtype=np.float64).reshape(n, 1),
+            "close":  np.arange(n, dtype=np.float64).reshape(n, 1),
+            "volume": np.arange(n, dtype=np.float64).reshape(n, 1),
+        }
+        result = _normalize_candle_dict(raw)
+
+        for key, val in result.items():
+            assert isinstance(val, list), f"{key} should be a Python list"
+            assert len(val) == n, f"{key} should have {n} elements"
+            # Plain Python list must be safe in boolean context
+            assert bool(val) is True
+
+    def test_1d_arrays_preserved_as_lists(self):
+        """1-D numpy arrays are also converted to Python lists."""
+        import numpy as np
+        from src.scanner import _normalize_candle_dict
+
+        raw = {"close": np.array([1.0, 2.0, 3.0])}
+        result = _normalize_candle_dict(raw)
+        assert isinstance(result["close"], list)
+        assert result["close"] == [1.0, 2.0, 3.0]
+
+    def test_python_lists_preserved(self):
+        """Python lists pass through unchanged in value."""
+        from src.scanner import _normalize_candle_dict
+
+        raw = {"close": [1.0, 2.0, 3.0]}
+        result = _normalize_candle_dict(raw)
+        assert isinstance(result["close"], list)
+        assert result["close"] == [1.0, 2.0, 3.0]
+
+    def test_load_candles_normalizes_2d_data(self):
+        """_load_candles must normalize 2-D arrays so downstream bool checks never raise."""
+        import numpy as np
+        from config import SEED_TIMEFRAMES
+
+        n = 60
+        two_d_candles = {
+            "open":   np.ones((n, 1), dtype=np.float64),
+            "high":   np.ones((n, 1), dtype=np.float64) * 1.1,
+            "low":    np.ones((n, 1), dtype=np.float64) * 0.9,
+            "close":  np.ones((n, 1), dtype=np.float64),
+            "volume": np.ones((n, 1), dtype=np.float64) * 100,
+        }
+
+        data_store = MagicMock()
+        data_store.get_candles.return_value = two_d_candles
+
+        scanner = _make_scanner(data_store=data_store)
+        candles = scanner._load_candles("ZECUSDT")
+
+        assert candles, "candles dict must not be empty"
+        for tf in SEED_TIMEFRAMES:
+            cd = candles.get(tf.interval, {})
+            if not cd:
+                continue
+            for key in ("open", "high", "low", "close", "volume"):
+                val = cd[key]
+                assert isinstance(val, list), f"{key} must be a Python list after normalization"
+                assert len(val) == n
+                # Verify boolean context works (would raise ValueError for raw 2-D numpy array)
+                assert bool(val) is True
+
+

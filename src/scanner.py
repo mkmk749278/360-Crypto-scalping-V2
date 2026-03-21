@@ -106,6 +106,31 @@ _REGIME_PENALTY_MULTIPLIER: Dict[str, float] = {
 }
 
 
+def _normalize_candle_dict(cd: dict) -> dict:
+    """Ensure all array-like values in a candle dict are flat 1-D Python lists.
+
+    Candle data can occasionally arrive from the data store as 2-D numpy arrays
+    of shape ``(n, 1)`` instead of the expected 1-D shape ``(n,)``.  This causes
+    ``ValueError: The truth value of an array with more than one element is
+    ambiguous`` in any downstream code that uses the array in a boolean context
+    (e.g. ``if closes:``).  Converting everything to a plain Python list at the
+    data-store boundary protects all downstream consumers.
+    """
+    normalized: dict = {}
+    for key, val in cd.items():
+        if isinstance(val, np.ndarray):
+            normalized[key] = np.asarray(val, dtype=np.float64).ravel().tolist()
+        elif isinstance(val, list):
+            try:
+                normalized[key] = np.asarray(val, dtype=np.float64).ravel().tolist()
+            except (ValueError, TypeError) as exc:
+                log.debug("_normalize_candle_dict: could not flatten list for key '{}': {}", key, exc)
+                normalized[key] = val
+        else:
+            normalized[key] = val
+    return normalized
+
+
 @dataclass
 class ScanContext:
     candles: Dict[str, dict]
@@ -481,7 +506,7 @@ class Scanner:
         for tf in SEED_TIMEFRAMES:
             c = self.data_store.get_candles(symbol, tf.interval)
             if c:
-                candles[tf.interval] = c
+                candles[tf.interval] = _normalize_candle_dict(c)
         return candles
 
     def _compute_indicators(self, candles: Dict[str, dict]) -> Dict[str, dict]:
@@ -1096,7 +1121,7 @@ class Scanner:
             ema_slow = ind.get("ema21_last")
             cd = ctx.candles.get(tf_label, {})
             closes = cd.get("close", [])
-            if ema_fast is not None and ema_slow is not None and closes:
+            if ema_fast is not None and ema_slow is not None and len(closes) > 0:
                 mtf_data[tf_label] = {
                     "ema_fast": float(ema_fast),
                     "ema_slow": float(ema_slow),
