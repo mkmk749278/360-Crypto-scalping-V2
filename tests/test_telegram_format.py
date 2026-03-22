@@ -248,7 +248,7 @@ class TestFormatSignalEscaping:
 
     def test_premium_fields_render_markdown_safe(self):
         sig = Signal(
-            channel="360_SELECT",
+            channel="360_GEM",
             symbol="BTCUSDT",
             direction=Direction.LONG,
             entry=32000,

@@ -230,7 +230,7 @@ class TestPerformanceTrackerAnalyticsFields:
         pt = PerformanceTracker(storage_path=str(tmp_path / "perf.json"))
         pt.record_outcome(
             signal_id="SIGA",
-            channel="360_SELECT",
+            channel="360_GEM",
             symbol="BTCUSDT",
             direction="LONG",
             entry=100.0,

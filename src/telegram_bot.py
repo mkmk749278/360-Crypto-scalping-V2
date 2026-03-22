@@ -151,7 +151,7 @@ class TelegramBot:
             "360_SWING": "🏛️",
             "360_RANGE": "⚖️",
             "360_THE_TAPE": "🐋",
-            "360_SELECT": "🌹",
+            "360_GEM": "💎",
         }
         emoji = chan_emojis.get(sig.channel, "📡")
         dir_emoji = "🚀" if sig.direction == Direction.LONG else "⬇️"
@@ -228,6 +228,37 @@ class TelegramBot:
         return header + body + footer
 
     @staticmethod
+    def format_gem_signal(
+        symbol: str,
+        current_price: float,
+        ath: float,
+        drawdown_pct: float,
+        x_potential: float,
+        accumulation_days: int,
+        volume_ratio: float,
+        confidence: float,
+        timestamp: float,
+    ) -> str:
+        """Format a 360_GEM macro-reversal signal for Telegram."""
+        import datetime
+
+        ts_str = datetime.datetime.utcfromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M UTC")
+        lines = [
+            f"💎 360\\_GEM ALERT — POTENTIAL x{x_potential:.0f} 🚀",
+            f"Pair: `{symbol}`",
+            "📈 LONG \\(Macro Reversal\\)",
+            f"💰 Current Price: `{fmt_price(current_price)}`",
+            f"📊 ATH: `{fmt_price(ath)}` | Drawdown: `{drawdown_pct:.0f}%`",
+            f"🏗️ Accumulation Base: `{accumulation_days}` days",
+            f"📈 Volume Surge: `{volume_ratio:.1f}x` average",
+            "🎯 Target: Previous ATH region",
+            "🛡️ SL: Below accumulation base",
+            f"🤖 Confidence: `{confidence:.0f}%`",
+            f"⏰ Time: `{ts_str}`",
+        ]
+        return "\n".join(lines)
+
+    @staticmethod
     def format_highlight_message(sig: Signal, tp_level: int, tp_pnl_pct: float) -> str:
         """Format an eye-catching winning trade highlight for the free channel."""
         from src.utils import utcnow
@@ -237,7 +268,7 @@ class TelegramBot:
             "360_SWING": "🏛️",
             "360_RANGE": "⚖️",
             "360_THE_TAPE": "🐋",
-            "360_SELECT": "🌹",
+            "360_GEM": "💎",
         }
         chan_emoji = chan_emojis.get(sig.channel, "📡")
         dir_emoji = "🚀" if sig.direction.value == "LONG" else "⬇️"

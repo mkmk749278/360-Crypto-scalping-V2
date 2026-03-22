@@ -8,7 +8,6 @@ and optional circuit-breaker integration.
 from __future__ import annotations
 
 import asyncio
-import copy
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -221,8 +220,8 @@ class Scanner:
         # Optional circuit breaker (set after construction)
         self.circuit_breaker: Optional[Any] = None
 
-        # Optional select-mode filter (set after construction)
-        self.select_mode_filter: Optional[Any] = None
+        # Optional gem scanner (set after construction)
+        self.gem_scanner: Optional[Any] = None
 
         # Order book spread cache: symbol → (spread_pct, expiry_monotonic_time)
         # expiry_monotonic_time is an absolute time.monotonic() value; the entry
@@ -1226,44 +1225,3 @@ class Scanner:
             self._set_cooldown(symbol, chan_name)
             self.cluster_suppressor.record_signal(symbol, sig.direction.value)
 
-            # Select-mode: if enabled and signal passes stricter filters,
-            # also enqueue a copy to 360_SELECT channel.
-            # The original signal is always published to its regular channel.
-            if (
-                self.select_mode_filter is not None
-                and self.select_mode_filter.enabled
-            ):
-                allowed, reason = self.select_mode_filter.should_publish(
-                    signal=sig,
-                    confidence=sig.confidence,
-                    indicators=ctx.indicators,
-                    smc_data=ctx.smc_data,
-                    ai_sentiment=ctx.ai,
-                    cross_exchange_verified=cross_verified,
-                    volume_24h=volume_24h,
-                    spread_pct=ctx.spread_pct,
-                    setup_class=sig.setup_class,
-                    market_state=sig.market_phase,
-                    quality_tier=sig.quality_tier,
-                    component_scores=sig.component_scores,
-                    pair_quality_score=sig.pair_quality_score,
-                    r_multiple=sig.r_multiple,
-                    higher_timeframe_aligned=self._has_higher_timeframe_alignment(sig, ctx.indicators),
-                )
-                if allowed:
-                    select_sig = copy.deepcopy(sig)
-                    select_sig.channel = "360_SELECT"
-                    select_sig.signal_id = f"SELECT-{sig.signal_id}"
-                    if await self._enqueue_signal(select_sig):
-                        log.info(
-                            "SELECT copy enqueued for {} ({})",
-                            sig.symbol,
-                            select_sig.signal_id,
-                        )
-                else:
-                    log.debug(
-                        "SELECT filter rejected {} {}: {}",
-                        sig.symbol,
-                        chan_name,
-                        reason,
-                    )

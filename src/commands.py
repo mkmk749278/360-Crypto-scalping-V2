@@ -163,7 +163,7 @@ class CommandHandler:
         symbols_fn: Optional[Callable] = None,
         performance_tracker: Optional[Any] = None,
         circuit_breaker: Optional[Any] = None,
-        select_mode_filter: Optional[Any] = None,
+        gem_scanner: Optional[Any] = None,
         paper_portfolio: Optional[Any] = None,
     ) -> None:
         self._telegram = telegram
@@ -187,7 +187,7 @@ class CommandHandler:
         self._symbols_fn = symbols_fn
         self._performance_tracker = performance_tracker
         self._circuit_breaker = circuit_breaker
-        self._select_mode = select_mode_filter
+        self._gem_scanner = gem_scanner
         self._paper_portfolio = paper_portfolio
         # Backtest configuration defaults
         self._bt_fee_pct: float = 0.08
@@ -232,7 +232,7 @@ class CommandHandler:
             "/set_free_channel_limit", "/force_update_ai", "/view_active_signals",
             "/view_logs", "/update_code", "/restart_engine", "/rollback_code",
             "/circuit_breaker_status", "/reset_circuit_breaker",
-            "/select_mode", "/select_config", "/reset_stats",
+            "/gem_mode", "/gem_config", "/reset_stats",
             "/real_stats", "/stats",
             "/backtest", "/backtest_all", "/backtest_config",
         }
@@ -648,44 +648,44 @@ class CommandHandler:
                     )
                 await self._telegram.send_message(chat_id, "\n".join(lines))
 
-        elif cmd == "/select_mode":
-            if self._select_mode is None:
+        elif cmd == "/gem_mode":
+            if self._gem_scanner is None:
                 await self._telegram.send_message(
-                    chat_id, "❌ Select mode filter is not initialized."
+                    chat_id, "❌ Gem scanner is not initialized."
                 )
                 return
             sub = parts[1].lower() if len(parts) >= 2 else "status"
             if sub == "on":
-                self._select_mode.enable()
+                self._gem_scanner.enable()
                 await self._telegram.send_message(
                     chat_id,
-                    "🌹 Select mode ON — signals will also publish to 360\\_SELECT channel",
+                    "💎 Gem scanner ON — macro reversal signals will publish to 360\\_GEM channel",
                 )
             elif sub == "off":
-                self._select_mode.disable()
+                self._gem_scanner.disable()
                 await self._telegram.send_message(
                     chat_id,
-                    "🔘 Select mode OFF — 360\\_SELECT channel paused",
+                    "🔘 Gem scanner OFF — 360\\_GEM channel paused",
                 )
             else:
                 await self._telegram.send_message(
-                    chat_id, self._select_mode.status_text()
+                    chat_id, self._gem_scanner.status_text()
                 )
 
-        elif cmd == "/select_config":
-            if self._select_mode is None:
+        elif cmd == "/gem_config":
+            if self._gem_scanner is None:
                 await self._telegram.send_message(
-                    chat_id, "❌ Select mode filter is not initialized."
+                    chat_id, "❌ Gem scanner is not initialized."
                 )
                 return
             if len(parts) < 3:
                 await self._telegram.send_message(
-                    chat_id, "Usage: /select\\_config <key> <value>"
+                    chat_id, "Usage: /gem\\_config <key> <value>"
                 )
             else:
                 key = parts[1]
                 cfg_value = parts[2]
-                success, msg = self._select_mode.update_config(key, cfg_value)
+                success, msg = self._gem_scanner.update_config(key, cfg_value)
                 await self._telegram.send_message(chat_id, msg)
 
         elif cmd == "/signal_stats":

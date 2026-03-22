@@ -398,7 +398,7 @@ class TestPaperPortfolioManager:
         mgr.ensure_user("user1")
 
         mgr.record_trade(
-            channel="360_SELECT",
+            channel="360_GEM",
             signal_id="sig-select",
             symbol="BTCUSDT",
             direction="LONG",

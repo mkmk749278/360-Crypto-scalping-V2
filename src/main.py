@@ -44,7 +44,7 @@ from src.performance_tracker import PerformanceTracker
 from src.predictive_ai import PredictiveEngine
 from src.regime import MarketRegimeDetector
 from src.scanner import Scanner
-from src.select_mode import SelectModeFilter
+from src.gem_scanner import GemScanner
 from src.signal_router import SignalRouter
 from src.telegram_bot import TelegramBot
 from src.telemetry import TelemetryCollector
@@ -208,9 +208,9 @@ class CryptoSignalEngine:
             self.router.publish_highlight(sig, tp, pnl)
         )
 
-        # Select mode filter (OFF by default – admin must run /select_mode on)
-        self._select_mode = SelectModeFilter()
-        self._scanner.select_mode_filter = self._select_mode
+        # Gem scanner (OFF by default — admin must run /gem_mode on)
+        self._gem_scanner = GemScanner()
+        self._scanner.gem_scanner = self._gem_scanner
 
         # Command handler (delegates all Telegram commands)
         self._command_handler = CommandHandler(
@@ -235,7 +235,7 @@ class CryptoSignalEngine:
             symbols_fn=lambda: self.pair_mgr.symbols,
             performance_tracker=self._performance_tracker,
             circuit_breaker=self._circuit_breaker,
-            select_mode_filter=self._select_mode,
+            gem_scanner=self._gem_scanner,
             paper_portfolio=self._paper_portfolio,
         )
 

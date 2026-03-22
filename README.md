@@ -64,7 +64,7 @@ Binance WS ──► WebSocketManager (multi-conn, heartbeat, auto-reconnect)
 | **Performance Tracker** | `src/performance_tracker.py` | Tracks real signal outcomes per channel — win rates, TP hit rates, signal quality scoring. Provides `/stats`, `/signal_stats`, `/tp_stats` commands. |
 | **Backtester** | `src/backtester.py` | Full backtesting engine that runs channel strategies against historical candle data. Configurable fee, slippage, lookahead candles, min window. Supports single-symbol and multi-symbol aggregate backtests. |
 | **Circuit Breaker** | `src/circuit_breaker.py` | Auto-pauses signal generation after consecutive losses (rolling window). Prevents compounding drawdowns. Admin can check status and manually reset. |
-| **Select Mode (360_SELECT)** | `src/select_mode.py` | Premium 5th channel that cherry-picks the highest-confidence signals across all 4 base channels. Configurable confidence threshold, toggle on/off via admin commands. |
+| **Gem Scanner (360_GEM)** | `src/gem_scanner.py` | Independent macro scanner that finds deeply discounted altcoins showing early reversal signals — potential x10 tokens. Configurable via admin commands. |
 | **Signal Quality Scoring** | `src/signal_quality.py` | Advanced multi-factor signal quality analysis beyond basic confidence. |
 | **Predictive AI** | `src/predictive_ai.py` | ML-based price direction prediction using historical patterns. |
 | **OpenAI Evaluator** | `src/openai_evaluator.py` | GPT-powered signal evaluation for natural language trade rationale. |
@@ -154,8 +154,8 @@ The paper trading module gives every Telegram user a **virtual $1,000 USDT portf
 | `/stats [channel]` | Show performance stats |
 | `/real_stats [channel]` | Show real signal stats |
 | `/reset_stats [channel]` | Clear performance records |
-| `/select_mode [on/off/status]` | Toggle 360_SELECT channel |
-| `/select_config <key> <value>` | Update select mode configuration |
+| `/gem_mode [on/off/status]` | Toggle 360_GEM gem scanner channel |
+| `/gem_config <key> <value>` | Update gem scanner configuration |
 | `/backtest <symbol> [channel] [lookahead]` | Run backtest for a single symbol |
 | `/backtest_all [channel] [lookahead]` | Run backtest across all tracked symbols |
 | `/backtest_config [key] [value]` | View or update backtest parameters (fee, slippage, lookahead, min_window) |
@@ -306,7 +306,7 @@ src/
   performance_metrics.py # Sharpe/Sortino ratio and quantitative metrics
   backtester.py        # Historical backtest engine
   circuit_breaker.py   # Auto-pause after consecutive losses
-  select_mode.py       # 360_SELECT premium channel filter
+  gem_scanner.py       # 360_GEM macro-reversal gem scanner
   signal_quality.py    # Advanced multi-factor signal quality scoring
   predictive_ai.py     # ML-based price direction prediction
   openai_evaluator.py  # GPT-powered signal evaluation

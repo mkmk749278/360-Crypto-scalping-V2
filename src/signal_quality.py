@@ -61,12 +61,13 @@ CHANNEL_SETUP_COMPATIBILITY: Dict[str, set[SetupClass]] = {
         SetupClass.MOMENTUM_EXPANSION,
         SetupClass.LIQUIDITY_SWEEP_REVERSAL,
     },
-    "360_SELECT": {
+    "360_GEM": {
         SetupClass.TREND_PULLBACK_CONTINUATION,
         SetupClass.BREAKOUT_RETEST,
         SetupClass.LIQUIDITY_SWEEP_REVERSAL,
         SetupClass.RANGE_REJECTION,
         SetupClass.MOMENTUM_EXPANSION,
+        SetupClass.EXHAUSTION_FADE,
     },
 }
 
@@ -640,42 +641,3 @@ def score_signal_components(
     elif total >= 74.0:
         tier = QualityTier.B
     return ComponentScore(components=components, total=total, quality_tier=tier)
-
-
-def passes_select_filter(
-    *,
-    setup_class: str,
-    market_state: str,
-    pair_quality_score: float,
-    quality_tier: str,
-    confidence: float,
-    r_multiple: float,
-    component_scores: Dict[str, float],
-    higher_timeframe_aligned: bool,
-) -> tuple[bool, str]:
-    allowed_setups = {
-        SetupClass.TREND_PULLBACK_CONTINUATION.value,
-        SetupClass.BREAKOUT_RETEST.value,
-        SetupClass.LIQUIDITY_SWEEP_REVERSAL.value,
-        SetupClass.MOMENTUM_EXPANSION.value,
-        SetupClass.RANGE_REJECTION.value,
-    }
-    if setup_class not in allowed_setups:
-        return False, "setup not premium enough"
-    if market_state in (MarketState.DIRTY_RANGE.value, MarketState.VOLATILE_UNSUITABLE.value):
-        return False, "market state unsuitable for select"
-    if quality_tier not in {QualityTier.A_PLUS.value, QualityTier.A.value}:
-        return False, "quality tier below select threshold"
-    if pair_quality_score < 80.0:
-        return False, "pair quality below select threshold"
-    if confidence < 84.0:
-        return False, "confidence below select threshold"
-    if r_multiple < 1.3:
-        return False, "risk/reward below select threshold"
-    if component_scores.get("execution", 0.0) < 14.0:
-        return False, "execution score below select threshold"
-    if component_scores.get("market", 0.0) < 18.0:
-        return False, "market score below select threshold"
-    if not higher_timeframe_aligned:
-        return False, "higher timeframe contradiction"
-    return True, ""

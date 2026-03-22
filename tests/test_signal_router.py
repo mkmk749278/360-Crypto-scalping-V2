@@ -34,7 +34,7 @@ def queue():
 
 @pytest.fixture
 def router(queue, sent_messages, monkeypatch):
-    for channel in ("360_SCALP", "360_RANGE", "360_SWING", "360_THE_TAPE", "360_SELECT"):
+    for channel in ("360_SCALP", "360_RANGE", "360_SWING", "360_THE_TAPE", "360_GEM"):
         monkeypatch.setitem(signal_router_module.CHANNEL_TELEGRAM_MAP, channel, "premium")
 
     async def mock_send(chat_id: str, text: str):
@@ -81,7 +81,7 @@ class TestSignalRouter:
 
     @pytest.mark.asyncio
     async def test_send_exception_cleans_up_and_router_continues(self, monkeypatch):
-        for channel in ("360_SCALP", "360_RANGE", "360_SWING", "360_THE_TAPE", "360_SELECT"):
+        for channel in ("360_SCALP", "360_RANGE", "360_SWING", "360_THE_TAPE", "360_GEM"):
             monkeypatch.setitem(signal_router_module.CHANNEL_TELEGRAM_MAP, channel, "premium")
 
         queue = asyncio.Queue()
@@ -501,7 +501,7 @@ class TestSignalRouter:
     @pytest.mark.asyncio
     async def test_failed_delivery_requeues_signal(self, monkeypatch):
         """A failed delivery re-queues the signal (appears back in queue)."""
-        for channel in ("360_SCALP", "360_RANGE", "360_SWING", "360_THE_TAPE", "360_SELECT"):
+        for channel in ("360_SCALP", "360_RANGE", "360_SWING", "360_THE_TAPE", "360_GEM"):
             monkeypatch.setitem(signal_router_module.CHANNEL_TELEGRAM_MAP, channel, "premium")
 
         # Patch _delivery_sleep to be instant
@@ -546,7 +546,7 @@ class TestSignalRouter:
     @pytest.mark.asyncio
     async def test_failed_delivery_permanent_loss_after_max_retries(self, monkeypatch):
         """Signal is permanently dropped (with log) after 3 failed delivery attempts."""
-        for channel in ("360_SCALP", "360_RANGE", "360_SWING", "360_THE_TAPE", "360_SELECT"):
+        for channel in ("360_SCALP", "360_RANGE", "360_SWING", "360_THE_TAPE", "360_GEM"):
             monkeypatch.setitem(signal_router_module.CHANNEL_TELEGRAM_MAP, channel, "premium")
 
         async def instant_sleep(_secs):
@@ -927,7 +927,7 @@ class TestPublishHighlight:
         """Router with TELEGRAM_FREE_CHANNEL_ID configured."""
         import src.signal_router as m
         monkeypatch.setattr(m, "TELEGRAM_FREE_CHANNEL_ID", "free_channel")
-        for channel in ("360_SCALP", "360_RANGE", "360_SWING", "360_THE_TAPE", "360_SELECT"):
+        for channel in ("360_SCALP", "360_RANGE", "360_SWING", "360_THE_TAPE", "360_GEM"):
             monkeypatch.setitem(m.CHANNEL_TELEGRAM_MAP, channel, "premium")
 
         async def mock_send(chat_id: str, text: str):
@@ -1018,7 +1018,7 @@ class TestPublishDailyRecap:
     def router_with_free(self, queue, sent_messages, monkeypatch):
         import src.signal_router as m
         monkeypatch.setattr(m, "TELEGRAM_FREE_CHANNEL_ID", "free_channel")
-        for channel in ("360_SCALP", "360_RANGE", "360_SWING", "360_THE_TAPE", "360_SELECT"):
+        for channel in ("360_SCALP", "360_RANGE", "360_SWING", "360_THE_TAPE", "360_GEM"):
             monkeypatch.setitem(m.CHANNEL_TELEGRAM_MAP, channel, "premium")
 
         async def mock_send(chat_id, text):

@@ -33,7 +33,7 @@ TELEGRAM_RANGE_CHANNEL_ID: str = os.getenv("TELEGRAM_RANGE_CHANNEL_ID", "")
 TELEGRAM_TAPE_CHANNEL_ID: str = os.getenv("TELEGRAM_TAPE_CHANNEL_ID", "")
 TELEGRAM_FREE_CHANNEL_ID: str = os.getenv("TELEGRAM_FREE_CHANNEL_ID", "")
 TELEGRAM_ADMIN_CHAT_ID: str = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "")
-TELEGRAM_SELECT_CHANNEL_ID: str = os.getenv("TELEGRAM_SELECT_CHANNEL_ID", "")
+TELEGRAM_GEM_CHANNEL_ID: str = os.getenv("TELEGRAM_GEM_CHANNEL_ID", "")
 
 # ---------------------------------------------------------------------------
 # AI / Sentiment keys (optional)
@@ -56,6 +56,18 @@ OPENAI_MIN_CONFIDENCE_THRESHOLD: float = float(
 )
 # Kept for backward compatibility – no longer used by the scanner.
 OPENAI_HOT_PATH_BYPASS_CHANNELS: List[str] = ["360_SCALP", "360_THE_TAPE"]
+
+# ---------------------------------------------------------------------------
+# Gem Scanner — macro-reversal detection for deeply discounted altcoins
+# ---------------------------------------------------------------------------
+GEM_SCANNER_ENABLED: bool = os.getenv("GEM_SCANNER_ENABLED", "true").lower() in (
+    "true", "1", "yes"
+)
+GEM_MIN_DRAWDOWN_PCT: float = float(os.getenv("GEM_MIN_DRAWDOWN_PCT", "70.0"))
+GEM_MAX_RANGE_PCT: float = float(os.getenv("GEM_MAX_RANGE_PCT", "40.0"))
+GEM_MIN_VOLUME_RATIO: float = float(os.getenv("GEM_MIN_VOLUME_RATIO", "1.5"))
+GEM_SCAN_INTERVAL_HOURS: int = int(os.getenv("GEM_SCAN_INTERVAL_HOURS", "6"))
+GEM_MAX_DAILY_SIGNALS: int = int(os.getenv("GEM_MAX_DAILY_SIGNALS", "3"))
 
 # ---------------------------------------------------------------------------
 # Macro Watchdog – async background task for global market-event alerts
@@ -191,19 +203,19 @@ CHANNEL_TAPE = ChannelConfig(
     min_volume=10_000_000.0,
 )
 
-CHANNEL_SELECT = ChannelConfig(
-    name="360_SELECT",
-    emoji="🌹",
-    timeframes=["5m", "15m", "1h"],
-    sl_pct_range=(0.05, 0.5),
-    tp_ratios=[1.0, 1.5, 2.0],
-    trailing_atr_mult=2.0,
-    adx_min=25,
+CHANNEL_GEM = ChannelConfig(
+    name="360_GEM",
+    emoji="💎",
+    timeframes=["1d", "1w"],
+    sl_pct_range=(0.10, 0.30),
+    tp_ratios=[2.0, 5.0, 10.0],
+    trailing_atr_mult=3.0,
+    adx_min=0,
     adx_max=100,
-    spread_max=0.015,
-    min_confidence=80,
-    min_volume=10_000_000.0,
-    dca_enabled=True,
+    spread_max=0.03,
+    min_confidence=55,
+    min_volume=1_000_000.0,
+    dca_enabled=False,
 )
 
 ALL_CHANNELS: List[ChannelConfig] = [
@@ -211,7 +223,7 @@ ALL_CHANNELS: List[ChannelConfig] = [
     CHANNEL_SWING,
     CHANNEL_RANGE,
     CHANNEL_TAPE,
-    CHANNEL_SELECT,
+    CHANNEL_GEM,
 ]
 
 CHANNEL_TELEGRAM_MAP: Dict[str, str] = {
@@ -219,7 +231,7 @@ CHANNEL_TELEGRAM_MAP: Dict[str, str] = {
     "360_SWING": TELEGRAM_SWING_CHANNEL_ID,
     "360_RANGE": TELEGRAM_RANGE_CHANNEL_ID,
     "360_THE_TAPE": TELEGRAM_TAPE_CHANNEL_ID,
-    "360_SELECT": TELEGRAM_SELECT_CHANNEL_ID,
+    "360_GEM": TELEGRAM_GEM_CHANNEL_ID,
 }
 
 # ---------------------------------------------------------------------------
@@ -265,7 +277,7 @@ CHANNEL_COOLDOWN_SECONDS: Dict[str, int] = {
     "360_SWING": 300,
     "360_RANGE": 120,
     "360_THE_TAPE": 30,
-    "360_SELECT": 300,
+    "360_GEM": 21600,  # 6 hours — macro timeframe
 }
 
 # ---------------------------------------------------------------------------
@@ -278,7 +290,7 @@ SIGNAL_SCAN_COOLDOWN_SECONDS: Dict[str, int] = {
     "360_SWING": int(os.getenv("SWING_SCAN_COOLDOWN", "60")),
     "360_RANGE": int(os.getenv("RANGE_SCAN_COOLDOWN", "60")),
     "360_THE_TAPE": int(os.getenv("TAPE_SCAN_COOLDOWN", "60")),
-    "360_SELECT": int(os.getenv("SELECT_SCAN_COOLDOWN", "60")),
+    "360_GEM": int(os.getenv("GEM_SCAN_COOLDOWN", "21600")),  # 6 hours
 }
 
 # ---------------------------------------------------------------------------
@@ -315,7 +327,7 @@ THESIS_COOLDOWN_AFTER_SL_SECONDS: Dict[str, int] = {
     "360_SWING": int(os.getenv("THESIS_COOLDOWN_SWING", "14400")),      # 4 hours
     "360_RANGE": int(os.getenv("THESIS_COOLDOWN_RANGE", "7200")),       # 2 hours
     "360_THE_TAPE": int(os.getenv("THESIS_COOLDOWN_TAPE", "1800")),     # 30 min
-    "360_SELECT": int(os.getenv("THESIS_COOLDOWN_SELECT", "7200")),     # 2 hours
+    "360_GEM": int(os.getenv("THESIS_COOLDOWN_GEM", "604800")),         # 7 days
 }
 
 # ---------------------------------------------------------------------------
@@ -333,7 +345,7 @@ MAX_CONCURRENT_SIGNALS_PER_CHANNEL: Dict[str, int] = {
     "360_SWING": int(os.getenv("MAX_SWING_SIGNALS", "5")),
     "360_RANGE": int(os.getenv("MAX_RANGE_SIGNALS", "5")),
     "360_THE_TAPE": int(os.getenv("MAX_TAPE_SIGNALS", "5")),
-    "360_SELECT": int(os.getenv("MAX_SELECT_SIGNALS", "5")),
+    "360_GEM": int(os.getenv("MAX_GEM_SIGNALS", "3")),
 }
 
 # ---------------------------------------------------------------------------
@@ -344,7 +356,7 @@ MIN_SIGNAL_LIFESPAN_SECONDS: Dict[str, int] = {
     "360_SWING": 60,
     "360_RANGE": 30,
     "360_THE_TAPE": 20,
-    "360_SELECT": 30,
+    "360_GEM": 86400,  # 1 day — macro positions
 }
 
 # ---------------------------------------------------------------------------
@@ -356,7 +368,7 @@ MAX_SIGNAL_HOLD_SECONDS: Dict[str, int] = {
     "360_SWING": int(os.getenv("MAX_SWING_HOLD", "172800")),     # 48 hours
     "360_RANGE": int(os.getenv("MAX_RANGE_HOLD", "7200")),       # 2 hours
     "360_THE_TAPE": int(os.getenv("MAX_TAPE_HOLD", "1800")),     # 30 min
-    "360_SELECT": int(os.getenv("MAX_SELECT_HOLD", "86400")),    # 24 hours
+    "360_GEM": int(os.getenv("MAX_GEM_HOLD", "2592000")),        # 30 days
 }
 
 # ---------------------------------------------------------------------------
@@ -373,7 +385,7 @@ INVALIDATION_MIN_AGE_SECONDS: Dict[str, int] = {
     "360_SWING": 300,
     "360_RANGE": 180,
     "360_THE_TAPE": 300,    # increased from 180 — regime flips happen at 180s boundary
-    "360_SELECT": 180,
+    "360_GEM": 604800,      # 7 days — macro positions need much longer before invalidation
 }
 
 # Momentum threshold below which a signal is considered to have lost its thesis.
@@ -384,7 +396,7 @@ INVALIDATION_MOMENTUM_THRESHOLD: Dict[str, float] = {
     "360_SCALP": float(os.getenv("INVALIDATION_MOMENTUM_THRESHOLD_SCALP", "0.10")),
     "360_RANGE": float(os.getenv("INVALIDATION_MOMENTUM_THRESHOLD_RANGE", "0.15")),
     "360_SWING": float(os.getenv("INVALIDATION_MOMENTUM_THRESHOLD_SWING", "0.20")),
-    "360_SELECT": float(os.getenv("INVALIDATION_MOMENTUM_THRESHOLD_SELECT", "0.20")),
+    "360_GEM": float(os.getenv("INVALIDATION_MOMENTUM_THRESHOLD_GEM", "0.50")),
 }
 
 # ---------------------------------------------------------------------------

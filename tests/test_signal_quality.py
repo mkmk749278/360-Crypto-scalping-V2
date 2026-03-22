@@ -11,7 +11,6 @@ from src.signal_quality import (
     classify_market_state,
     classify_setup,
     execution_quality_check,
-    passes_select_filter,
     score_signal_components,
 )
 from src.smc import Direction
@@ -158,31 +157,6 @@ class TestScoringAndSelectTier:
         assert strong.total > weak.total
         assert strong.quality_tier in {QualityTier.A, QualityTier.A_PLUS}
         assert weak.quality_tier in {QualityTier.B, QualityTier.C}
-
-    def test_select_filter_only_allows_top_tier(self):
-        allowed, _ = passes_select_filter(
-            setup_class=SetupClass.BREAKOUT_RETEST.value,
-            market_state=MarketState.STRONG_TREND.value,
-            pair_quality_score=88.0,
-            quality_tier="A",
-            confidence=88.0,
-            r_multiple=1.5,
-            component_scores={"market": 20.0, "execution": 16.0},
-            higher_timeframe_aligned=True,
-        )
-        blocked, reason = passes_select_filter(
-            setup_class=SetupClass.BREAKOUT_RETEST.value,
-            market_state=MarketState.STRONG_TREND.value,
-            pair_quality_score=74.0,
-            quality_tier="B",
-            confidence=79.0,
-            r_multiple=1.2,
-            component_scores={"market": 17.0, "execution": 13.0},
-            higher_timeframe_aligned=True,
-        )
-        assert allowed is True
-        assert blocked is False
-        assert "threshold" in reason
 
 
 class TestMarketStateClassification:

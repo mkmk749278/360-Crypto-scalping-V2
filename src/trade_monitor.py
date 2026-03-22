@@ -666,7 +666,7 @@ class TradeMonitor:
             "360_SWING": "🏛️",
             "360_RANGE": "⚖️",
             "360_THE_TAPE": "🐋",
-            "360_SELECT": "🌹",
+            "360_GEM": "💎",
         }
         chan_emoji = chan_emojis.get(sig.channel, "📡")
         dir_emoji = "🚀" if sig.direction == Direction.LONG else "⬇️"
@@ -704,7 +704,7 @@ class TradeMonitor:
             "360_SWING": "🏛️",
             "360_RANGE": "⚖️",
             "360_THE_TAPE": "🐋",
-            "360_SELECT": "🌹",
+            "360_GEM": "💎",
         }
         chan_emoji = chan_emojis.get(sig.channel, "📡")
         dir_emoji = "🚀" if sig.direction == Direction.LONG else "⬇️"
