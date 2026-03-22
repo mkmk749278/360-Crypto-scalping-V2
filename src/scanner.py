@@ -14,8 +14,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from config import SEED_TIMEFRAMES, SIGNAL_SCAN_COOLDOWN_SECONDS
+from config import SCAN_MIN_VOLUME_USD, SEED_TIMEFRAMES, SIGNAL_SCAN_COOLDOWN_SECONDS
 from src.binance import BinanceClient
+from src.rate_limiter import rate_limiter
 from src.confidence import (
     ConfidenceInput,
     compute_confidence,
@@ -62,7 +63,15 @@ _SPREAD_CACHE_TTL: float = 30.0
 # Longer TTL for symbols that fail (e.g. futures-only on spot) to avoid
 # hammering the endpoint every cycle.
 _SPREAD_FAIL_CACHE_TTL: float = 300.0
-_MAX_ORDER_BOOK_FETCHES_PER_CYCLE: int = 5
+# Upper bound on order book fetches per scan cycle.  The rate limiter in
+# BinanceClient throttles requests globally, so this acts only as a final
+# safety net — not the primary budget enforcement mechanism.
+_MAX_ORDER_BOOK_FETCHES_PER_CYCLE: int = 50
+# Minimum remaining rate-limiter weight required before issuing another order
+# book fetch.  Each order book call costs 1 weight; we reserve 100 units as a
+# buffer for kline fetches, exchange-info calls, and WebSocket reconnects that
+# may occur concurrently — roughly 8% of the 1 200-weight Binance limit.
+_MIN_WEIGHT_FOR_ORDER_BOOK: int = 100
 
 # ADX threshold below which SCALP signals are suppressed during RANGING regime
 _RANGING_ADX_SUPPRESS_THRESHOLD: float = 15.0
@@ -272,13 +281,17 @@ class Scanner:
                     key=lambda kv: kv[1].volume_24h_usd,
                     reverse=True,
                 )
+                # Apply cheap in-memory pre-filters to reduce the number of
+                # symbols that reach expensive API calls (order book, klines).
+                # This keeps Binance weight consumption ~400/min for 200+ pairs.
+                filtered_pairs = self._prefilter_pairs(sorted_pairs)
                 sem = self._scan_semaphore
                 tasks = [
                     self._scan_symbol_bounded(sem, sym, info.volume_24h_usd)
-                    for sym, info in sorted_pairs
+                    for sym, info in filtered_pairs
                 ]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
-                for sym_info, result in zip(sorted_pairs, results):
+                for sym_info, result in zip(filtered_pairs, results):
                     if isinstance(result, Exception):
                         log.warning(
                             "Scan error for {} ({}): {}",
@@ -365,6 +378,63 @@ class Scanner:
         """
         return self._count_regime_flips(symbol, window_minutes) > max_flips
 
+    def _prefilter_pairs(
+        self, pairs: List[Tuple[str, Any]]
+    ) -> List[Tuple[str, Any]]:
+        """Return a cheaply-filtered subset of pairs for expensive API scans.
+
+        Applies three in-memory checks (zero API calls) before the main scan
+        loop creates tasks and acquires the concurrency semaphore:
+
+        1. **Volume filter** – skip symbols whose 24h USD volume is below
+           ``SCAN_MIN_VOLUME_USD``.  Thin markets rarely produce valid signals
+           and every API call they trigger wastes Binance weight budget.
+        2. **All-channel active-signal filter** – skip symbols that already
+           have an active signal on *every* channel we scan.  The per-channel
+           check inside :meth:`_should_skip_channel` would catch each one
+           individually, but pre-filtering avoids even building the scan context.
+        3. **All-channel cooldown filter** – skip symbols where every channel
+           is currently in cooldown, for the same reason as above.
+
+        Typically reduces 200+ symbols down to ~60-80 before any order-book or
+        kline fetches are triggered, keeping weight consumption ~400/min.
+        """
+        channel_names = [c.config.name for c in self.channels]
+        active_symbols_channels = {
+            (s.symbol, s.channel)
+            for s in self.router.active_signals.values()
+        }
+        result: List[Tuple[str, Any]] = []
+        skipped_volume = skipped_all_active = skipped_all_cooldown = 0
+
+        for sym, info in pairs:
+            # 1. Volume pre-filter
+            if info.volume_24h_usd < SCAN_MIN_VOLUME_USD:
+                skipped_volume += 1
+                continue
+            # 2. All channels already have an active signal for this symbol
+            if channel_names and all(
+                (sym, ch) in active_symbols_channels for ch in channel_names
+            ):
+                skipped_all_active += 1
+                continue
+            # 3. All channels are in cooldown for this symbol
+            if channel_names and all(
+                self._is_in_cooldown(sym, ch) for ch in channel_names
+            ):
+                skipped_all_cooldown += 1
+                continue
+            result.append((sym, info))
+
+        if skipped_volume or skipped_all_active or skipped_all_cooldown:
+            log.debug(
+                "Pre-filter: %d/%d symbols kept "
+                "(skipped %d low-volume, %d all-active, %d all-cooldown)",
+                len(result), len(pairs),
+                skipped_volume, skipped_all_active, skipped_all_cooldown,
+            )
+        return result
+
     async def _scan_symbol_bounded(self, sem: asyncio.Semaphore, symbol: str, volume_24h: float) -> None:
         """Acquire *sem* then delegate to :meth:`_scan_symbol`."""
         async with sem:
@@ -423,7 +493,16 @@ class Scanner:
         cached = self._order_book_cache.get(symbol)
         if cached and now < cached[1]:
             return cached[0]
+        # Guard 1: hard per-cycle cap (safety net; rate limiter is primary).
         if self._order_book_fetches_this_cycle >= _MAX_ORDER_BOOK_FETCHES_PER_CYCLE:
+            return spread_pct
+        # Guard 2: rate-limiter budget check — skip fetch when budget is low to
+        # preserve capacity for higher-priority calls (klines, exchange info).
+        if rate_limiter.remaining < _MIN_WEIGHT_FOR_ORDER_BOOK:
+            log.debug(
+                "Skipping order book fetch for %s – rate limiter budget low (%d remaining)",
+                symbol, rate_limiter.remaining,
+            )
             return spread_pct
         try:
             self._order_book_fetches_this_cycle += 1

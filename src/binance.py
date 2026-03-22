@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional
 import aiohttp
 
 from config import BINANCE_FUTURES_REST_BASE, BINANCE_REST_BASE
+from src.rate_limiter import rate_limiter
 from src.utils import get_logger
 
 log = get_logger("binance_client")
@@ -99,6 +100,11 @@ class BinanceClient:
         """
         session = await self._ensure_session()
         url = self._base_url + path
+
+        # Throttle proactively: wait until the shared rate-limiter budget has
+        # room for this request.  This prevents bursting 200+ requests at once
+        # and keeps weight consumption well under Binance's 1 200/min cap.
+        await rate_limiter.acquire(weight)
         self._consume_weight(weight)
 
         for attempt in range(_MAX_RETRIES):
@@ -116,6 +122,7 @@ class BinanceClient:
                             "x-mbx-used-weight-1m",
                             resp.headers.get("x-mbx-used-weight"),
                         )
+                        rate_limiter.update_from_header(raw_weight)
                         if raw_weight is not None:
                             try:
                                 self._used_weight = int(raw_weight)

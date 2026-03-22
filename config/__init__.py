@@ -95,6 +95,10 @@ PAIR_FETCH_INTERVAL_HOURS: int = int(os.getenv("PAIR_FETCH_INTERVAL_HOURS", "6")
 TOP_PAIRS_COUNT: int = int(os.getenv("TOP_PAIRS_COUNT", "50"))
 BATCH_REQUEST_DELAY: float = 0.75  # seconds between Binance REST calls
 NEW_PAIR_MIN_CONFIDENCE: float = 50.0  # lower cap until enough data
+# Minimum 24h USD volume for a symbol to be included in expensive API scans.
+# Symbols below this threshold are skipped by the pre-filter before any
+# order-book or kline fetches, reducing unnecessary weight consumption.
+SCAN_MIN_VOLUME_USD: float = float(os.getenv("SCAN_MIN_VOLUME_USD", "1000000"))
 
 
 # ---------------------------------------------------------------------------
