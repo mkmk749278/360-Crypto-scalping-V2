@@ -256,6 +256,15 @@ WS_HEARTBEAT_INTERVAL: int = 30  # seconds (spot)
 WS_HEARTBEAT_INTERVAL_FUTURES: int = int(os.getenv("WS_HEARTBEAT_INTERVAL_FUTURES", "60"))
 WS_RECONNECT_BASE_DELAY: float = 1.0
 WS_RECONNECT_MAX_DELAY: float = 60.0
+# Staleness multiplier: a connection is considered stale when
+# (now - last_pong) >= heartbeat_interval * multiplier.
+# Spot uses 10 (30 × 10 = 300 s).  Futures uses 15 (60 × 15 = 900 s) to
+# provide extra headroom during liquidation cascades (Extreme Fear events)
+# where Binance can delay PONG frames beyond the normal window.  The higher
+# futures value also breaks the exact 600 s = WS_ALERT_COOLDOWN coincidence
+# that was causing the repeating 10-minute drop/alert cycle.
+WS_STALENESS_MULTIPLIER: int = 10  # spot
+WS_STALENESS_MULTIPLIER_FUTURES: int = int(os.getenv("WS_STALENESS_MULTIPLIER_FUTURES", "15"))
 # Admin alert dedup window (seconds) — alerts are throttled to at most one per
 # 10-minute window per manager to avoid Telegram spam during prolonged outages.
 WS_ALERT_COOLDOWN: int = int(os.getenv("WS_ALERT_COOLDOWN", "600"))

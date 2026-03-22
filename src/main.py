@@ -14,10 +14,11 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import collections
 import os
 import signal
 import time
-from typing import Dict, List, Optional, Set
+from typing import Dict, Deque, List, Optional, Set
 
 from config import (
     PAIR_FETCH_INTERVAL_HOURS,
@@ -168,6 +169,13 @@ class CryptoSignalEngine:
         # WebSocket managers (set during boot)
         self._ws_spot: Optional[WebSocketManager] = None
         self._ws_futures: Optional[WebSocketManager] = None
+        # Dedicated liquidation WebSocket manager — forceOrder streams run in
+        # their own connection pool so that liquidation floods during Extreme
+        # Fear events cannot stall the kline WebSocket connections.
+        self._ws_futures_liq: Optional[WebSocketManager] = None
+        # Buffer for incoming forceOrder events — drained at the top of each
+        # scan cycle so that processing is never inline on the WS message loop.
+        self._pending_liquidations: Deque[LiquidationEvent] = collections.deque()
         self._tasks: List[asyncio.Task] = []
         self._shutdown_started: bool = False
         self._restart_lock = asyncio.Lock()
@@ -325,14 +333,18 @@ class CryptoSignalEngine:
                 self._order_flow_store.update_cvd_from_tick(symbol, vol_usd, 0.0)
 
         elif event == "forceOrder":
-            # Binance Futures liquidation event
+            # Buffer the liquidation event for deferred processing so that a
+            # flood of forceOrder messages during a liquidation cascade (e.g.
+            # Extreme Fear) does not block the WebSocket message loop and delay
+            # PONG updates.  The buffer is drained at the start of each scan
+            # cycle via _flush_pending_liquidations().
             order = data.get("o", {})
             liq_sym = order.get("s", "").upper()
             side = order.get("S", "")
             qty = float(order.get("q", 0))
             avg_price = float(order.get("ap") or order.get("p") or 0)
             if liq_sym and side and qty > 0 and avg_price > 0:
-                self._order_flow_store.add_liquidation(
+                self._pending_liquidations.append(
                     LiquidationEvent(
                         timestamp=time.monotonic(),
                         symbol=liq_sym,
@@ -345,6 +357,28 @@ class CryptoSignalEngine:
     # ------------------------------------------------------------------
     # Scanner loop (delegated to Scanner)
     # ------------------------------------------------------------------
+
+    def _flush_pending_liquidations(self) -> None:
+        """Drain the forceOrder buffer into the OrderFlowStore.
+
+        Called periodically from ``_liquidation_flush_loop`` so liquidation
+        events are processed in micro-batches rather than inline on the WS
+        message loop.  This prevents event-loop blocking during liquidation
+        cascades (e.g. Extreme Fear conditions) that would otherwise delay
+        PONG updates and trigger false staleness detections.
+        """
+        while self._pending_liquidations:
+            event = self._pending_liquidations.popleft()
+            try:
+                self._order_flow_store.add_liquidation(event)
+            except Exception as exc:
+                log.debug("Failed to add liquidation event: {}", exc)
+
+    async def _liquidation_flush_loop(self) -> None:
+        """Flush buffered forceOrder events every 100 ms."""
+        while True:
+            await asyncio.sleep(0.1)
+            self._flush_pending_liquidations()
 
     async def _scan_loop(self) -> None:
         """Periodic scan over all pairs / channels (delegated to Scanner)."""
@@ -386,6 +420,9 @@ class CryptoSignalEngine:
         if self._ws_futures:
             await self._ws_futures.stop()
             self._ws_futures = None
+        if self._ws_futures_liq:
+            await self._ws_futures_liq.stop()
+            self._ws_futures_liq = None
 
         await self._bootstrap.start_websockets()
         self._command_handler.ws_spot = self._ws_spot

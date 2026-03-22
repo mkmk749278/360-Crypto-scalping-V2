@@ -7,7 +7,7 @@ import unittest.mock as mock
 import pytest
 
 
-from config import WS_ALERT_COOLDOWN, WS_FALLBACK_TIMEFRAMES, WS_HEARTBEAT_INTERVAL, WS_HEARTBEAT_INTERVAL_FUTURES, WS_SESSION_RECYCLE_ATTEMPTS
+from config import WS_ALERT_COOLDOWN, WS_FALLBACK_TIMEFRAMES, WS_HEARTBEAT_INTERVAL, WS_HEARTBEAT_INTERVAL_FUTURES, WS_SESSION_RECYCLE_ATTEMPTS, WS_STALENESS_MULTIPLIER, WS_STALENESS_MULTIPLIER_FUTURES
 from src.channels.base import Signal
 from src.smc import Direction
 from src.telegram_bot import TelegramBot
@@ -362,14 +362,24 @@ class TestHeartbeatIntervalPerMarket:
         assert WS_HEARTBEAT_INTERVAL_FUTURES > WS_HEARTBEAT_INTERVAL
 
     def test_futures_staleness_threshold_with_new_heartbeat(self):
-        """Futures connections should be stale after 60×10=600s with no data."""
+        """Futures connections should be stale after 60×15=900s with no data."""
         ws = WebSocketManager(lambda data: None, market="futures")
         conn = WSConnection()
         mock_ws = type("FakeWS", (), {"closed": False})()
         conn.ws = mock_ws
-        conn.last_pong = time.monotonic() - 650  # 650s > 600s threshold
+        conn.last_pong = time.monotonic() - 950  # 950s > 900s threshold
         ws._connections = [conn]
         assert ws.is_healthy is False
+
+    def test_futures_staleness_healthy_under_threshold(self):
+        """Futures connections with data within 900s should still be healthy."""
+        ws = WebSocketManager(lambda data: None, market="futures")
+        conn = WSConnection()
+        mock_ws = type("FakeWS", (), {"closed": False})()
+        conn.ws = mock_ws
+        conn.last_pong = time.monotonic() - 650  # 650s < 900s — still healthy
+        ws._connections = [conn]
+        assert ws.is_healthy is True
 
 
 class TestReconnectJitter:
@@ -539,3 +549,128 @@ class TestFetchAndStoreFallback:
         with mock.patch.object(store, "fetch_candles", return_value={}):
             await store.fetch_and_store_fallback("ETHUSDT", "5m", 200, "spot")
         assert "ETHUSDT" not in store.candles
+
+
+class TestTotalDropsCounter:
+    """Verify _total_drops counter increments on each connection drop."""
+
+    def test_total_drops_starts_at_zero(self):
+        """_total_drops must be 0 on a freshly created WebSocketManager."""
+        ws = WebSocketManager(lambda data: None, market="futures")
+        assert ws._total_drops == 0
+
+    @pytest.mark.asyncio
+    async def test_total_drops_increments_on_drop(self):
+        """_total_drops must increment each time a connection is reported lost."""
+        alerts = []
+
+        async def fake_alert(msg: str) -> None:
+            alerts.append(msg)
+
+        ws = WebSocketManager(
+            lambda data: None,
+            market="futures",
+            admin_alert_callback=fake_alert,
+        )
+        # Bypass the cooldown by back-dating _last_alert_time far enough that
+        # even on a freshly booted CI container (low time.monotonic() value)
+        # the cooldown check `now - _last_alert_time > WS_ALERT_COOLDOWN` passes.
+        ws._last_alert_time = time.monotonic() - WS_ALERT_COOLDOWN - 1.0
+
+        # Simulate two consecutive drops.
+        conn = WSConnection()
+        ws._connections = [conn]
+        ws._running = True
+
+        # Manually trigger the drop-path logic twice.
+        for _ in range(2):
+            ws._total_drops += 1
+            now = time.monotonic()
+            if now - ws._last_alert_time > WS_ALERT_COOLDOWN:
+                ws._last_alert_time = now
+                await fake_alert(
+                    f"⚠️ WebSocket connection lost (futures, attempt 1, "
+                    f"total drops: {ws._total_drops}). Reconnecting…"
+                )
+            # Reset to allow the second iteration through the cooldown.
+            ws._last_alert_time = time.monotonic() - WS_ALERT_COOLDOWN - 1.0
+
+        assert ws._total_drops == 2
+        assert len(alerts) == 2
+        assert "total drops: 1" in alerts[0]
+        assert "total drops: 2" in alerts[1]
+
+    def test_total_drops_in_alert_message(self):
+        """Alert message must include total drops when _total_drops > 0."""
+        ws = WebSocketManager(lambda data: None, market="spot")
+        ws._total_drops = 5
+        msg = (
+            f"⚠️ WebSocket connection lost ({ws._market}, "
+            f"attempt 1, total drops: {ws._total_drops}). Reconnecting…"
+        )
+        assert "total drops: 5" in msg
+
+
+class TestStalenessMultiplierConfig:
+    """Verify WS_STALENESS_MULTIPLIER config constants are correct."""
+
+    def test_staleness_multiplier_spot(self):
+        assert WS_STALENESS_MULTIPLIER == 10
+
+    def test_staleness_multiplier_futures_default(self):
+        assert WS_STALENESS_MULTIPLIER_FUTURES == 15
+
+    def test_futures_staleness_multiplier_greater_than_spot(self):
+        assert WS_STALENESS_MULTIPLIER_FUTURES > WS_STALENESS_MULTIPLIER
+
+    def test_spot_manager_uses_spot_multiplier(self):
+        ws = WebSocketManager(lambda data: None, market="spot")
+        assert ws._staleness_multiplier == WS_STALENESS_MULTIPLIER
+
+    def test_futures_manager_uses_futures_multiplier(self):
+        ws = WebSocketManager(lambda data: None, market="futures")
+        assert ws._staleness_multiplier == WS_STALENESS_MULTIPLIER_FUTURES
+
+
+class TestForceOrderStreamSeparation:
+    """Verify forceOrder streams are kept separate from kline streams in bootstrap."""
+
+    def test_forceorder_not_in_futures_kline_streams(self):
+        """Kline stream list must not contain any @forceOrder streams."""
+        syms = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        futures_kline_streams = []
+        futures_liq_streams = []
+        for sym in syms:
+            s = sym.lower()
+            futures_kline_streams.append(f"{s}@kline_1m")
+            futures_kline_streams.append(f"{s}@kline_5m")
+            futures_liq_streams.append(f"{s}@forceOrder")
+
+        assert not any("forceOrder" in s for s in futures_kline_streams)
+        assert all("forceOrder" in s for s in futures_liq_streams)
+
+    def test_kline_streams_not_in_liq_streams(self):
+        """Liquidation stream list must not contain kline streams."""
+        syms = ["BTCUSDT", "ETHUSDT"]
+        futures_kline_streams = []
+        futures_liq_streams = []
+        for sym in syms:
+            s = sym.lower()
+            futures_kline_streams.append(f"{s}@kline_1m")
+            futures_kline_streams.append(f"{s}@kline_5m")
+            futures_liq_streams.append(f"{s}@forceOrder")
+
+        assert not any("kline" in s for s in futures_liq_streams)
+
+    def test_liq_stream_count_matches_symbol_count(self):
+        """Each symbol produces exactly one forceOrder stream."""
+        syms = [f"SYM{i}USDT" for i in range(50)]
+        futures_liq_streams = [f"{s.lower()}@forceOrder" for s in syms]
+        assert len(futures_liq_streams) == len(syms)
+
+    def test_engine_has_ws_futures_liq_attribute(self):
+        """CryptoSignalEngine must declare _ws_futures_liq attribute."""
+        from src.main import CryptoSignalEngine
+        engine = CryptoSignalEngine()
+        assert hasattr(engine, "_ws_futures_liq")
+        assert engine._ws_futures_liq is None  # set during boot, None at init

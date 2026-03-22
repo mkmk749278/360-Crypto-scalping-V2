@@ -35,6 +35,8 @@ from config import (
     WS_RECONNECT_BASE_DELAY,
     WS_RECONNECT_MAX_DELAY,
     WS_SESSION_RECYCLE_ATTEMPTS,
+    WS_STALENESS_MULTIPLIER,
+    WS_STALENESS_MULTIPLIER_FUTURES,
 )
 from src.utils import get_logger
 
@@ -63,6 +65,7 @@ class WebSocketManager:
         self._base_url = BINANCE_WS_BASE if market == "spot" else BINANCE_FUTURES_WS_BASE
         self._rest_base_url = BINANCE_REST_BASE if market == "spot" else BINANCE_FUTURES_REST_BASE
         self._heartbeat_interval = WS_HEARTBEAT_INTERVAL_FUTURES if market == "futures" else WS_HEARTBEAT_INTERVAL
+        self._staleness_multiplier = WS_STALENESS_MULTIPLIER_FUTURES if market == "futures" else WS_STALENESS_MULTIPLIER
         self._connections: List[WSConnection] = []
         self._session: Optional[aiohttp.ClientSession] = None
         self._running = False
@@ -73,6 +76,7 @@ class WebSocketManager:
         self._watchdog_task: Optional[asyncio.Task] = None
         self._admin_alert = admin_alert_callback
         self._last_alert_time: float = 0.0
+        self._total_drops: int = 0
         self._data_store = data_store
 
     # ------------------------------------------------------------------
@@ -266,14 +270,19 @@ class WebSocketManager:
                 log.warning("WS connection error: {}", exc)
             if self._running:
                 self._set_connection_degraded(conn, True)
+                self._total_drops += 1
                 if self._admin_alert:
                     now = time.monotonic()
                     if now - self._last_alert_time > WS_ALERT_COOLDOWN:
+                        # Update timestamp *before* creating the task so that
+                        # other connections resuming in the same event-loop tick
+                        # see the updated value and skip their own alert.
                         self._last_alert_time = now
                         asyncio.create_task(
                             self._admin_alert(
                                 f"⚠️ WebSocket connection lost ({self._market}, "
-                                f"attempt {conn.reconnect_attempts + 1}). Reconnecting…"
+                                f"attempt {conn.reconnect_attempts + 1}, "
+                                f"total drops: {self._total_drops}). Reconnecting…"
                             )
                         )
                 delay = min(
@@ -343,7 +352,7 @@ class WebSocketManager:
                 now = time.monotonic()
                 for conn in self._connections:
                     if conn.ws and not conn.ws.closed:
-                        if (now - conn.last_pong) >= self._heartbeat_interval * 10:
+                        if (now - conn.last_pong) >= self._heartbeat_interval * self._staleness_multiplier:
                             log.warning(
                                 "Watchdog: stale WS connection ({:.0f}s since last data) — force-closing to trigger reconnect",
                                 now - conn.last_pong,
@@ -399,6 +408,6 @@ class WebSocketManager:
         if not open_connections or len(open_connections) != len(self._connections):
             return False
         return all(
-            (now - c.last_pong) < self._heartbeat_interval * 10
+            (now - c.last_pong) < self._heartbeat_interval * self._staleness_multiplier
             for c in open_connections
         )

@@ -173,6 +173,7 @@ class Bootstrap:
             asyncio.create_task(engine._free_channel_loop()),
             asyncio.create_task(engine._snapshot_loop()),
             asyncio.create_task(engine._macro_watchdog.start()),
+            asyncio.create_task(engine._liquidation_flush_loop()),
         ]
 
         # OI poller – background REST polling for Binance Futures Open Interest
@@ -195,6 +196,8 @@ class Bootstrap:
             await engine._ws_spot.stop()
         if engine._ws_futures:
             await engine._ws_futures.stop()
+        if getattr(engine, "_ws_futures_liq", None):
+            await engine._ws_futures_liq.stop()
         try:
             await engine.data_store.save_snapshot()
         except Exception as exc:
@@ -239,7 +242,8 @@ class Bootstrap:
         """Subscribe to WebSocket streams for all tracked pairs."""
         engine = self._engine
         spot_streams: List[str] = []
-        futures_streams: List[str] = []
+        futures_kline_streams: List[str] = []
+        futures_liq_streams: List[str] = []
 
         for sym in engine.pair_mgr.spot_symbols[:50]:
             s = sym.lower()
@@ -250,13 +254,14 @@ class Bootstrap:
         futures_syms = engine.pair_mgr.futures_symbols[:50]
         for sym in futures_syms:
             s = sym.lower()
-            futures_streams.append(f"{s}@kline_1m")
-            futures_streams.append(f"{s}@kline_5m")
-            # Skip @trade for futures — high-volume trade streams cause
-            # connection instability; kline streams suffice for all
-            # futures channel strategies.
-            # Subscribe to forceOrder (liquidation) stream for OI-squeeze detection
-            futures_streams.append(f"{s}@forceOrder")
+            futures_kline_streams.append(f"{s}@kline_1m")
+            futures_kline_streams.append(f"{s}@kline_5m")
+            # Separate @forceOrder (liquidation) streams into their own pool
+            # to prevent liquidation cascades from starving kline connections.
+            # During Extreme Fear events, the flood of forceOrder events across
+            # 50 symbols creates event-loop pressure that delays last_pong
+            # updates on kline connections, causing false staleness detections.
+            futures_liq_streams.append(f"{s}@forceOrder")
 
         engine._ws_spot = WebSocketManager(
             engine._on_ws_message,
@@ -270,11 +275,21 @@ class Bootstrap:
             admin_alert_callback=engine.telegram.send_admin_alert,
             data_store=engine.data_store,
         )
+        # Dedicated liquidation WebSocket manager — uses a separate connection
+        # pool so that forceOrder event floods cannot stall kline connections.
+        engine._ws_futures_liq = WebSocketManager(
+            engine._on_ws_message,
+            market="futures",
+            admin_alert_callback=engine.telegram.send_admin_alert,
+            data_store=engine.data_store,
+        )
 
         if spot_streams:
             await engine._ws_spot.start(spot_streams)
-        if futures_streams:
-            await engine._ws_futures.start(futures_streams)
+        if futures_kline_streams:
+            await engine._ws_futures.start(futures_kline_streams)
+        if futures_liq_streams:
+            await engine._ws_futures_liq.start(futures_liq_streams)
 
         # Set critical pairs for REST fallback during WS outages
         top_spot = engine.pair_mgr.spot_symbols[:10]
