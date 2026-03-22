@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -73,10 +73,19 @@ class GemScanner:
         )
         self._daily_counts: Dict[str, Tuple[date, int]] = {}
         self._last_scan: float = 0.0
+        self._gem_pairs: List[str] = []
 
     @property
     def enabled(self) -> bool:
         return self._config.enabled
+
+    def set_gem_pairs(self, symbols: List[str]) -> None:
+        """Store the gem-specific pair list being tracked."""
+        self._gem_pairs = list(symbols)
+
+    def get_scan_pair_count(self) -> int:
+        """Return how many pairs the gem scanner is currently tracking."""
+        return len(self._gem_pairs)
 
     def enable(self) -> None:
         self._config.enabled = True
@@ -278,6 +287,7 @@ class GemScanner:
         day_key = "360_GEM"
         entry = self._daily_counts.get(day_key)
         today_count = entry[1] if entry and entry[0] == today else 0
+        pair_count = self.get_scan_pair_count()
         lines = [
             f"💎 *360\\_GEM Scanner* — {status}",
             "",
@@ -287,6 +297,7 @@ class GemScanner:
             f"• Min volume surge: `{cfg.min_volume_ratio:.1f}x`",
             f"• Max daily signals: `{cfg.max_daily_signals}`",
             f"• Scan interval: `{cfg.scan_interval_hours}h`",
+            f"• Pairs tracked: `{pair_count}`",
             "",
             f"📊 *Today:* {today_count}/{cfg.max_daily_signals} signals",
         ]

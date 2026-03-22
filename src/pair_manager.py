@@ -13,6 +13,8 @@ from typing import Dict, List, Optional
 
 from config import (
     BATCH_REQUEST_DELAY,
+    GEM_MIN_VOLUME_USD,
+    GEM_PAIRS_COUNT,
     PAIR_FETCH_INTERVAL_HOURS,
     TOP_PAIRS_COUNT,
 )
@@ -145,6 +147,45 @@ class PairManager:
                 await asyncio.sleep(BATCH_REQUEST_DELAY * 0.1)
         except Exception as exc:
             log.error("fetch_top_futures_pairs error: %s", exc)
+        return pairs
+
+    async def fetch_gem_universe(self, limit: int = GEM_PAIRS_COUNT) -> List[PairInfo]:
+        """Fetch a wider set of USDT spot pairs for gem scanning.
+
+        This is a **separate** fetch from the main pair universe — it uses a
+        lower minimum volume threshold (``GEM_MIN_VOLUME_USD``) and returns up
+        to *limit* pairs sorted by 24h USD volume descending.  The result is
+        only used by the gem scanner; it does not modify ``self.pairs``.
+        """
+        pairs: List[PairInfo] = []
+        try:
+            data = await self._spot_client._get("/api/v3/ticker/24hr", weight=40)
+            if data is None:
+                log.warning("Gem universe fetch returned no data")
+                return pairs
+
+            usdt_pairs = [
+                t for t in data
+                if t.get("symbol", "").endswith("USDT")
+                and t.get("symbol", "") not in _STABLECOIN_BLACKLIST
+                and float(t.get("quoteVolume", 0)) >= GEM_MIN_VOLUME_USD
+            ]
+            usdt_pairs.sort(key=lambda t: float(t["quoteVolume"]), reverse=True)
+
+            for t in usdt_pairs[:limit]:
+                sym = t["symbol"]
+                pairs.append(PairInfo(
+                    symbol=sym,
+                    market="spot",
+                    base_asset=sym.replace("USDT", ""),
+                    quote_asset="USDT",
+                    volume_24h_usd=float(t.get("quoteVolume", 0)),
+                ))
+                await asyncio.sleep(BATCH_REQUEST_DELAY * 0.1)
+        except Exception as exc:
+            log.error("fetch_gem_universe error: %s", exc)
+        log.info("Gem universe fetched – %d pairs (limit=%d, min_vol=$%,.0f)",
+                 len(pairs), limit, GEM_MIN_VOLUME_USD)
         return pairs
 
     async def refresh_pairs(

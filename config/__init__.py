@@ -68,6 +68,13 @@ GEM_MAX_RANGE_PCT: float = float(os.getenv("GEM_MAX_RANGE_PCT", "40.0"))
 GEM_MIN_VOLUME_RATIO: float = float(os.getenv("GEM_MIN_VOLUME_RATIO", "1.5"))
 GEM_SCAN_INTERVAL_HOURS: int = int(os.getenv("GEM_SCAN_INTERVAL_HOURS", "6"))
 GEM_MAX_DAILY_SIGNALS: int = int(os.getenv("GEM_MAX_DAILY_SIGNALS", "3"))
+# Separate, wider pair universe for the gem scanner (small-cap gems like LYN)
+GEM_PAIRS_COUNT: int = int(os.getenv("GEM_PAIRS_COUNT", "200"))
+GEM_MIN_VOLUME_USD: float = float(os.getenv("GEM_MIN_VOLUME_USD", "250000"))
+# Chart image generation for gem signals (requires mplfinance)
+GEM_CHART_ENABLED: bool = os.getenv("GEM_CHART_ENABLED", "true").lower() in (
+    "true", "1", "yes"
+)
 
 # ---------------------------------------------------------------------------
 # Macro Watchdog – async background task for global market-event alerts

@@ -304,3 +304,32 @@ class TestGemScannerWeeklyCandles:
         # (MA crossover may or may not fire depending on candle shape)
         if result is not None:
             assert result.drawdown_pct >= 70.0
+
+
+class TestGemScannerPairCount:
+    def test_initial_pair_count_is_zero(self):
+        """Before set_gem_pairs is called, get_scan_pair_count returns 0."""
+        scanner = GemScanner(GemScannerConfig(enabled=True))
+        assert scanner.get_scan_pair_count() == 0
+
+    def test_set_gem_pairs_updates_count(self):
+        """set_gem_pairs stores the list and get_scan_pair_count reflects it."""
+        scanner = GemScanner(GemScannerConfig(enabled=True))
+        symbols = ["LYNUSDT", "TAOUSDT", "DOGEUSDT"]
+        scanner.set_gem_pairs(symbols)
+        assert scanner.get_scan_pair_count() == 3
+
+    def test_set_gem_pairs_overwrites_previous(self):
+        """Calling set_gem_pairs twice replaces the previous list."""
+        scanner = GemScanner(GemScannerConfig(enabled=True))
+        scanner.set_gem_pairs(["AAAUSDT", "BBBUSDT"])
+        scanner.set_gem_pairs(["CCCUSDT"])
+        assert scanner.get_scan_pair_count() == 1
+
+    def test_status_text_includes_pair_count(self):
+        """status_text includes the number of pairs being tracked."""
+        scanner = GemScanner(GemScannerConfig(enabled=True, max_daily_signals=3))
+        scanner.set_gem_pairs(["LYNUSDT", "TAOUSDT", "DOGEUSDT", "SOLUSDT"])
+        text = scanner.status_text()
+        assert "4" in text
+        assert "Pairs" in text or "pairs" in text.lower()

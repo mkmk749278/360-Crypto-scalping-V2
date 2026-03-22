@@ -126,6 +126,73 @@ class TelegramBot:
             return await self.send_message(TELEGRAM_ADMIN_CHAT_ID, f"🔔 *Admin Alert*\n{text}")
         return False
 
+    async def send_photo(self, chat_id: str, photo_bytes: bytes, caption: str = "") -> bool:
+        """Send a photo to *chat_id* using multipart form data. Returns True on success.
+
+        Retry behaviour mirrors ``send_message``:
+        * **Rate limit** (429): waits ``parameters.retry_after`` seconds, then retries.
+        * **Server errors** (5xx): exponential back-off (1 s, 2 s, 4 s).
+        * **Timeout**: exponential back-off, up to 3 total attempts.
+        * **Other 4xx**: returned immediately as False.
+        """
+        if not self._token:
+            log.debug("Telegram token not configured – photo not sent")
+            return False
+        session = await self._ensure_session()
+        url = f"{self._base}/sendPhoto"
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                form = aiohttp.FormData()
+                form.add_field("chat_id", chat_id)
+                form.add_field("photo", photo_bytes, filename="chart.png", content_type="image/png")
+                if caption:
+                    form.add_field("caption", caption)
+                    form.add_field("parse_mode", "Markdown")
+                async with session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    if resp.status == 200:
+                        return True
+                    body = await resp.text()
+                    log.warning("Telegram sendPhoto failed (%s): %s", resp.status, body)
+
+                    if resp.status == 429:
+                        try:
+                            data = json.loads(body)
+                            retry_after = float(data.get("parameters", {}).get("retry_after", 1))
+                        except (json.JSONDecodeError, AttributeError, TypeError):
+                            retry_after = 1.0
+                        log.info(
+                            "Telegram rate limit (429) – waiting %.1fs before retry (attempt %d/%d)",
+                            retry_after, attempt + 1, max_attempts,
+                        )
+                        await asyncio.sleep(retry_after)
+                        continue
+
+                    if resp.status >= 500:
+                        wait = 2 ** attempt
+                        log.info(
+                            "Telegram server error (%d) – retrying in %ds (attempt %d/%d)",
+                            resp.status, wait, attempt + 1, max_attempts,
+                        )
+                        await asyncio.sleep(wait)
+                        continue
+
+                    return False
+
+            except asyncio.TimeoutError:
+                wait = 2 ** attempt
+                log.warning(
+                    "Telegram sendPhoto timeout – retrying in %ds (attempt %d/%d)",
+                    wait, attempt + 1, max_attempts,
+                )
+                await asyncio.sleep(wait)
+                continue
+            except Exception as exc:
+                log.error("Telegram sendPhoto error: %s", exc)
+                return False
+
+        return False
+
     # ------------------------------------------------------------------
     # Rich signal formatting
     # ------------------------------------------------------------------
