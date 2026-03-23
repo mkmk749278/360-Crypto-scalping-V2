@@ -393,7 +393,7 @@ INVALIDATION_MIN_AGE_SECONDS: Dict[str, int] = {
 
 # Momentum threshold below which a signal is considered to have lost its thesis.
 # Per-channel to account for different timeframe noise levels.
-# TAPE uses 1m candles which have rapid momentum oscillation — use a lower threshold.
+# SCALP uses 1m/5m candles which have rapid momentum oscillation — use a lower threshold.
 INVALIDATION_MOMENTUM_THRESHOLD: Dict[str, float] = {
     "360_SCALP": float(os.getenv("INVALIDATION_MOMENTUM_THRESHOLD_SCALP", "0.10")),
     "360_SWING": float(os.getenv("INVALIDATION_MOMENTUM_THRESHOLD_SWING", "0.20")),

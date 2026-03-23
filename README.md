@@ -1,6 +1,6 @@
 # 360-Crypto-Eye-Scalping — Ultimate Institutional AI Signal Engine
 
-An asynchronous Python crypto signal engine that detects **Smart Money Concepts (SMC)** via Binance WebSockets and REST APIs, integrates AI-driven insights (news sentiment, social sentiment, whale flows), calculates dynamic confidence scores (0–100), and routes high-confidence signals to **4 specialized Telegram channels**.
+An asynchronous Python crypto signal engine that detects **Smart Money Concepts (SMC)** via Binance WebSockets and REST APIs, integrates AI-driven insights (news sentiment, social sentiment, whale flows), calculates dynamic confidence scores (0–100), and routes high-confidence signals to **4 specialized Telegram channels** (SCALP, SWING, SPOT, GEM).
 
 ---
 
@@ -21,7 +21,7 @@ Binance WS ──► WebSocketManager (multi-conn, heartbeat, auto-reconnect)
            └───────────┤────────────┘
                        ▼
                  Channel Strategies
-         (SCALP · SWING · RANGE · THE_TAPE)
+         (SCALP · SWING · SPOT · GEM)
                        │
                ConfidenceScorer (0–100)
                        │
@@ -31,8 +31,8 @@ Binance WS ──► WebSocketManager (multi-conn, heartbeat, auto-reconnect)
                  SignalRouter ──► Telegram Channels
                        │             ├─ ⚡ 360_SCALP
                        │             ├─ 🏛️ 360_SWING
-                       │             ├─ ⚖️ 360_RANGE
-                       │             ├─ 🐋 360_THE_TAPE
+                       │             ├─ 📈 360_SPOT
+                       │             ├─ 💎 360_GEM
                        │             └─ 🆓 Free Channel
                        ▼
                  TradeMonitor
@@ -51,7 +51,7 @@ Binance WS ──► WebSocketManager (multi-conn, heartbeat, auto-reconnect)
 | Feature | Module | Description |
 |---|---|---|
 | **SMC Detection** | `src/smc.py` | Liquidity Sweeps, Market Structure Shifts (MSS), Fair Value Gaps (FVG) |
-| **4 Channels** | `src/channels/` | SCALP (M1/M5), SWING (H1/H4), RANGE (M15), THE_TAPE (Tick) |
+| **4 Channels** | `src/channels/` | SCALP (M1/M5), SWING (H1/H4), SPOT (H4/D1), GEM (D1/W1) |
 | **AI Modules** | `src/ai_engine.py` | CryptoPanic news sentiment, LunarCrush social sentiment, Alternative.me Fear & Greed, whale detection |
 | **Confidence Scoring** | `src/confidence.py` | Multi-layer 0–100 with 7 sub-components |
 | **Dynamic Pairs** | `src/pair_manager.py` | Auto-fetch top 50–100 Spot & Futures pairs |
@@ -71,7 +71,7 @@ Binance WS ──► WebSocketManager (multi-conn, heartbeat, auto-reconnect)
 | **On-Chain Analysis** | `src/onchain.py` | On-chain data integration (whale movements, exchange flows). |
 | **Market Regime Detection** | `src/regime.py` | Classifies current market regime (trending, ranging, volatile) to adapt strategy behavior. |
 | **Cross-Pair Correlation** | `src/correlation.py` | Analyzes correlation between pairs to avoid overexposure and improve diversification. |
-| **DCA Engine** | `src/dca.py` | Dollar-cost averaging module for the RANGE channel's grid-based entries. |
+| **DCA Engine** | `src/dca.py` | Dollar-cost averaging module for SPOT and SWING channel DCA entries. |
 | **Performance Metrics** | `src/performance_metrics.py` | Sharpe ratio, Sortino ratio, and other quantitative portfolio metrics. |
 | **Exchange Abstraction** | `src/exchange.py` | Unified exchange interface abstracting Binance-specific API calls. |
 | **Redis Caching** | `src/redis_client.py` | Optional Redis-backed caching layer for signal state and AI results. |
@@ -92,16 +92,17 @@ Binance WS ──► WebSocketManager (multi-conn, heartbeat, auto-reconnect)
 - **Filters**: EMA200, Bollinger rejection, ADX 20–40, spread < 0.02%
 - **Risk**: SL 0.2–0.5%, TP1 1.5R, TP2 3R, TP3 5R, Trailing 2.5×ATR
 
-### ⚖️ 360_RANGE — M15 Mean-Reversion
-- **Trigger**: ADX < 20 + Bollinger Band rejection
-- **Filters**: SMA trend, RSI mean-reversion, ATR volatility
-- **Risk**: SL 0.1–0.2%, TP1 1R, TP2 1.5R, Trailing 1×ATR
-- **DCA**: Enabled (50/50 split, zone 25–60% of SL distance)
+### 📈 360_SPOT — H4/D1 Spot DCA Accumulation
+- **Trigger**: H4/D1 structure + DCA zone detection
+- **Filters**: ADX 0–100, spread < 0.02%, volume > $1M
+- **Risk**: SL 0.5–2%, TP1 2R, TP2 5R, TP3 10R, Trailing 3×ATR
+- **DCA**: Enabled (60/40 weight split, zone 30–70% of SL distance, min momentum 0.2)
 
-### 🐋 360_THE_TAPE — Tick/Data Whale Tracking
-- **Trigger**: Trade > 1M USD or Volume Delta > 2× + Min 2× flow delta ratio
-- **Filters**: Order-book imbalance (1.5×), whale detection, AI sentiment, spread < 0.02%
-- **Risk**: SL 0.1–0.3%, TP1 1.5R, TP2 3R, TP3 5R, Trailing 2.5×ATR
+### 💎 360_GEM — D1/W1 Macro Reversal Scanner
+- **Trigger**: Deeply discounted altcoins showing early reversal signals
+- **Filters**: ATH drawdown analysis, accumulation base detection, volume surge
+- **Risk**: SL 10–30%, TP1 2R, TP2 5R, TP3 10R, Trailing 3×ATR
+- **Target**: Previous ATH region — potential x10+ returns
 
 ## Paper Trading
 
@@ -313,15 +314,14 @@ src/
   onchain.py           # On-chain data integration (whale/exchange flows)
   regime.py            # Market regime classification
   correlation.py       # Cross-pair correlation analysis
-  dca.py               # DCA engine for RANGE channel grid entries
+  dca.py               # DCA engine for SPOT and SWING channel entries
   redis_client.py      # Optional Redis caching layer
   state_cache.py       # In-memory state caching for scanner loop
   channels/
     base.py            # Signal model & base strategy
     scalp.py           # 360_SCALP strategy
     swing.py           # 360_SWING strategy
-    range_channel.py   # 360_RANGE strategy
-    tape.py            # 360_THE_TAPE strategy
+    spot.py            # 360_SPOT strategy
 tests/
   test_indicators.py
   test_smc.py

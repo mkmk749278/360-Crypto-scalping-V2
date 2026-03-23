@@ -11,8 +11,8 @@ All icons are self-contained, scalable (512×512), and optimised for Telegram pr
 |------|---------|-------|-------|--------|
 | `scalp.svg` | **360_SCALP** | ⚡ | High-Frequency Scalping | Gold + Cyan on dark `#0A0A1A` |
 | `swing.svg` | **360_SWING** | 🏛️ | Institutional Swing | Gold + Royal Blue on dark navy `#0A0A2E` |
-| `range.svg` | **360_RANGE** | ⚖️ | Mean-Reversion | Gold + Teal on dark `#0A1A1A` |
-| `tape.svg` | **360_THE_TAPE** | 🐋 | Whale Tracking | Gold + Deep Blue on ocean `#050520` |
+| `spot.svg` | **360_SPOT** | 📈 | Spot DCA Accumulation | Gold + Green on dark `#0A1A0A` |
+| `gem.svg` | **360_GEM** | 💎 | Macro Reversal Scanner | Gold + Purple on dark `#1A0A2E` |
 | `main_logo.svg` | **360 CRYPTO EYE** | 🔮 | Main Brand Logo | Gold + Electric Blue on black `#0A0A0A` |
 
 ---
@@ -63,6 +63,6 @@ Or inline for CSS control:
 | Gold Dark | `#B8860B` | Shadows, depth on gold elements |
 | Cyan | `#00E5FF` | SCALP channel accent |
 | Royal Blue | `#1A47B8` | SWING channel accent |
-| Teal | `#00BFA5` | RANGE channel accent |
-| Deep Blue | `#0040FF` | THE TAPE channel accent |
+| Green | `#00C853` | SPOT channel accent |
+| Purple | `#7C4DFF` | GEM channel accent |
 | Electric Blue | `#00A3FF` | Main logo / brand accent |
