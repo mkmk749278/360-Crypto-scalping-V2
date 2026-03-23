@@ -407,6 +407,14 @@ def execution_quality_check(
         anchor = bb_mid or sweep_level or signal.entry
         trigger_confirmed = market_state == MarketState.CLEAN_RANGE and bool(smc_data.get("sweeps"))
         note = "Fade only after exhaustion is obvious and reclaim begins."
+    elif setup == SetupClass.RANGE_FADE:
+        anchor = _safe_float(primary.get("bb_lower_last") if signal.direction == Direction.LONG else primary.get("bb_upper_last"), signal.entry)
+        trigger_confirmed = market_state in (MarketState.CLEAN_RANGE, MarketState.DIRTY_RANGE) and abs(signal.entry - anchor) <= atr_val * 0.8
+        note = "Fade at band edge only; avoid mid-range entries."
+    elif setup == SetupClass.WHALE_MOMENTUM:
+        anchor = _safe_float(primary.get("ema9_last"), ema_anchor)
+        trigger_confirmed = abs(_safe_float(primary.get("momentum_last"))) >= 0.3
+        note = "Whale flow active; keep trailing stops tight and do not chase extensions."
     else:
         anchor = ema_anchor
         trigger_confirmed = (
@@ -423,6 +431,8 @@ def execution_quality_check(
         SetupClass.RANGE_REJECTION: 1.2,
         SetupClass.MOMENTUM_EXPANSION: 1.0,
         SetupClass.EXHAUSTION_FADE: 1.0,
+        SetupClass.RANGE_FADE: 1.3,
+        SetupClass.WHALE_MOMENTUM: 1.2,
     }[setup]
     passed = trigger_confirmed and extension_ratio <= max_extension
     zone_low = min(anchor, signal.entry)

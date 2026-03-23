@@ -138,6 +138,51 @@ class TestExecutionAndRiskChecks:
         assert result.passed is False
         assert "trigger" in result.reason
 
+    def test_range_fade_no_key_error(self):
+        """RANGE_FADE must not raise KeyError — this was the P0 production bug."""
+        signal = _signal(channel="360_SCALP", direction=Direction.LONG)
+        # entry near bb_lower (98.0) in a CLEAN_RANGE — should pass
+        signal.entry = 98.5
+        result = execution_quality_check(signal, _indicators(), _smc(), SetupClass.RANGE_FADE, MarketState.CLEAN_RANGE)
+        assert result.trigger_confirmed is True
+        assert result.passed is True
+        assert "band edge" in result.execution_note
+
+    def test_range_fade_mid_range_rejected(self):
+        """RANGE_FADE entry far from band edge should be rejected (trigger not confirmed)."""
+        signal = _signal(channel="360_SCALP", direction=Direction.LONG)
+        # entry at 101.0 which is near bb_mid (101.0), far from bb_lower (98.0) — trigger should fail
+        signal.entry = 101.0
+        result = execution_quality_check(signal, _indicators(), _smc(), SetupClass.RANGE_FADE, MarketState.CLEAN_RANGE)
+        assert result.passed is False
+
+    def test_range_fade_dirty_range_accepted(self):
+        """RANGE_FADE should also trigger-confirm in DIRTY_RANGE, not just CLEAN_RANGE."""
+        signal = _signal(channel="360_SCALP", direction=Direction.LONG)
+        signal.entry = 98.5
+        result = execution_quality_check(signal, _indicators(), _smc(), SetupClass.RANGE_FADE, MarketState.DIRTY_RANGE)
+        assert result.trigger_confirmed is True
+        assert result.passed is True
+
+    def test_whale_momentum_no_key_error(self):
+        """WHALE_MOMENTUM must not raise KeyError — this was the P0 production bug."""
+        signal = _signal(channel="360_SCALP")
+        indicators = _indicators()
+        indicators["5m"]["momentum_last"] = 0.5  # >= 0.3 threshold
+        result = execution_quality_check(signal, indicators, _smc(), SetupClass.WHALE_MOMENTUM, MarketState.BREAKOUT_EXPANSION)
+        assert result.trigger_confirmed is True
+        assert result.passed is True
+        assert "trailing stops" in result.execution_note
+
+    def test_whale_momentum_low_momentum_rejected(self):
+        """WHALE_MOMENTUM with momentum below 0.3 should not confirm trigger."""
+        signal = _signal(channel="360_SCALP")
+        indicators = _indicators()
+        indicators["5m"]["momentum_last"] = 0.1  # below 0.3 threshold
+        result = execution_quality_check(signal, indicators, _smc(), SetupClass.WHALE_MOMENTUM, MarketState.STRONG_TREND)
+        assert result.trigger_confirmed is False
+        assert result.passed is False
+
     def test_structure_first_risk_plan_updates_targets(self):
         signal = _signal(channel="360_SWING")
         risk = build_risk_plan(signal, _indicators(), {"1h": _candles()}, _smc(), SetupClass.TREND_PULLBACK_CONTINUATION, 0.008)
