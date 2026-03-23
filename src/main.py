@@ -38,7 +38,7 @@ from src.historical_data import HistoricalDataStore
 from src.onchain import OnChainClient
 from src.openai_evaluator import OpenAIEvaluator
 from src.order_flow import LiquidationEvent, OrderFlowStore, OIPoller
-from src.pair_manager import PairManager
+from src.pair_manager import PairManager, PairTier
 from src.paper_portfolio import PaperPortfolioManager
 from src.performance_tracker import PerformanceTracker
 from src.predictive_ai import PredictiveEngine
@@ -428,21 +428,38 @@ class CryptoSignalEngine:
         self._command_handler.ws_futures = self._ws_futures
 
     async def _pair_refresh_loop(self) -> None:
-        """Periodically refresh pairs and seed any newly discovered symbols."""
-        _MAX_NEW_SEEDS_PER_CYCLE = 10
+        """Periodically refresh pairs, seed new ones, and prune removed ones."""
         while True:
             await asyncio.sleep(PAIR_FETCH_INTERVAL_HOURS * 3600)
             try:
                 old_spot, old_futures = self._current_ws_symbol_sets()
-                new_symbols = await self.pair_mgr.refresh_pairs()
+                new_symbols, removed_symbols = await self.pair_mgr.refresh_pairs()
+
+                # Handle removed (delisted / dropped) pairs
+                if removed_symbols:
+                    log.info(
+                        "Pair pruning: removed %d pairs from universe",
+                        len(removed_symbols),
+                    )
+                    for sym in removed_symbols:
+                        self.data_store.candles.pop(sym, None)
+                    await self.telegram.send_admin_alert(
+                        f"📉 Pair universe pruned: {len(removed_symbols)} pairs removed "
+                        f"(e.g. {', '.join(removed_symbols[:5])})"
+                    )
+
+                # Seed new pairs — all Tier 1 and Tier 2 pairs (skip Tier 3)
                 if new_symbols:
                     log.info(
                         "Discovered %d new pairs — seeding historical data",
                         len(new_symbols),
                     )
-                for sym in new_symbols[:_MAX_NEW_SEEDS_PER_CYCLE]:
+                for sym in new_symbols:
                     info = self.pair_mgr.pairs.get(sym)
                     if info is None:
+                        continue
+                    # Tier 3 pairs receive only lightweight scans — no full seed
+                    if info.tier == PairTier.TIER3:
                         continue
                     try:
                         await self.data_store.seed_symbol(sym, info.market)
@@ -450,15 +467,9 @@ class CryptoSignalEngine:
                             self.pair_mgr.record_candles(
                                 sym, tf_name, len(data.get("close", []))
                             )
-                        log.info("Seeded new pair %s (%s)", sym, info.market)
+                        log.info("Seeded new pair %s (%s, %s)", sym, info.market, info.tier)
                     except Exception as exc:
                         log.error("Failed to seed new pair %s: %s", sym, exc)
-                if len(new_symbols) > _MAX_NEW_SEEDS_PER_CYCLE:
-                    log.warning(
-                        "Deferred seeding for %d new pairs (max %d per cycle)",
-                        len(new_symbols) - _MAX_NEW_SEEDS_PER_CYCLE,
-                        _MAX_NEW_SEEDS_PER_CYCLE,
-                    )
                 await self._restart_websockets_if_pair_universe_changed(
                     old_spot, old_futures
                 )

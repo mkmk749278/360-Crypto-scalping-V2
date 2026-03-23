@@ -106,6 +106,36 @@ NEW_PAIR_MIN_CONFIDENCE: float = 50.0  # lower cap until enough data
 # order-book or kline fetches, reducing unnecessary weight consumption.
 SCAN_MIN_VOLUME_USD: float = float(os.getenv("SCAN_MIN_VOLUME_USD", "500000"))
 
+# ---------------------------------------------------------------------------
+# Tiered pair universe
+# ---------------------------------------------------------------------------
+# Tier 1 — Core: top pairs by 24h volume.  Full scan every cycle, all channels,
+# WebSocket streams + order book depth.  Primary signal source.
+TIER1_PAIR_COUNT: int = int(os.getenv("TIER1_PAIR_COUNT", "75"))
+# Tier 2 — Discovery: next tier by volume.  Scanned every N cycles, SWING +
+# SPOT channels only (no SCALP), REST klines only (no WS, no order book).
+TIER2_PAIR_COUNT: int = int(os.getenv("TIER2_PAIR_COUNT", "200"))
+TIER2_SCAN_EVERY_N_CYCLES: int = int(os.getenv("TIER2_SCAN_EVERY_N_CYCLES", "3"))
+# Tier 3 — Full Universe: all remaining USDT pairs.  Lightweight volume /
+# momentum scan every N minutes.  Auto-promoted to Tier 2 on volume surges.
+TIER3_SCAN_INTERVAL_MINUTES: int = int(os.getenv("TIER3_SCAN_INTERVAL_MINUTES", "30"))
+TIER3_VOLUME_SURGE_MULTIPLIER: float = float(os.getenv("TIER3_VOLUME_SURGE_MULTIPLIER", "3.0"))
+# When enabled, pairs absent from the latest exchange response are pruned from
+# the active universe (handles delistings and low-volume pair removal).
+PAIR_PRUNE_ENABLED: bool = os.getenv("PAIR_PRUNE_ENABLED", "true").lower() in ("1", "true", "yes")
+
+# ---------------------------------------------------------------------------
+# Sweep detection tuning
+# ---------------------------------------------------------------------------
+# Scalp-optimised parameters: shorter lookback catches recent S/R levels
+# relevant to 1m/5m timeframes; wider tolerance catches real institutional
+# sweeps that reclaim $100-200 past the level on high-priced assets.
+SMC_SCALP_LOOKBACK: int = int(os.getenv("SMC_SCALP_LOOKBACK", "20"))
+SMC_SCALP_TOLERANCE_PCT: float = float(os.getenv("SMC_SCALP_TOLERANCE_PCT", "0.15"))
+# Default (swing/spot) parameters — preserved for backward compatibility.
+SMC_DEFAULT_LOOKBACK: int = int(os.getenv("SMC_DEFAULT_LOOKBACK", "50"))
+SMC_DEFAULT_TOLERANCE_PCT: float = float(os.getenv("SMC_DEFAULT_TOLERANCE_PCT", "0.05"))
+
 
 # ---------------------------------------------------------------------------
 # Historical-data seeding – minimum candles per timeframe

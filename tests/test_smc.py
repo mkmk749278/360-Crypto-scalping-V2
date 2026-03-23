@@ -472,3 +472,113 @@ class TestMSSBodyConfirmation:
         mss = detect_mss(sweep, np.array([94.0, 95.5, 96.0]))
         assert mss is not None
         assert mss.midpoint == pytest.approx(95.0)
+
+
+# ---------------------------------------------------------------------------
+# Scalp-optimised sweep detection parameters (lookback=20, tolerance=0.15)
+# ---------------------------------------------------------------------------
+
+
+class TestScalpSweepParameters:
+    """Verify that scalp-tuned lookback=20 / tolerance_pct=0.15 detect
+    institutional sweeps that the default parameters (50 / 0.05) would miss.
+    """
+
+    def test_scalp_lookback_detects_recent_sweep(self):
+        """With lookback=20, only the last 20 candles form the S/R level.
+
+        If a high/low occurred 25 candles ago (beyond lookback=20), the recent
+        high/low is measured from the last 20 candles only, allowing the wick
+        to breach that shorter-range level and be detected as a sweep.
+        """
+        n = 60
+        # Base candles: price flat at 100
+        high = np.ones(n) * 105.0
+        low = np.ones(n) * 95.0
+        close = np.ones(n) * 100.0
+
+        # Candle 35 candles ago: a spike high to 110 — beyond the 20-candle window
+        high[n - 35] = 110.0
+        close[n - 35] = 100.0
+
+        # Last candle: wicks above 105 (the 20-candle high) and closes back inside
+        high[-1] = 107.0
+        low[-1] = 95.0
+        close[-1] = 105.10  # within 0.15% of 105
+
+        # With default lookback=50, recent_high includes the 110 spike → no breach
+        sweeps_default = detect_liquidity_sweeps(high, low, close, lookback=50, tolerance_pct=0.05)
+        bearish_default = [s for s in sweeps_default if s.direction == Direction.SHORT]
+        assert len(bearish_default) == 0, "Default lookback=50 should NOT detect sweep (110 is in window)"
+
+        # With scalp lookback=20, the 110 spike is outside the window → recent_high=105
+        sweeps_scalp = detect_liquidity_sweeps(high, low, close, lookback=20, tolerance_pct=0.15)
+        bearish_scalp = [s for s in sweeps_scalp if s.direction == Direction.SHORT]
+        assert len(bearish_scalp) >= 1, "Scalp lookback=20 SHOULD detect sweep against 105 level"
+
+    def test_scalp_tolerance_detects_wider_reclaim(self):
+        """tolerance_pct=0.15 at BTC-like prices detects sweeps where price
+        only partially reclaims the swept level (closes below the level but
+        within the wider tolerance window) — missed by the 0.05% default.
+        """
+        # Simulate BTC-like pricing: base at ~68,000
+        n = 30
+        high = np.ones(n) * 68_500.0
+        low = np.ones(n) * 67_500.0
+        close = np.ones(n) * 68_000.0
+
+        # Last candle: wick pierces below 67_500 (recent_low with lookback=20)
+        # and closes at 67_440 — below the swept level by $60.
+        #   0.05% tol → tol_low = 67500 × 0.0005 = 33.75 → close must be ≥ 67_466.25 → MISS
+        #   0.15% tol → tol_low = 67500 × 0.0015 = 101.25 → close must be ≥ 67_398.75 → HIT
+        recent_low = 67_500.0
+        high[-1] = 68_000.0
+        low[-1] = 67_200.0   # wick below recent_low
+        close[-1] = recent_low - 60.0  # 67_440 — inside 0.15% window but outside 0.05%
+
+        sweeps_default = detect_liquidity_sweeps(high, low, close, lookback=20, tolerance_pct=0.05)
+        bullish_default = [s for s in sweeps_default if s.direction == Direction.LONG]
+        assert len(bullish_default) == 0, "Default tolerance=0.05 should NOT detect this partial reclaim"
+
+        sweeps_scalp = detect_liquidity_sweeps(high, low, close, lookback=20, tolerance_pct=0.15)
+        bullish_scalp = [s for s in sweeps_scalp if s.direction == Direction.LONG]
+        assert len(bullish_scalp) >= 1, "Scalp tolerance=0.15 SHOULD detect this partial reclaim"
+
+    def test_scalp_params_preserve_direction(self):
+        """Detected sweeps with scalp params still have correct direction."""
+        n = 30
+        high = np.ones(n) * 105.0
+        low = np.ones(n) * 95.0
+        close = np.ones(n) * 100.0
+
+        # Bullish sweep: wick below 95, close back inside with wide tolerance
+        high[-1] = 105.0
+        low[-1] = 93.0
+        close[-1] = 95.12  # 0.13% above 95 — caught by 0.15% tolerance only
+
+        sweeps = detect_liquidity_sweeps(high, low, close, lookback=20, tolerance_pct=0.15)
+        bullish = [s for s in sweeps if s.direction == Direction.LONG]
+        assert len(bullish) >= 1
+        assert bullish[0].sweep_level == pytest.approx(95.0)
+
+    def test_min_candles_with_scalp_lookback(self):
+        """With lookback=20, at least 21 candles are needed; 20 returns empty."""
+        high = np.ones(20) * 105.0
+        low = np.ones(20) * 95.0
+        close = np.ones(20) * 100.0
+        # Exactly lookback candles → n < lookback + 1 → empty
+        sweeps = detect_liquidity_sweeps(high, low, close, lookback=20, tolerance_pct=0.15)
+        assert sweeps == []
+
+    def test_sufficient_candles_with_scalp_lookback(self):
+        """With lookback=20, 25 candles is sufficient and a bearish sweep is detected."""
+        n = 25
+        high = np.ones(n) * 105.0
+        low = np.ones(n) * 95.0
+        close = np.ones(n) * 100.0
+        # Last candle: wick above recent high, close back within 0.15% tolerance
+        high[-1] = 107.0
+        close[-1] = 105.12  # within 0.15% of 105 (tol = 105 * 0.0015 = 0.1575)
+        sweeps = detect_liquidity_sweeps(high, low, close, lookback=20, tolerance_pct=0.15)
+        bearish = [s for s in sweeps if s.direction == Direction.SHORT]
+        assert len(bearish) >= 1, "Should detect bearish sweep with 25 candles and lookback=20"

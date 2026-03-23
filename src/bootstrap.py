@@ -244,13 +244,20 @@ class Bootstrap:
         log.info("Shutdown complete.")
 
     async def start_websockets(self) -> None:
-        """Subscribe to WebSocket streams for all tracked pairs."""
+        """Subscribe to WebSocket streams for Tier 1 (core) pairs only.
+
+        Tier 2 and Tier 3 pairs use REST polling exclusively; subscribing them
+        to WebSocket would exhaust the Binance stream limit and create event-loop
+        pressure without proportional signal quality improvement.
+        """
         engine = self._engine
         spot_streams: List[str] = []
         futures_kline_streams: List[str] = []
         futures_liq_streams: List[str] = []
 
-        for sym in engine.pair_mgr.spot_symbols:
+        # Only Tier 1 spot symbols get WebSocket subscriptions
+        tier1_spot = engine.pair_mgr.tier1_spot_symbols
+        for sym in tier1_spot:
             s = sym.lower()
             spot_streams.append(f"{s}@kline_1m")
             spot_streams.append(f"{s}@kline_5m")
@@ -258,8 +265,9 @@ class Bootstrap:
             spot_streams.append(f"{s}@kline_4h")
             spot_streams.append(f"{s}@trade")
 
-        futures_syms = engine.pair_mgr.futures_symbols
-        for sym in futures_syms:
+        # Only Tier 1 futures symbols get WebSocket subscriptions
+        tier1_futures = engine.pair_mgr.tier1_futures_symbols
+        for sym in tier1_futures:
             s = sym.lower()
             futures_kline_streams.append(f"{s}@kline_1m")
             futures_kline_streams.append(f"{s}@kline_5m")
@@ -305,8 +313,8 @@ class Bootstrap:
             await engine._ws_futures_liq.start(futures_liq_streams)
 
         # Set critical pairs for REST fallback during WS outages
-        top_spot = engine.pair_mgr.spot_symbols[:10]
-        top_futures = engine.pair_mgr.futures_symbols[:10]
+        top_spot = tier1_spot[:10]
+        top_futures = tier1_futures[:10]
         if engine._ws_spot and top_spot:
             engine._ws_spot.set_critical_pairs(top_spot)
         if engine._ws_futures and top_futures:
@@ -316,6 +324,6 @@ class Bootstrap:
         engine._scanner.ws_spot = engine._ws_spot
         engine._scanner.ws_futures = engine._ws_futures
 
-        # Register futures symbols with the OI poller so it knows what to poll
+        # Register Tier 1 futures symbols with the OI poller so it knows what to poll
         if getattr(engine, "_oi_poller", None) is not None:
-            engine._oi_poller.set_symbols(list(futures_syms))
+            engine._oi_poller.set_symbols(list(tier1_futures))

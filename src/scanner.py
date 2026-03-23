@@ -14,7 +14,15 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from config import SCAN_MIN_VOLUME_USD, SEED_TIMEFRAMES, SIGNAL_SCAN_COOLDOWN_SECONDS
+from config import (
+    SCAN_MIN_VOLUME_USD,
+    SEED_TIMEFRAMES,
+    SIGNAL_SCAN_COOLDOWN_SECONDS,
+    SMC_SCALP_LOOKBACK,
+    SMC_SCALP_TOLERANCE_PCT,
+    TIER2_SCAN_EVERY_N_CYCLES,
+    TIER3_SCAN_INTERVAL_MINUTES,
+)
 from src.binance import BinanceClient
 from src.rate_limiter import rate_limiter
 from src.confidence import (
@@ -51,6 +59,7 @@ from src.feedback_loop import FeedbackLoop
 from src.kill_zone import check_kill_zone_gate
 from src.mtf import check_mtf_gate
 from src.oi_filter import analyse_oi, check_oi_gate
+from src.pair_manager import PairTier
 from src.spoof_detect import check_spoof_gate
 from src.utils import get_logger, price_decimal_fmt
 from src.volume_divergence import check_volume_divergence_gate
@@ -248,6 +257,10 @@ class Scanner:
         # Semaphore to limit concurrent symbol scans
         self._scan_semaphore: asyncio.Semaphore = asyncio.Semaphore(_MAX_CONCURRENT_SCANS)
 
+        # Tiered scanning counters
+        self._scan_cycle_count: int = 0
+        self._last_tier3_scan_time: float = 0.0
+
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
@@ -258,6 +271,7 @@ class Scanner:
         while True:
             t0 = time.monotonic()
             self._order_book_fetches_this_cycle = 0
+            self._scan_cycle_count += 1
 
             # Always clean up expired signals first (safety net for stuck slots)
             expired_count = self.router.cleanup_expired()
@@ -277,10 +291,22 @@ class Scanner:
                     key=lambda kv: kv[1].volume_24h_usd,
                     reverse=True,
                 )
+
+                # Tiered scanning:
+                #   Tier 1 → every cycle (full scan, all channels)
+                #   Tier 2 → every TIER2_SCAN_EVERY_N_CYCLES cycles (SWING+SPOT only)
+                #   Tier 3 → lightweight volume scan on a time-based interval
+                scan_tier2 = (self._scan_cycle_count % TIER2_SCAN_EVERY_N_CYCLES == 0)
+                pairs_this_cycle = [
+                    (sym, info) for sym, info in sorted_pairs
+                    if info.tier == PairTier.TIER1
+                    or (info.tier == PairTier.TIER2 and scan_tier2)
+                ]
+
                 # Apply cheap in-memory pre-filters to reduce the number of
                 # symbols that reach expensive API calls (order book, klines).
                 # This keeps Binance weight consumption ~400/min for 200+ pairs.
-                filtered_pairs = self._prefilter_pairs(sorted_pairs)
+                filtered_pairs = self._prefilter_pairs(pairs_this_cycle)
                 sem = self._scan_semaphore
                 tasks = [
                     self._scan_symbol_bounded(sem, sym, info.volume_24h_usd)
@@ -293,6 +319,13 @@ class Scanner:
                             "Scan error for {} ({}): {}",
                             sym_info[0], type(result).__name__, result,
                         )
+
+                # Tier 3 lightweight scan (time-gated, independent of cycle count)
+                _now = time.monotonic()
+                if _now - self._last_tier3_scan_time >= TIER3_SCAN_INTERVAL_MINUTES * 60:
+                    self._last_tier3_scan_time = _now
+                    await self._lightweight_tier3_scan()
+
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -592,7 +625,16 @@ class Scanner:
             return None
         indicators = self._compute_indicators(candles)
         ticks = self.data_store.ticks.get(symbol, [])
-        smc_result = self.smc_detector.detect(symbol, candles, ticks, self.order_flow_store)
+        # Use scalp-optimised sweep detection parameters: shorter lookback catches
+        # recent S/R levels; wider tolerance catches institutional sweeps that
+        # reclaim $100-200 past the level.  The full post-channel quality pipeline
+        # (MTF, VWAP, KillZone, OI, CrossAsset, Spoof, VolDiv, Clustering filters
+        # and confidence scoring) still runs on the detected sweeps.
+        smc_result = self.smc_detector.detect(
+            symbol, candles, ticks, self.order_flow_store,
+            lookback=SMC_SCALP_LOOKBACK,
+            tolerance_pct=SMC_SCALP_TOLERANCE_PCT,
+        )
         smc_data = smc_result.as_dict()
 
         regime_tf = "5m" if "5m" in indicators else "1m"
@@ -651,6 +693,12 @@ class Scanner:
         )
 
     def _should_skip_channel(self, symbol: str, chan_name: str, ctx: ScanContext) -> bool:
+        # Tier-based channel gating: Tier 2 pairs skip SCALP (REST-only, no
+        # order book depth for tight scalp execution).
+        pair_info = self.pair_mgr.pairs.get(symbol)
+        if pair_info is not None and pair_info.tier == PairTier.TIER2 and chan_name == "360_SCALP":
+            log.debug("Skipping {} {} – Tier 2 pair excluded from SCALP", symbol, chan_name)
+            return True
         if not ctx.pair_quality.passed:
             log.debug(
                 "Skipping {} {} – pair quality gate failed: {}",
@@ -1271,4 +1319,31 @@ class Scanner:
                 continue
             self._set_cooldown(symbol, chan_name)
             self.cluster_suppressor.record_signal(symbol, sig.direction.value)
+
+    async def _lightweight_tier3_scan(self) -> None:
+        """Lightweight volume/momentum scan for Tier 3 pairs.
+
+        Checks whether any Tier 3 pair has experienced a volume surge exceeding
+        ``TIER3_VOLUME_SURGE_MULTIPLIER`` × its previous 24h volume.  Qualifying
+        pairs are promoted to Tier 2 via :meth:`PairManager.check_promotions` so
+        that they receive full SWING+SPOT channel evaluation on the next cycle.
+
+        No order book fetches, kline lookups, or indicator computation are
+        performed — this is intentionally minimal to avoid Binance weight
+        exhaustion.
+        """
+        tier3_pairs = [
+            (sym, info)
+            for sym, info in self.pair_mgr.pairs.items()
+            if info.tier == PairTier.TIER3
+        ]
+        if not tier3_pairs:
+            return
+        log.debug("Tier 3 lightweight scan: %d pairs", len(tier3_pairs))
+        promoted = self.pair_mgr.check_promotions()
+        if promoted:
+            log.info(
+                "Tier 3 auto-promoted %d pairs to Tier 2: %s",
+                len(promoted), promoted[:10],
+            )
 

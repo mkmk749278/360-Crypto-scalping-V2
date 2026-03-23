@@ -69,6 +69,8 @@ class SMCDetector:
         candles: Dict[str, Dict[str, Any]],
         ticks: List[Dict[str, Any]],
         order_flow_store: Optional[OrderFlowStore] = None,
+        lookback: int = 50,
+        tolerance_pct: float = 0.05,
     ) -> SMCResult:
         """Run full SMC detection and return an :class:`SMCResult`.
 
@@ -86,18 +88,33 @@ class SMCDetector:
             against the current OI trend (rising OI during a sweep in the
             opposing direction sets ``oi_invalidated = True``).  CVD divergence
             is also queried and attached to the result.
+        lookback:
+            Number of prior candles used to establish the recent high/low range
+            for sweep detection.  Defaults to 50 (swing-appropriate).  Pass a
+            smaller value (e.g. 20) for scalp-timeframe scans so that only the
+            most recent support/resistance levels are considered.
+        tolerance_pct:
+            Wick-close tolerance for sweep detection (percentage).  Defaults to
+            0.05.  Use a wider value (e.g. 0.15) for scalp scans to catch
+            institutional sweeps that reclaim $100-200 past the swept level.
         """
         result = SMCResult()
 
         # ------------------------------------------------------------------
         # SMC detection (sweeps, MSS, FVG) across preferred timeframes
         # ------------------------------------------------------------------
+        min_candles = lookback + 1
         for tf_key in _SMC_TIMEFRAMES:
             cd = candles.get(tf_key)
-            if cd is None or len(cd.get("close", [])) < 51:
+            if cd is None or len(cd.get("close", [])) < min_candles:
                 continue
 
-            sweeps = detect_liquidity_sweeps(cd["high"], cd["low"], cd["close"], open_prices=cd.get("open"))
+            sweeps = detect_liquidity_sweeps(
+                cd["high"], cd["low"], cd["close"],
+                lookback=lookback,
+                tolerance_pct=tolerance_pct,
+                open_prices=cd.get("open"),
+            )
             if not sweeps:
                 continue
 
