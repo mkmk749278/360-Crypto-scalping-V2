@@ -167,13 +167,13 @@ def test_no_adjustment_with_empty_history():
 
 def test_exec_penalty_applied_when_history_warrants_it():
     loop = FeedbackLoop()
-    # Flood with low-execution losses so _exec_penalty_channels gets "360_RANGE"
+    # Flood with low-execution losses so _exec_penalty_channels gets "360_SPOT"
     for _ in range(_MIN_SAMPLE_SIZE + 5):
-        loop.record_outcome(_outcome(channel="360_RANGE", outcome="SL", execution=10.0))
+        loop.record_outcome(_outcome(channel="360_SPOT", outcome="SL", execution=10.0))
     # Now a new signal with low execution should receive penalty
     adj = loop.get_confidence_adjustment(
         {"execution": _EXEC_PENALTY_THRESHOLD - 1, "market": 15.0},
-        "360_RANGE",
+        "360_SPOT",
         "",
     )
     assert adj <= _EXEC_PENALTY

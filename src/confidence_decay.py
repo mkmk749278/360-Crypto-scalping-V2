@@ -3,7 +3,7 @@
 Penalises signals that were generated from data which is becoming stale
 relative to the time a human (or downstream system) would act on them.
 
-A signal generated 30 seconds ago on the ultra-fast ``360_THE_TAPE``
+A signal generated 60 seconds ago on the high-frequency ``360_SCALP``
 channel is already borderline stale; the same signal on ``360_SWING``
 is still perfectly fresh.  This module applies a channel-appropriate
 linear decay factor plus a hard penalty for very old signals.
@@ -38,10 +38,9 @@ log = get_logger("confidence_decay")
 #: Maximum age (seconds) before linear decay begins to reduce confidence.
 #: Beyond this window the signal is considered stale.
 _MAX_FRESHNESS: dict[str, float] = {
-    "360_THE_TAPE": 30.0,
     "360_SCALP":    60.0,
-    "360_RANGE":   180.0,
     "360_SWING":   600.0,
+    "360_SPOT":   3600.0,
 }
 
 #: Default freshness window used when the channel is not found in the table.

@@ -10,10 +10,10 @@ with real CCXT / Binance Trade-API calls.  The calling code in
 
 Design notes
 ------------
-* Limit orders are used for mean-reversion / DCA strategies (``360_RANGE``)
+* Limit orders are used for DCA / swing strategies (``360_SWING``, ``360_SPOT``)
   to capture maker-fee rebates and reduce slippage on fills.
-* Market orders are used for high-frequency scalp / whale-tape strategies
-  (``360_SCALP``, ``360_THE_TAPE``) where immediate fill is more important
+* Market orders are used for high-frequency scalp strategies
+  (``360_SCALP``) where immediate fill is more important
   than the maker/taker fee delta.
 * Auto-execution is **off by default** (``AUTO_EXECUTION_ENABLED=false``).
   The engine still publishes to Telegram as normal; the order stubs simply
@@ -29,7 +29,7 @@ from src.utils import get_logger
 log = get_logger("order_manager")
 
 # Channels for which limit orders should be preferred (maker-fee strategy).
-_LIMIT_ORDER_CHANNELS = {"360_RANGE", "360_SWING"}
+_LIMIT_ORDER_CHANNELS = {"360_SWING", "360_SPOT"}
 
 
 class OrderManager:

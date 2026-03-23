@@ -29,8 +29,7 @@ from src.macro_watchdog import MacroWatchdog
 from src.channels.base import Signal
 from src.channels.scalp import ScalpChannel
 from src.channels.swing import SwingChannel
-from src.channels.range_channel import RangeChannel
-from src.channels.tape import TapeChannel
+from src.channels.spot import SpotChannel
 from src.circuit_breaker import CircuitBreaker
 from src.commands import CommandHandler
 from src.detector import SMCDetector
@@ -128,7 +127,7 @@ class CryptoSignalEngine:
         )
 
         # Channel strategies
-        self._channels = [ScalpChannel(), SwingChannel(), RangeChannel(), TapeChannel()]
+        self._channels = [ScalpChannel(), SwingChannel(), SpotChannel()]
 
         # SMC detector and market regime classifier
         self._smc_detector = SMCDetector()

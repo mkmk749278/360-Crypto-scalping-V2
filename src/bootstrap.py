@@ -245,13 +245,13 @@ class Bootstrap:
         futures_kline_streams: List[str] = []
         futures_liq_streams: List[str] = []
 
-        for sym in engine.pair_mgr.spot_symbols[:50]:
+        for sym in engine.pair_mgr.spot_symbols:
             s = sym.lower()
             spot_streams.append(f"{s}@kline_1m")
             spot_streams.append(f"{s}@kline_5m")
             spot_streams.append(f"{s}@trade")
 
-        futures_syms = engine.pair_mgr.futures_symbols[:50]
+        futures_syms = engine.pair_mgr.futures_symbols
         for sym in futures_syms:
             s = sym.lower()
             futures_kline_streams.append(f"{s}@kline_1m")

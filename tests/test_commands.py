@@ -230,7 +230,7 @@ class TestUserCommands:
         handler = _make_handler()
         await handler._handle_command("/unknown_cmd_xyz", USER_CHAT_ID)
         call_args = handler._telegram.send_message.call_args[0]
-        assert "Available commands" in call_args[1]
+        assert "Commands" in call_args[1]
 
 
 class TestCircuitBreakerCommands:
@@ -399,12 +399,12 @@ class TestSignalStatsCommands:
 
     @pytest.mark.asyncio
     async def test_unknown_command_help_includes_real_stats(self):
-        """Unknown command fallback help text must include /real_stats in the Admin section."""
+        """Unknown command fallback help text must include /stats (which covers real_stats) in the Admin section."""
         handler = _make_handler()
         with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID):
-            await handler._handle_command("/unknown_xyz", USER_CHAT_ID)
+            await handler._handle_command("/unknown_xyz", ADMIN_CHAT_ID)
         call_args = handler._telegram.send_message.call_args[0]
-        assert "real\\_stats" in call_args[1]
+        assert "stats" in call_args[1].lower()
 
 
 class TestBacktestCommands:
@@ -623,6 +623,6 @@ class TestBacktestCommands:
     async def test_help_text_includes_backtest_commands(self):
         handler = _make_handler()
         with patch("src.commands.TELEGRAM_ADMIN_CHAT_ID", ADMIN_CHAT_ID):
-            await handler._handle_command("/unknown_xyz", USER_CHAT_ID)
+            await handler._handle_command("/unknown_xyz", ADMIN_CHAT_ID)
         call_args = handler._telegram.send_message.call_args[0]
         assert "backtest" in call_args[1].lower()

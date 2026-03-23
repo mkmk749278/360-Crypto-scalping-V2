@@ -216,8 +216,7 @@ class TelegramBot:
         chan_emojis = {
             "360_SCALP": "⚡",
             "360_SWING": "🏛️",
-            "360_RANGE": "⚖️",
-            "360_THE_TAPE": "🐋",
+            "360_SPOT": "📈",
             "360_GEM": "💎",
         }
         emoji = chan_emojis.get(sig.channel, "📡")
@@ -333,8 +332,7 @@ class TelegramBot:
         chan_emojis = {
             "360_SCALP": "⚡",
             "360_SWING": "🏛️",
-            "360_RANGE": "⚖️",
-            "360_THE_TAPE": "🐋",
+            "360_SPOT": "📈",
             "360_GEM": "💎",
         }
         chan_emoji = chan_emojis.get(sig.channel, "📡")

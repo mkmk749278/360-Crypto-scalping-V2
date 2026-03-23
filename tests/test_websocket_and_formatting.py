@@ -98,7 +98,7 @@ class TestFormatFreeSignal:
 
     def test_format_signal_default_market_phase(self):
         sig = Signal(
-            channel="360_RANGE",
+            channel="360_SPOT",
             symbol="BTCUSDT",
             direction=Direction.LONG,
             entry=32100,

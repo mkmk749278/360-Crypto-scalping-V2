@@ -7,7 +7,7 @@ import pytest
 
 from src.backtester import Backtester, BacktestResult, _compute_indicators, _simulate_trade
 from src.channels.scalp import ScalpChannel
-from src.channels.range_channel import RangeChannel
+from src.channels.spot import SpotChannel
 
 
 def _make_candles(
@@ -131,7 +131,7 @@ class TestBacktester:
         }
         results = bt.run(candles_by_tf, symbol="BTCUSDT")
         assert isinstance(results, list)
-        assert len(results) == 4  # one per channel
+        assert len(results) == 3  # one per channel (SCALP, SWING, SPOT)
 
     def test_run_single_channel(self):
         bt = Backtester(min_window=30, lookahead_candles=5)
@@ -158,13 +158,13 @@ class TestBacktester:
 
     def test_custom_channel_list(self):
         bt = Backtester(
-            channels=[RangeChannel()], min_window=30, lookahead_candles=5
+            channels=[SpotChannel()], min_window=30, lookahead_candles=5
         )
         candles = _make_candles(n=200)
-        candles_by_tf = {"15m": candles, "5m": candles}
+        candles_by_tf = {"4h": candles, "5m": candles}
         results = bt.run(candles_by_tf)
         assert len(results) == 1
-        assert results[0].channel == "360_RANGE"
+        assert results[0].channel == "360_SPOT"
 
 
 class TestFeeDeduction:

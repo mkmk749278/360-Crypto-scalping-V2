@@ -70,13 +70,13 @@ def test_decay_at_max_freshness(channel: str):
 
 def test_hard_penalty_applied_for_very_stale_signal():
     """Age > 2× max_freshness → hard penalty multiplier."""
-    max_fresh = _MAX_FRESHNESS["360_THE_TAPE"]  # 30s
+    max_fresh = _MAX_FRESHNESS["360_SCALP"]  # 60s
     stale_age = max_fresh * 2.5  # > 2×
     result = apply_confidence_decay(
         confidence=80.0,
         signal_generated_at=0.0,
         current_time=stale_age,
-        channel="360_THE_TAPE",
+        channel="360_SCALP",
     )
     assert result == pytest.approx(80.0 * _HARD_PENALTY_MULTIPLIER, abs=0.01)
 
@@ -159,14 +159,14 @@ def test_unknown_channel_uses_default():
 # ---------------------------------------------------------------------------
 
 
-def test_tape_decays_faster_than_swing():
-    """360_THE_TAPE should reach hard penalty before 360_SWING does."""
-    age = 65.0  # 65 seconds
-    tape_result = apply_confidence_decay(
+def test_scalp_decays_faster_than_swing():
+    """360_SCALP should reach hard penalty before 360_SWING does."""
+    age = 130.0  # 130 seconds (> 2× SCALP 60s max, but < 2× SWING 600s max)
+    scalp_result = apply_confidence_decay(
         confidence=80.0,
         signal_generated_at=0.0,
         current_time=age,
-        channel="360_THE_TAPE",  # max 30s → > 2× → hard penalty
+        channel="360_SCALP",  # max 60s → > 2× → hard penalty
     )
     swing_result = apply_confidence_decay(
         confidence=80.0,
@@ -174,4 +174,4 @@ def test_tape_decays_faster_than_swing():
         current_time=age,
         channel="360_SWING",  # max 600s → barely aged → small decay
     )
-    assert tape_result < swing_result
+    assert scalp_result < swing_result

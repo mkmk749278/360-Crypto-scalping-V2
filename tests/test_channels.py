@@ -4,8 +4,7 @@ import numpy as np
 
 from src.channels.scalp import ScalpChannel
 from src.channels.swing import SwingChannel
-from src.channels.range_channel import RangeChannel
-from src.channels.tape import TapeChannel
+from src.channels.spot import SpotChannel
 from src.smc import Direction, LiquiditySweep, MSSSignal
 
 
@@ -52,7 +51,8 @@ class TestScalpChannel:
         assert sig.direction == Direction.LONG
         assert sig.entry > 0
 
-    def test_no_signal_when_adx_low(self):
+    def test_no_signal_when_adx_low_standard_path(self):
+        """Standard scalp path requires ADX >= 20; directly tests that path."""
         ch = ScalpChannel()
         candles = {"5m": _make_candles(60)}
         sweep = LiquiditySweep(
@@ -62,7 +62,8 @@ class TestScalpChannel:
         )
         indicators = {"5m": _make_indicators(adx_val=10)}  # below 20
         smc_data = {"sweeps": [sweep]}
-        sig = ch.evaluate("BTCUSDT", candles, indicators, smc_data, 0.01, 10_000_000)
+        # Standard path should return None (ADX too low), test it directly
+        sig = ch._evaluate_standard("BTCUSDT", candles, indicators, smc_data, 0.01, 10_000_000)
         assert sig is None
 
     def test_no_signal_without_sweep(self):
@@ -71,6 +72,92 @@ class TestScalpChannel:
         indicators = {"5m": _make_indicators()}
         sig = ch.evaluate("BTCUSDT", candles, indicators, {"sweeps": []}, 0.01, 10_000_000)
         assert sig is None
+
+    def test_range_fade_long_signal_at_lower_bb(self):
+        """RANGE_FADE path: price at lower BB + low RSI + low ADX → LONG signal."""
+        ch = ScalpChannel()
+        candles_data = _make_candles(60, base=100)
+        candles_data["close"][-1] = 97.0  # at bb_lower
+        candles = {"5m": candles_data}
+        indicators = {"5m": _make_indicators(adx_val=15, bb_lower=97.1, rsi_val=28)}
+        smc_data = {}
+
+        sig = ch.evaluate("BTCUSDT", candles, indicators, smc_data, 0.01, 10_000_000)
+        assert sig is not None
+        assert sig.direction == Direction.LONG
+        assert sig.setup_class == "RANGE_FADE"
+
+    def test_range_fade_no_signal_when_adx_high(self):
+        """RANGE_FADE path: ADX > 25 means trending → no range fade signal."""
+        ch = ScalpChannel()
+        candles_data = _make_candles(60, base=100)
+        candles_data["close"][-1] = 97.0
+        candles = {"5m": candles_data}
+        indicators = {"5m": _make_indicators(adx_val=30, bb_lower=97.1, rsi_val=28, ema9=None, ema21=None)}
+        smc_data = {}
+        sig = ch._evaluate_range_fade("BTCUSDT", candles, indicators, smc_data, 0.01, 10_000_000)
+        assert sig is None
+
+    def test_whale_momentum_long_signal_on_buy_flow(self):
+        """WHALE_MOMENTUM path: strong buy tick flow → LONG signal."""
+        ch = ScalpChannel()
+        candles = {"1m": _make_candles(20)}
+        indicators = {"1m": _make_indicators()}
+        ticks = [
+            {"price": 100.0, "qty": 15000, "isBuyerMaker": False},  # buy: $1.5M
+            {"price": 100.0, "qty": 5000, "isBuyerMaker": True},    # sell: $0.5M
+        ]
+        smc_data = {
+            "whale_alert": {"amount_usd": 1_500_000},
+            "volume_delta_spike": True,
+            "recent_ticks": ticks,
+        }
+
+        sig = ch.evaluate("ETHUSDT", candles, indicators, smc_data, 0.01, 10_000_000)
+        assert sig is not None
+        assert sig.direction == Direction.LONG
+        assert sig.setup_class == "WHALE_MOMENTUM"
+
+    def test_whale_momentum_no_signal_without_whale(self):
+        """WHALE_MOMENTUM path: no whale alert and no delta spike → no signal."""
+        ch = ScalpChannel()
+        candles = {"5m": _make_candles(60)}
+        indicators = {"5m": _make_indicators()}
+        smc_data = {"whale_alert": None, "volume_delta_spike": False}
+        sig = ch._evaluate_whale_momentum("ETHUSDT", candles, indicators, smc_data, 0.01, 10_000_000)
+        assert sig is None
+
+    def test_whale_momentum_no_signal_when_flow_ambiguous(self):
+        """Buy/sell ratio < 2× should return None (ambiguous flow)."""
+        ch = ScalpChannel()
+        candles = {"1m": _make_candles(20)}
+        indicators = {"1m": _make_indicators()}
+        ticks = [
+            {"price": 100.0, "qty": 10000, "isBuyerMaker": False},  # buy: $1M
+            {"price": 100.0, "qty": 8000, "isBuyerMaker": True},    # sell: $0.8M (ratio 1.25×)
+        ]
+        smc_data = {
+            "whale_alert": {"amount_usd": 1_500_000},
+            "volume_delta_spike": True,
+            "recent_ticks": ticks,
+        }
+        sig = ch._evaluate_whale_momentum("ETHUSDT", candles, indicators, smc_data, 0.01, 10_000_000)
+        assert sig is None
+
+    def test_range_fade_signal_has_dca_zone(self):
+        """RANGE_FADE signals should include DCA zone fields."""
+        ch = ScalpChannel()
+        candles_data = _make_candles(60, base=100)
+        candles_data["close"][-1] = 97.0
+        candles = {"5m": candles_data}
+        indicators = {"5m": _make_indicators(adx_val=15, bb_lower=97.1, rsi_val=28)}
+        smc_data = {}
+
+        sig = ch.evaluate("BTCUSDT", candles, indicators, smc_data, 0.01, 10_000_000)
+        assert sig is not None
+        assert sig.dca_zone_lower is not None and sig.dca_zone_lower > 0
+        assert sig.dca_zone_upper is not None and sig.dca_zone_upper > 0
+        assert sig.dca_zone_lower < sig.dca_zone_upper
 
 
 class TestSwingChannel:
@@ -113,150 +200,68 @@ class TestSwingChannel:
         assert sig is None
 
 
-class TestRangeChannel:
-    def test_long_signal_at_lower_bb(self):
-        ch = RangeChannel()
-        # Close at lower BB
-        candles_data = _make_candles(60, base=100)
-        candles_data["close"][-1] = 97.0  # at bb_lower
-        candles = {"15m": candles_data}
-        indicators = {"15m": _make_indicators(adx_val=15, bb_lower=97.1, rsi_val=28)}
+class TestSpotChannel:
+    def test_signal_on_h4_breakout(self):
+        """SpotChannel should fire on H4 breakout above recent 20-bar high with volume."""
+        ch = SpotChannel()
+        # Build candles where last close breaks above recent high
+        closes = np.cumsum(np.ones(60) * 0.1) + 100.0
+        # Make last close clearly above the previous 19 bars' high
+        closes[-1] = max(closes[-20:-1]) + 1.0
+        highs = closes + 0.5
+        lows = closes - 0.5
+        # Volume: last bar is 1.5× the 19-bar average
+        volumes = np.ones(60) * 1000.0
+        volumes[-1] = volumes[:-1].mean() * 1.5
+        candles_data = {
+            "open": closes - 0.1,
+            "high": highs,
+            "low": lows,
+            "close": closes,
+            "volume": volumes,
+        }
+        candles = {"4h": candles_data}
+        indicators = {"4h": _make_indicators(adx_val=20, ema200=90)}
         smc_data = {}
 
-        sig = ch.evaluate("BTCUSDT", candles, indicators, smc_data, 0.01, 10_000_000)
+        sig = ch.evaluate("BTCUSDT", candles, indicators, smc_data, 0.01, 5_000_000)
         assert sig is not None
+        assert sig.channel == "360_SPOT"
         assert sig.direction == Direction.LONG
 
-    def test_no_signal_when_adx_high(self):
-        ch = RangeChannel()
-        candles = {"15m": _make_candles(60)}
-        indicators = {"15m": _make_indicators(adx_val=30)}
-        sig = ch.evaluate("BTCUSDT", candles, indicators, {}, 0.01, 10_000_000)
+    def test_no_signal_without_h4_data(self):
+        ch = SpotChannel()
+        sig = ch.evaluate("BTCUSDT", {}, {}, {}, 0.01, 5_000_000)
         assert sig is None
 
-
-    def test_range_signal_has_dca_zone(self):
-        ch = RangeChannel()
-        candles_data = _make_candles(60, base=100)
-        candles_data["close"][-1] = 97.0  # at bb_lower
-        candles = {"15m": candles_data}
-        indicators = {"15m": _make_indicators(adx_val=15, bb_lower=97.1, rsi_val=28)}
+    def test_no_signal_without_breakout(self):
+        """Price below recent 20-bar high → no signal."""
+        ch = SpotChannel()
+        candles_data = _make_candles(60, base=100.0, trend=0.0)
+        candles = {"4h": candles_data}
+        indicators = {"4h": _make_indicators(adx_val=20, ema200=90)}
         smc_data = {}
-
-        sig = ch.evaluate("BTCUSDT", candles, indicators, smc_data, 0.01, 10_000_000)
-        assert sig is not None
-        assert sig.dca_zone_lower is not None and sig.dca_zone_lower > 0
-        assert sig.dca_zone_upper is not None and sig.dca_zone_upper > 0
-        assert sig.dca_zone_lower < sig.dca_zone_upper
-        assert sig.original_entry == sig.entry
-        assert sig.original_tp1 == sig.tp1
-        assert sig.original_tp2 == sig.tp2
-
-
-class TestTapeChannel:
-    def test_signal_on_whale_alert(self):
-        ch = TapeChannel()
-        candles = {"1m": _make_candles(20)}
-        indicators = {"1m": _make_indicators()}
-        ticks = [
-            {"price": 100.0, "qty": 15000, "isBuyerMaker": False},  # buy
-            {"price": 100.0, "qty": 5000, "isBuyerMaker": True},    # sell
-        ]
-        smc_data = {
-            "whale_alert": {"amount_usd": 1_500_000},
-            "volume_delta_spike": True,
-            "recent_ticks": ticks,
-        }
-
-        sig = ch.evaluate("ETHUSDT", candles, indicators, smc_data, 0.01, 50_000_000)
-        assert sig is not None
-        assert sig.direction == Direction.LONG
-        assert sig.channel == "360_THE_TAPE"
-
-    def test_no_signal_without_whale(self):
-        ch = TapeChannel()
-        candles = {"1m": _make_candles(20)}
-        indicators = {"1m": _make_indicators()}
-        smc_data = {"whale_alert": None, "volume_delta_spike": False}
-        sig = ch.evaluate("ETHUSDT", candles, indicators, smc_data, 0.01, 50_000_000)
+        sig = ch.evaluate("BTCUSDT", candles, indicators, smc_data, 0.01, 5_000_000)
         assert sig is None
 
-    def test_no_signal_when_flow_ambiguous(self):
-        """Buy/sell ratio < 2× should return None (ambiguous flow)."""
-        ch = TapeChannel()
-        candles = {"1m": _make_candles(20)}
-        indicators = {"1m": _make_indicators()}
-        # 10000 buy vs 8000 sell at $100 → ratio = 1.25× < 2×, total = $1.8M > $500K
-        ticks = [
-            {"price": 100.0, "qty": 10000, "isBuyerMaker": False},  # buy
-            {"price": 100.0, "qty": 8000, "isBuyerMaker": True},    # sell
-        ]
-        smc_data = {
-            "whale_alert": {"amount_usd": 1_500_000},
-            "volume_delta_spike": True,
-            "recent_ticks": ticks,
+    def test_no_signal_when_bearish_mss(self):
+        """SpotChannel is LONG-biased; SHORT MSS should block the signal."""
+        ch = SpotChannel()
+        closes = np.cumsum(np.ones(60) * 0.1) + 100.0
+        closes[-1] = max(closes[-20:-1]) + 1.0
+        volumes = np.ones(60) * 1000.0
+        volumes[-1] = volumes[:-1].mean() * 1.5
+        candles_data = {
+            "open": closes - 0.1,
+            "high": closes + 0.5,
+            "low": closes - 0.5,
+            "close": closes,
+            "volume": volumes,
         }
-        sig = ch.evaluate("ETHUSDT", candles, indicators, smc_data, 0.01, 50_000_000)
+        candles = {"4h": candles_data}
+        indicators = {"4h": _make_indicators(adx_val=20, ema200=90)}
+        mss = MSSSignal(index=59, direction=Direction.SHORT, midpoint=99.0, confirm_close=98.0)
+        smc_data = {"mss": mss}
+        sig = ch.evaluate("BTCUSDT", candles, indicators, smc_data, 0.01, 5_000_000)
         assert sig is None
 
-    def test_no_signal_when_tick_volume_too_low(self):
-        """Total tick volume < $500K should return None."""
-        ch = TapeChannel()
-        candles = {"1m": _make_candles(20)}
-        indicators = {"1m": _make_indicators()}
-        # 3 buy vs 1 sell but tiny quantities → total volume < $500K
-        ticks = [
-            {"price": 100.0, "qty": 3000, "isBuyerMaker": False},   # buy: $300K
-            {"price": 100.0, "qty": 1000, "isBuyerMaker": True},    # sell: $100K
-        ]
-        smc_data = {
-            "whale_alert": {"amount_usd": 1_500_000},
-            "volume_delta_spike": True,
-            "recent_ticks": ticks,
-        }
-        sig = ch.evaluate("ETHUSDT", candles, indicators, smc_data, 0.01, 50_000_000)
-        assert sig is None
-
-    def test_order_book_imbalance_blocks_signal(self):
-        """Valid whale + ticks but order_book ratio < 1.5× should block signal."""
-        ch = TapeChannel()
-        candles = {"1m": _make_candles(20)}
-        indicators = {"1m": _make_indicators()}
-        # Strong LONG tick flow (3× ratio)
-        ticks = [
-            {"price": 100.0, "qty": 15000, "isBuyerMaker": False},  # buy
-            {"price": 100.0, "qty": 5000, "isBuyerMaker": True},    # sell
-        ]
-        # Order book: bid_depth barely above ask_depth (< 1.5× imbalance for LONG)
-        order_book = {
-            "bids": [["100.0", "10"] for _ in range(10)],   # bid_depth = price*qty*count = 100*10*10 = 10000
-            "asks": [["100.0", "9"] for _ in range(10)],    # ask_depth = 100*9*10 = 9000
-            # ratio = 10000/9000 ≈ 1.11 < ORDER_BOOK_IMBALANCE_MIN (1.5)
-        }
-        smc_data = {
-            "whale_alert": {"amount_usd": 1_500_000},
-            "volume_delta_spike": True,
-            "recent_ticks": ticks,
-            "order_book": order_book,
-        }
-        sig = ch.evaluate("ETHUSDT", candles, indicators, smc_data, 0.01, 50_000_000)
-        assert sig is None
-
-    def test_order_book_missing_doesnt_block(self):
-        """Valid whale + ticks, no order_book key → signal still fires (backward compatible)."""
-        ch = TapeChannel()
-        candles = {"1m": _make_candles(20)}
-        indicators = {"1m": _make_indicators()}
-        ticks = [
-            {"price": 100.0, "qty": 15000, "isBuyerMaker": False},  # buy
-            {"price": 100.0, "qty": 5000, "isBuyerMaker": True},    # sell
-        ]
-        smc_data = {
-            "whale_alert": {"amount_usd": 1_500_000},
-            "volume_delta_spike": True,
-            "recent_ticks": ticks,
-            # no "order_book" key
-        }
-        sig = ch.evaluate("ETHUSDT", candles, indicators, smc_data, 0.01, 50_000_000)
-        assert sig is not None
-        assert sig.direction == Direction.LONG

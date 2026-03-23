@@ -615,10 +615,10 @@ class TestRegimeMultiplierStoredOnSignal:
     @pytest.mark.asyncio
     async def test_regime_multiplier_stored_quiet(self):
         channel = MagicMock()
-        # Use 360_RANGE since 360_SCALP is blocked in QUIET regime
-        channel.config = SimpleNamespace(name="360_RANGE", min_confidence=10.0)
+        # Use 360_SWING since 360_SCALP is blocked in QUIET regime
+        channel.config = SimpleNamespace(name="360_SWING", min_confidence=10.0)
         channel.evaluate.return_value = Signal(
-            channel="360_RANGE",
+            channel="360_SWING",
             symbol="BTCUSDT",
             direction=Direction.LONG,
             entry=100.0,

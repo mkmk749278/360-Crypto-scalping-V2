@@ -76,9 +76,9 @@ class TestFormatSignal:
         assert "⬇️" in text
         assert "92%" in text
 
-    def test_tape_format_with_ai_adaptive(self):
+    def test_spot_format_with_ai_adaptive(self):
         sig = Signal(
-            channel="360_THE_TAPE",
+            channel="360_SPOT",
             symbol="ETHUSDT",
             direction=Direction.LONG,
             entry=2355,
@@ -90,19 +90,19 @@ class TestFormatSignal:
             trailing_desc="AI Adaptive",
             confidence=95,
             ai_sentiment_label="Bullish",
-            ai_sentiment_summary="Whale Trade Confirmed",
-            risk_label="Medium-High",
+            ai_sentiment_summary="Spot Accumulation",
+            risk_label="Conservative",
             timestamp=utcnow(),
         )
         text = TelegramBot.format_signal(sig)
-        assert "🐋" in text
+        assert "📈" in text
         assert "Dynamic/trailing" in text
         assert "AI Adaptive" in text
         assert "95%" in text
 
-    def test_range_format(self):
+    def test_spot_format(self):
         sig = Signal(
-            channel="360_RANGE",
+            channel="360_SPOT",
             symbol="BTCUSDT",
             direction=Direction.LONG,
             entry=32100,
@@ -111,7 +111,7 @@ class TestFormatSignal:
             tp2=32200,
             tp3=None,
             trailing_active=True,
-            trailing_desc="1×ATR",
+            trailing_desc="3×ATR",
             confidence=80,
             ai_sentiment_label="Positive",
             ai_sentiment_summary="",
@@ -119,7 +119,7 @@ class TestFormatSignal:
             timestamp=utcnow(),
         )
         text = TelegramBot.format_signal(sig)
-        assert "⚖️" in text
+        assert "📈" in text
         assert "Conservative" in text
         assert "80%" in text
 

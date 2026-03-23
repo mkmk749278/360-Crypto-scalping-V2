@@ -22,6 +22,8 @@ class SetupClass(str, Enum):
     RANGE_REJECTION = "RANGE_REJECTION"
     MOMENTUM_EXPANSION = "MOMENTUM_EXPANSION"
     EXHAUSTION_FADE = "EXHAUSTION_FADE"
+    RANGE_FADE = "RANGE_FADE"
+    WHALE_MOMENTUM = "WHALE_MOMENTUM"
 
 
 class MarketState(str, Enum):
@@ -46,20 +48,19 @@ CHANNEL_SETUP_COMPATIBILITY: Dict[str, set[SetupClass]] = {
         SetupClass.BREAKOUT_RETEST,
         SetupClass.LIQUIDITY_SWEEP_REVERSAL,
         SetupClass.MOMENTUM_EXPANSION,
-    },
-    "360_RANGE": {
-        SetupClass.RANGE_REJECTION,
-        SetupClass.LIQUIDITY_SWEEP_REVERSAL,
-        SetupClass.EXHAUSTION_FADE,
+        SetupClass.WHALE_MOMENTUM,
+        SetupClass.RANGE_FADE,
     },
     "360_SWING": {
         SetupClass.TREND_PULLBACK_CONTINUATION,
         SetupClass.BREAKOUT_RETEST,
         SetupClass.LIQUIDITY_SWEEP_REVERSAL,
     },
-    "360_THE_TAPE": {
-        SetupClass.MOMENTUM_EXPANSION,
+    "360_SPOT": {
+        SetupClass.TREND_PULLBACK_CONTINUATION,
+        SetupClass.BREAKOUT_RETEST,
         SetupClass.LIQUIDITY_SWEEP_REVERSAL,
+        SetupClass.MOMENTUM_EXPANSION,
     },
     "360_GEM": {
         SetupClass.TREND_PULLBACK_CONTINUATION,
@@ -77,23 +78,30 @@ REGIME_SETUP_COMPATIBILITY: Dict[MarketState, set[SetupClass]] = {
         SetupClass.TREND_PULLBACK_CONTINUATION,
         SetupClass.BREAKOUT_RETEST,
         SetupClass.MOMENTUM_EXPANSION,
+        SetupClass.WHALE_MOMENTUM,
     },
     MarketState.WEAK_TREND: {
         SetupClass.TREND_PULLBACK_CONTINUATION,
         SetupClass.BREAKOUT_RETEST,
         SetupClass.LIQUIDITY_SWEEP_REVERSAL,
+        SetupClass.WHALE_MOMENTUM,
     },
     MarketState.CLEAN_RANGE: {
         SetupClass.RANGE_REJECTION,
         SetupClass.LIQUIDITY_SWEEP_REVERSAL,
         SetupClass.EXHAUSTION_FADE,
+        SetupClass.RANGE_FADE,
     },
-    MarketState.DIRTY_RANGE: {SetupClass.LIQUIDITY_SWEEP_REVERSAL},
+    MarketState.DIRTY_RANGE: {
+        SetupClass.LIQUIDITY_SWEEP_REVERSAL,
+        SetupClass.RANGE_FADE,
+    },
     MarketState.BREAKOUT_EXPANSION: {
         SetupClass.BREAKOUT_RETEST,
         SetupClass.MOMENTUM_EXPANSION,
         SetupClass.TREND_PULLBACK_CONTINUATION,
         SetupClass.LIQUIDITY_SWEEP_REVERSAL,
+        SetupClass.WHALE_MOMENTUM,
     },
     MarketState.VOLATILE_UNSUITABLE: set(),
 }
@@ -101,10 +109,9 @@ REGIME_SETUP_COMPATIBILITY: Dict[MarketState, set[SetupClass]] = {
 # Maximum SL distance (as a percentage of entry) allowed per channel.
 # Signals whose structure-based SL would exceed this cap are clamped.
 _MAX_SL_PCT_BY_CHANNEL: Dict[str, float] = {
-    "360_THE_TAPE": 0.5,
     "360_SCALP": 1.0,
-    "360_RANGE": 1.5,
     "360_SWING": 3.0,
+    "360_SPOT": 2.0,
 }
 
 
@@ -312,7 +319,7 @@ def classify_setup(
     smc_data: Dict[str, Any],
     market_state: MarketState,
 ) -> SetupAssessment:
-    primary_tf = "15m" if channel_name == "360_RANGE" else "1h" if channel_name == "360_SWING" else "1m" if channel_name == "360_THE_TAPE" else "5m"
+    primary_tf = "4h" if channel_name == "360_SPOT" else "1h" if channel_name == "360_SWING" else "5m"
     primary = indicators.get(primary_tf, indicators.get("5m", indicators.get("1m", {})))
     sweeps = smc_data.get("sweeps", [])
     mss = smc_data.get("mss")
@@ -321,18 +328,11 @@ def classify_setup(
     delta_spike = bool(smc_data.get("volume_delta_spike"))
     momentum = _safe_float(primary.get("momentum_last"))
 
-    if channel_name == "360_THE_TAPE":
-        rsi = _safe_float(primary.get("rsi_last"), 50.0)
-        if (whale or delta_spike) and abs(momentum) >= 0.3:
-            setup = SetupClass.MOMENTUM_EXPANSION
-        elif (rsi > 78 or rsi < 22) and abs(momentum) < 0.2:
-            setup = SetupClass.EXHAUSTION_FADE
-        elif smc_data.get("mss") is not None and abs(momentum) >= 0.2:
-            setup = SetupClass.BREAKOUT_RETEST
-        else:
-            setup = SetupClass.LIQUIDITY_SWEEP_REVERSAL
-    elif channel_name == "360_RANGE":
-        setup = SetupClass.RANGE_REJECTION if market_state == MarketState.CLEAN_RANGE else SetupClass.EXHAUSTION_FADE
+    # Check for WHALE_MOMENTUM / RANGE_FADE setups (SCALP sub-paths)
+    if channel_name == "360_SCALP" and (whale or delta_spike) and abs(momentum) >= 0.3:
+        setup = SetupClass.WHALE_MOMENTUM
+    elif channel_name == "360_SCALP" and market_state in (MarketState.CLEAN_RANGE, MarketState.DIRTY_RANGE):
+        setup = SetupClass.RANGE_FADE
     elif sweeps and signal.direction == sweeps[0].direction and (mss is not None or abs(momentum) >= 0.2):
         setup = SetupClass.LIQUIDITY_SWEEP_REVERSAL
     elif mss is not None and signal.direction == mss.direction:
@@ -371,7 +371,7 @@ def execution_quality_check(
     setup: SetupClass,
     market_state: MarketState,
 ) -> ExecutionAssessment:
-    primary_tf = "15m" if signal.channel == "360_RANGE" else "1h" if signal.channel == "360_SWING" else "1m" if signal.channel == "360_THE_TAPE" else "5m"
+    primary_tf = "4h" if signal.channel == "360_SPOT" else "1h" if signal.channel == "360_SWING" else "5m"
     primary = indicators.get(primary_tf, indicators.get("5m", indicators.get("1m", {})))
     atr_val = max(_safe_float(primary.get("atr_last")), signal.entry * 0.01)  # 1% floor
     ema_anchor = _safe_float(primary.get("ema21_last"), signal.entry)
@@ -456,7 +456,7 @@ def build_risk_plan(
     spread_pct: float,
     channel: Optional[str] = None,
 ) -> RiskAssessment:
-    primary_tf = "15m" if signal.channel == "360_RANGE" else "1h" if signal.channel == "360_SWING" else "1m" if signal.channel == "360_THE_TAPE" else "5m"
+    primary_tf = "4h" if signal.channel == "360_SPOT" else "1h" if signal.channel == "360_SWING" else "5m"
     primary = indicators.get(primary_tf, indicators.get("5m", indicators.get("1m", {})))
     candle_bucket = candles.get(primary_tf, candles.get("5m", candles.get("1m", {})))
     atr_val = max(_safe_float(primary.get("atr_last")), signal.entry * 0.01)  # 1% of price as minimum ATR

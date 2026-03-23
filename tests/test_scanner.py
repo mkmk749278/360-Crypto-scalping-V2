@@ -296,8 +296,8 @@ class TestScannerConfidencePipeline:
         so the signal is enqueued, and post_ai_confidence equals confidence.
         """
         channel = MagicMock()
-        channel.config = SimpleNamespace(name="360_RANGE", min_confidence=60.0)
-        channel.evaluate.return_value = _make_signal(channel="360_RANGE", signal_id="SIG-001")
+        channel.config = SimpleNamespace(name="360_SCALP", min_confidence=60.0)
+        channel.evaluate.return_value = _make_signal(channel="360_SCALP", signal_id="SIG-001")
 
         predictive = MagicMock()
         predictive.predict = AsyncMock(
@@ -396,7 +396,7 @@ class TestScannerConfidencePipeline:
         """High-confidence quantitative signals fire immediately without any AI
         evaluation, for all channel types.
         """
-        for ch_name in ("360_SCALP", "360_THE_TAPE", "360_SWING", "360_RANGE"):
+        for ch_name in ("360_SCALP", "360_SPOT", "360_SWING", "360_GEM"):
             channel = MagicMock()
             channel.config = SimpleNamespace(name=ch_name, min_confidence=10.0)
             channel.evaluate.return_value = _make_signal(channel=ch_name, signal_id="SIG-HOT")
@@ -741,51 +741,35 @@ class TestRegimeStabilityTracker:
         ]
         assert scanner._is_regime_unstable("ETHUSDT", window_minutes=30, max_flips=2) is False
 
-    def test_should_skip_tape_when_regime_unstable(self):
-        """_should_skip_channel returns True for TAPE when regime is unstable."""
+    def test_should_skip_scalp_when_regime_quiet(self):
+        """_should_skip_channel returns True for SCALP when regime is QUIET."""
         scanner = _make_scanner()
-        now = time.monotonic()
-        # Inject 3 flips within window → unstable
-        scanner._regime_history["ETHUSDT"] = [
-            (now - 1500, "RANGING"),
-            (now - 1200, "TRENDING_UP"),
-            (now - 900, "RANGING"),
-            (now - 600, "TRENDING_DOWN"),
-        ]
         ctx = MagicMock()
         ctx.pair_quality.passed = True
         ctx.market_state = MagicMock()
         ctx.market_state.__eq__ = lambda self, other: False
-        ctx.regime_result.regime.value = "RANGING"
+        ctx.regime_result.regime.value = "QUIET"
         scanner.circuit_breaker = None
         scanner.router.active_signals = {}
         ctx.is_ranging = False
         ctx.adx_val = 25.0
-        result = scanner._should_skip_channel("ETHUSDT", "360_THE_TAPE", ctx)
+        result = scanner._should_skip_channel("ETHUSDT", "360_SCALP", ctx)
         assert result is True
 
-    def test_should_not_skip_non_tape_when_regime_unstable(self):
-        """Regime instability check is only applied to 360_THE_TAPE."""
+    def test_should_not_skip_swing_when_regime_quiet(self):
+        """QUIET regime is only incompatible with SCALP, not SWING."""
         scanner = _make_scanner()
-        now = time.monotonic()
-        # Inject 3 flips within window → unstable
-        scanner._regime_history["ETHUSDT"] = [
-            (now - 1500, "RANGING"),
-            (now - 1200, "TRENDING_UP"),
-            (now - 900, "RANGING"),
-            (now - 600, "TRENDING_DOWN"),
-        ]
         ctx = MagicMock()
         ctx.pair_quality.passed = True
         ctx.market_state = MagicMock()
         ctx.market_state.__eq__ = lambda self, other: False
-        ctx.regime_result.regime.value = "RANGING"
+        ctx.regime_result.regime.value = "QUIET"
         scanner.circuit_breaker = None
         scanner.router.active_signals = {}
         ctx.is_ranging = False
         ctx.adx_val = 25.0
-        # SCALP should not be blocked by regime instability
-        result = scanner._should_skip_channel("ETHUSDT", "360_SCALP", ctx)
+        # SWING should not be blocked by QUIET regime (only SCALP is blocked)
+        result = scanner._should_skip_channel("ETHUSDT", "360_SWING", ctx)
         assert result is False
 
 

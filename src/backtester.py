@@ -14,8 +14,7 @@ import numpy as np
 from src.channels.base import Signal
 from src.channels.scalp import ScalpChannel
 from src.channels.swing import SwingChannel
-from src.channels.range_channel import RangeChannel
-from src.channels.tape import TapeChannel
+from src.channels.spot import SpotChannel
 from src.detector import SMCDetector
 from src.indicators import adx, atr, bollinger_bands, ema, momentum, rsi
 from src.utils import get_logger
@@ -218,8 +217,7 @@ class Backtester:
             channels = [
                 ScalpChannel(),
                 SwingChannel(),
-                RangeChannel(),
-                TapeChannel(),
+                SpotChannel(),
             ]
         self._channels = channels
         self._lookahead = lookahead_candles

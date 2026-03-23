@@ -76,13 +76,8 @@ _MIN_WEIGHT_FOR_ORDER_BOOK: int = 100
 # ADX threshold below which SCALP signals are suppressed during RANGING regime
 _RANGING_ADX_SUPPRESS_THRESHOLD: float = 15.0
 
-# Confidence boost applied to RANGE channel when regime is RANGING
-_RANGING_RANGE_CONF_BOOST: float = 5.0
-
-# Confidence penalty applied to RANGE channel when ADX is in the borderline zone (20-25)
-_RANGE_BORDERLINE_ADX_PENALTY: float = 10.0
-_RANGE_BORDERLINE_ADX_LOW: float = 20.0
-_RANGE_BORDERLINE_ADX_HIGH: float = 25.0
+# Confidence boost applied to SCALP RANGE_FADE setup class when regime is RANGING
+_RANGING_RANGE_FADE_CONF_BOOST: float = 5.0
 
 # Maximum number of symbols scanned concurrently
 _MAX_CONCURRENT_SCANS: int = 10
@@ -94,6 +89,7 @@ _MAX_CONCURRENT_SCANS: int = 10
 _REGIME_CHANNEL_INCOMPATIBLE: Dict[str, List[str]] = {
     "360_SCALP": ["QUIET"],
     "360_SWING": ["VOLATILE", "DIRTY_RANGE"],
+    "360_SPOT": ["VOLATILE"],
 }
 
 # Penalty multiplier applied to soft-gate base penalties depending on live market regime.
@@ -710,15 +706,6 @@ class Scanner:
                 current_regime,
             )
             return True
-        # TAPE channel: skip when regime oscillates too rapidly (more than 2 flips
-        # in the last 30 minutes), which causes signals to be invalidated immediately.
-        if chan_name == "360_THE_TAPE" and self._is_regime_unstable(symbol):
-            flips = self._count_regime_flips(symbol)
-            log.debug(
-                "Regime unstable: skipping {} {} ({} flips in last 30min)",
-                symbol, chan_name, flips,
-            )
-            return True
         return False
 
     def _evaluate_setup(
@@ -780,12 +767,10 @@ class Scanner:
     @staticmethod
     def _get_primary_timeframe(chan_name: str) -> str:
         """Return the primary timeframe interval string for a given channel name."""
-        if chan_name == "360_RANGE":
-            return "15m"
         if chan_name == "360_SWING":
             return "1h"
-        if chan_name == "360_THE_TAPE":
-            return "1m"
+        if chan_name == "360_SPOT":
+            return "4h"
         return "5m"
 
     @staticmethod
@@ -914,10 +899,10 @@ class Scanner:
         sig: Any,
         ctx: ScanContext,
     ) -> None:
-        if chan_name == "360_RANGE" and ctx.is_ranging:
-            sig.confidence += _RANGING_RANGE_CONF_BOOST
+        if chan_name == "360_SCALP" and ctx.is_ranging and sig.setup_class == "RANGE_FADE":
+            sig.confidence += _RANGING_RANGE_FADE_CONF_BOOST
             log.debug(
-                "RANGE confidence boosted for {} (RANGING): {:.1f}",
+                "SCALP RANGE_FADE confidence boosted for {} (RANGING): {:.1f}",
                 symbol,
                 sig.confidence,
             )
@@ -1242,23 +1227,6 @@ class Scanner:
             current_time=time.monotonic(),
             channel=chan_name,
         )
-        # Apply confidence penalty for RANGE signals in the borderline ADX zone (20-25).
-        # The channel now allows ADX up to 25, but a trending-leaning environment
-        # warrants a penalty to reflect reduced signal quality.
-        # Intentionally asymmetric: ADX <= 20 is clean range (no penalty); only
-        # ADX strictly above 20 up to and including 25 triggers the penalty.
-        if (
-            chan_name == "360_RANGE"
-            and ctx.adx_val is not None
-            and _RANGE_BORDERLINE_ADX_LOW < ctx.adx_val <= _RANGE_BORDERLINE_ADX_HIGH
-        ):
-            sig.confidence -= _RANGE_BORDERLINE_ADX_PENALTY
-            log.debug(
-                "RANGE borderline ADX penalty for {} (ADX={:.1f}): {:.1f}",
-                symbol,
-                ctx.adx_val,
-                sig.confidence,
-            )
         sig.confidence = self._clamp_confidence(sig.confidence)
         sig.post_ai_confidence = sig.confidence
         # Apply accumulated soft-gate confidence penalty (regime-scaled).

@@ -1636,7 +1636,7 @@ class TestSignalInvalidation:
     def test_microcap_momentum_threshold_scaled_down(self):
         """Micro-cap tokens (entry < 0.001) use a 10× smaller momentum threshold."""
         from config import INVALIDATION_MIN_AGE_SECONDS, INVALIDATION_MOMENTUM_THRESHOLD
-        channel = "360_THE_TAPE"
+        channel = "360_SCALP"
         min_age = INVALIDATION_MIN_AGE_SECONDS[channel]
         micro_entry = 0.0000064  # BONK-like price
 
@@ -1663,7 +1663,7 @@ class TestSignalInvalidation:
     def test_normal_cap_momentum_threshold_not_scaled(self):
         """Standard-price tokens (entry >= 0.001) use the base momentum threshold."""
         from config import INVALIDATION_MIN_AGE_SECONDS, INVALIDATION_MOMENTUM_THRESHOLD
-        channel = "360_THE_TAPE"
+        channel = "360_SCALP"
         min_age = INVALIDATION_MIN_AGE_SECONDS[channel]
         standard_entry = 1.5  # normal price like XRPUSDT
 

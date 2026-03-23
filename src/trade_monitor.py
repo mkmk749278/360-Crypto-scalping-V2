@@ -332,14 +332,9 @@ class TradeMonitor:
                 log.debug("indicators_fn failed for %s: %s", sig.symbol, exc)
 
         # Fallback: derive EMA9/EMA21 and momentum from candles in data store.
-        # TAPE channel prefers 5m candles for regime detection — 1m flips every 2-3
-        # candles (noise). Fall back to 1m only if 5m is unavailable.
         if indicators is None and self._store is not None:
-            if sig.channel == "360_THE_TAPE":
-                candles = self._store.get_candles(sig.symbol, "5m")
-                if not (candles and len(candles.get("close", [])) >= 21):
-                    candles = self._store.get_candles(sig.symbol, "1m")
-            else:
+            candles = self._store.get_candles(sig.symbol, "5m")
+            if not (candles and len(candles.get("close", [])) >= 21):
                 candles = self._store.get_candles(sig.symbol, "1m")
             if candles and len(candles.get("close", [])) >= 21:
                 closes = np.asarray(candles["close"], dtype=np.float64)
@@ -664,8 +659,7 @@ class TradeMonitor:
         chan_emojis = {
             "360_SCALP": "⚡",
             "360_SWING": "🏛️",
-            "360_RANGE": "⚖️",
-            "360_THE_TAPE": "🐋",
+            "360_SPOT": "📈",
             "360_GEM": "💎",
         }
         chan_emoji = chan_emojis.get(sig.channel, "📡")
@@ -702,8 +696,7 @@ class TradeMonitor:
         chan_emojis = {
             "360_SCALP": "⚡",
             "360_SWING": "🏛️",
-            "360_RANGE": "⚖️",
-            "360_THE_TAPE": "🐋",
+            "360_SPOT": "📈",
             "360_GEM": "💎",
         }
         chan_emoji = chan_emojis.get(sig.channel, "📡")
