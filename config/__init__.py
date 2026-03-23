@@ -98,13 +98,13 @@ ONCHAIN_API_KEY: str = os.getenv("ONCHAIN_API_KEY", "")
 # Pair management
 # ---------------------------------------------------------------------------
 PAIR_FETCH_INTERVAL_HOURS: int = int(os.getenv("PAIR_FETCH_INTERVAL_HOURS", "6"))
-TOP_PAIRS_COUNT: int = int(os.getenv("TOP_PAIRS_COUNT", "50"))
+TOP_PAIRS_COUNT: int = int(os.getenv("TOP_PAIRS_COUNT", "150"))
 BATCH_REQUEST_DELAY: float = 0.75  # seconds between Binance REST calls
 NEW_PAIR_MIN_CONFIDENCE: float = 50.0  # lower cap until enough data
 # Minimum 24h USD volume for a symbol to be included in expensive API scans.
 # Symbols below this threshold are skipped by the pre-filter before any
 # order-book or kline fetches, reducing unnecessary weight consumption.
-SCAN_MIN_VOLUME_USD: float = float(os.getenv("SCAN_MIN_VOLUME_USD", "1000000"))
+SCAN_MIN_VOLUME_USD: float = float(os.getenv("SCAN_MIN_VOLUME_USD", "500000"))
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +122,7 @@ SEED_TIMEFRAMES: List[TimeframeSeed] = [
     TimeframeSeed("15m", 500),
     TimeframeSeed("1h", 500),
     TimeframeSeed("4h", 500),
+    TimeframeSeed("1d", 365),
 ]
 SEED_TICK_LIMIT: int = 5000  # recent trades
 
@@ -278,7 +279,7 @@ WS_SESSION_RECYCLE_ATTEMPTS: int = int(os.getenv("WS_SESSION_RECYCLE_ATTEMPTS", 
 # backfill that warms indicator pipelines when a WS outage begins.
 WS_FALLBACK_BULK_LIMIT: int = int(os.getenv("WS_FALLBACK_BULK_LIMIT", "200"))
 # Timeframes fetched in the bulk backfill (covers all channel strategies).
-WS_FALLBACK_TIMEFRAMES: List[str] = ["1m", "5m", "15m", "1h"]
+WS_FALLBACK_TIMEFRAMES: List[str] = ["1m", "5m", "15m", "1h", "4h"]
 # Timeframes polled in the ongoing limit=1 REST loop (most frequently needed).
 WS_FALLBACK_POLL_INTERVALS: List[str] = ["1m", "5m"]
 

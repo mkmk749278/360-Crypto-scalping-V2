@@ -254,6 +254,8 @@ class Bootstrap:
             s = sym.lower()
             spot_streams.append(f"{s}@kline_1m")
             spot_streams.append(f"{s}@kline_5m")
+            spot_streams.append(f"{s}@kline_1h")
+            spot_streams.append(f"{s}@kline_4h")
             spot_streams.append(f"{s}@trade")
 
         futures_syms = engine.pair_mgr.futures_symbols
@@ -261,6 +263,8 @@ class Bootstrap:
             s = sym.lower()
             futures_kline_streams.append(f"{s}@kline_1m")
             futures_kline_streams.append(f"{s}@kline_5m")
+            futures_kline_streams.append(f"{s}@kline_1h")
+            futures_kline_streams.append(f"{s}@kline_4h")
             # Separate @forceOrder (liquidation) streams into their own pool
             # to prevent liquidation cascades from starving kline connections.
             # During Extreme Fear events, the flood of forceOrder events across
