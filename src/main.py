@@ -63,6 +63,7 @@ from config import (
     CIRCUIT_BREAKER_MAX_HOURLY_SL,
     CIRCUIT_BREAKER_MAX_DAILY_DRAWDOWN_PCT,
     CIRCUIT_BREAKER_COOLDOWN_SECONDS,
+    CHANNEL_TELEGRAM_MAP,
     ONCHAIN_API_KEY,
     PERFORMANCE_TRACKER_PATH,
 )
@@ -282,6 +283,17 @@ class CryptoSignalEngine:
     # ------------------------------------------------------------------
 
     async def boot(self) -> None:
+        # Warn operators about misconfigured Telegram channel IDs so that
+        # signals are not silently dropped by the signal router.
+        for chan_name, chan_id in CHANNEL_TELEGRAM_MAP.items():
+            if not chan_id:
+                log.warning(
+                    "⚠️  STARTUP: Telegram channel ID for '%s' is not configured "
+                    "(CHANNEL_TELEGRAM_MAP[%s] is empty). Signals for this channel "
+                    "will be silently dropped. Set the corresponding env variable "
+                    "in .env before starting the engine.",
+                    chan_name, chan_name,
+                )
         await self._bootstrap.boot()
         # Sync boot_time to command handler after boot sets it
         self._command_handler.boot_time = self._boot_time

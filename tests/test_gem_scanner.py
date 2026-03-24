@@ -132,8 +132,9 @@ class TestGemScannerVolume:
 
 
 class TestGemScannerMACrossover:
-    def test_no_ma_crossover_returns_none(self):
-        """Flat price with no EMA crossover — scanner returns None."""
+    def test_no_ma_crossover_with_insufficient_history_returns_none(self):
+        """With only 100 candles (< 200 minimum), scanner returns None due to
+        insufficient history — regardless of MA crossover status."""
         scanner = GemScanner(
             GemScannerConfig(
                 enabled=True,
@@ -153,7 +154,39 @@ class TestGemScannerMACrossover:
             "close": closes, "volume": volumes,
         }
         result = scanner.scan("TOKENUSDT", candles)
-        assert result is None
+        assert result is None  # fails at ≥200 candle check
+
+    def test_no_ma_crossover_applies_confidence_penalty(self):
+        """When MA crossover is absent, confidence is penalised by 15 pts but
+        the scanner does NOT hard-block the signal — it still returns a GemSignal
+        when all other filters pass."""
+        scanner = GemScanner(
+            GemScannerConfig(
+                enabled=True,
+                min_drawdown_pct=70.0,
+                max_range_pct=40.0,
+                min_volume_ratio=1.5,
+                max_daily_signals=10,
+            )
+        )
+        n = 250
+        # Flat closes — no EMA crossover possible
+        closes = [1.0] * n
+        # ATH in first candle → ≥70% drawdown
+        highs = [10.0] + [1.02] * (n - 1)
+        lows = [0.98] * n
+        # Strong volume surge in last 7 candles
+        volumes = [1000.0] * (n - 7) + [4000.0] * 7
+        candles = {
+            "open": closes, "high": highs, "low": lows,
+            "close": closes, "volume": volumes,
+        }
+        result = scanner.scan("TOKENUSDT", candles)
+        # With 250 candles and all other filters passing, the scanner must return a
+        # GemSignal even when MA crossover is absent (soft penalty, not hard gate).
+        assert result is not None
+        assert isinstance(result, GemSignal)
+        assert not result.ma_crossover
 
 
 class TestGemScannerValidGem:

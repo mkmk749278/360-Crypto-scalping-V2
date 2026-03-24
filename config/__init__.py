@@ -29,9 +29,13 @@ BINANCE_FUTURES_WS_BASE: str = os.getenv("BINANCE_FUTURES_WS_BASE", "wss://fstre
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_SCALP_CHANNEL_ID: str = os.getenv("TELEGRAM_SCALP_CHANNEL_ID", "")
 TELEGRAM_SWING_CHANNEL_ID: str = os.getenv("TELEGRAM_SWING_CHANNEL_ID", "")
+# REQUIRED: These MUST be set in .env for SPOT and GEM signals to be published.
+# If left empty, signals are silently dropped by the signal router.
 TELEGRAM_SPOT_CHANNEL_ID: str = os.getenv("TELEGRAM_SPOT_CHANNEL_ID", "")
 TELEGRAM_FREE_CHANNEL_ID: str = os.getenv("TELEGRAM_FREE_CHANNEL_ID", "")
 TELEGRAM_ADMIN_CHAT_ID: str = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "")
+# REQUIRED: These MUST be set in .env for SPOT and GEM signals to be published.
+# If left empty, signals are silently dropped by the signal router.
 TELEGRAM_GEM_CHANNEL_ID: str = os.getenv("TELEGRAM_GEM_CHANNEL_ID", "")
 
 # ---------------------------------------------------------------------------

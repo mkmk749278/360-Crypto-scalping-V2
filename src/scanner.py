@@ -15,7 +15,10 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
+import uuid
+
 from config import (
+    CHANNEL_GEM,
     SCAN_MIN_VOLUME_USD,
     SEED_TIMEFRAMES,
     SIGNAL_SCAN_COOLDOWN_SECONDS,
@@ -25,6 +28,8 @@ from config import (
     TIER3_SCAN_INTERVAL_MINUTES,
 )
 from src.binance import BinanceClient
+from src.channels.base import Signal as _Signal
+from src.smc import Direction
 from src.rate_limiter import rate_limiter
 from src.confidence import (
     ConfidenceInput,
@@ -62,7 +67,7 @@ from src.mtf import check_mtf_gate
 from src.oi_filter import analyse_oi, check_oi_gate
 from src.pair_manager import PairTier
 from src.spoof_detect import check_spoof_gate
-from src.utils import get_logger, price_decimal_fmt
+from src.utils import get_logger, price_decimal_fmt, utcnow
 from src.volume_divergence import check_volume_divergence_gate
 from src.vwap import check_vwap_extension, compute_vwap
 
@@ -102,7 +107,7 @@ _REGIME_CHANNEL_INCOMPATIBLE: Dict[str, List[str]] = {
     "360_SCALP_CVD":  ["QUIET"],
     "360_SCALP_OBI":  ["QUIET"],
     "360_SWING":      ["VOLATILE", "DIRTY_RANGE"],
-    "360_SPOT":       ["VOLATILE"],
+    "360_SPOT":       ["DIRTY_RANGE"],
 }
 
 # Penalty multiplier applied to soft-gate base penalties depending on live market regime.
@@ -366,6 +371,20 @@ class Scanner:
                 if _now - self._last_tier3_scan_time >= TIER3_SCAN_INTERVAL_MINUTES * 60:
                     self._last_tier3_scan_time = _now
                     await self._lightweight_tier3_scan()
+
+                # Gem scanner (interval-gated by GEM_SCAN_INTERVAL_HOURS)
+                if self.gem_scanner is not None and self.gem_scanner.enabled:
+                    _wall_now = time.time()
+                    _gem_interval_s = self.gem_scanner.scan_interval_hours * 3600
+                    if _wall_now - self.gem_scanner._last_scan >= _gem_interval_s:
+                        self.gem_scanner.update_last_scan()
+                        for _sym, _info in sorted_pairs:
+                            try:
+                                await self._scan_gem_symbol(_sym)
+                            except Exception as _exc:
+                                log.warning(
+                                    "Gem scan error for {} ({}): {}", _sym, type(_exc).__name__, _exc
+                                )
 
             except asyncio.CancelledError:
                 break
@@ -749,12 +768,15 @@ class Scanner:
             )
             return True
         if ctx.market_state == MarketState.VOLATILE_UNSUITABLE:
-            log.debug(
-                "Skipping {} {} – volatile/unsuitable market state",
-                symbol,
-                chan_name,
-            )
-            return True
+            # Higher-timeframe strategies (SPOT/GEM operate on H4/D1/W1) can
+            # tolerate short-term intraday volatility — only block lower-TF channels.
+            if chan_name not in ("360_SPOT", "360_GEM"):
+                log.debug(
+                    "Skipping {} {} – volatile/unsuitable market state",
+                    symbol,
+                    chan_name,
+                )
+                return True
         if chan_name in self.paused_channels:
             return True
         if self._is_in_cooldown(symbol, chan_name):
@@ -1437,3 +1459,73 @@ class Scanner:
                 len(promoted), promoted[:10],
             )
 
+    async def _scan_gem_symbol(self, symbol: str) -> None:
+        """Evaluate a single symbol through the gem scanner and enqueue if qualifying.
+
+        Loads daily (1d) and weekly (1w) candles from the data store, invokes
+        :meth:`src.gem_scanner.GemScanner.scan`, and converts a qualifying
+        :class:`src.gem_scanner.GemSignal` into a :class:`src.channels.base.Signal`
+        for the ``360_GEM`` channel before enqueuing it.
+        """
+        if self.gem_scanner is None or not self.gem_scanner.enabled:
+            return
+
+        daily_raw = self.data_store.get_candles(symbol, "1d")
+        if not daily_raw:
+            return
+        daily_candles = _normalize_candle_dict(daily_raw)
+
+        weekly_raw = self.data_store.get_candles(symbol, "1w")
+        weekly_candles = _normalize_candle_dict(weekly_raw) if weekly_raw else None
+
+        gem_sig = self.gem_scanner.scan(symbol, daily_candles, weekly_candles)
+        if gem_sig is None:
+            return
+
+        if gem_sig.confidence < CHANNEL_GEM.min_confidence:
+            log.debug(
+                "Gem signal for {} below min confidence ({:.1f} < {})",
+                symbol, gem_sig.confidence, CHANNEL_GEM.min_confidence,
+            )
+            return
+
+        close = gem_sig.current_price
+        # CHANNEL_GEM.sl_pct_range stores values as fractions (e.g. 0.10 = 10%),
+        # used directly as a multiplier — NOT divided by 100 — to produce the
+        # SL distance for deeply discounted altcoins (typically 10–30% from entry).
+        sl_dist = close * CHANNEL_GEM.sl_pct_range[0]
+        sl = close - sl_dist
+        tp1 = close + sl_dist * CHANNEL_GEM.tp_ratios[0]
+        tp2 = close + sl_dist * CHANNEL_GEM.tp_ratios[1]
+        tp3 = close + sl_dist * CHANNEL_GEM.tp_ratios[2]
+
+        if sl >= close:
+            return
+
+        sig = _Signal(
+            channel=CHANNEL_GEM.name,
+            symbol=symbol,
+            direction=Direction.LONG,
+            entry=close,
+            stop_loss=round(sl, 8),
+            tp1=round(tp1, 8),
+            tp2=round(tp2, 8),
+            tp3=round(tp3, 8),
+            trailing_active=True,
+            trailing_desc=f"{CHANNEL_GEM.trailing_atr_mult}×ATR",
+            confidence=gem_sig.confidence,
+            ai_sentiment_label="",
+            ai_sentiment_summary="",
+            risk_label="Speculative",
+            timestamp=utcnow(),
+            signal_id=f"GEM-{uuid.uuid4().hex[:8].upper()}",
+            current_price=close,
+            original_sl_distance=sl_dist,
+        )
+
+        if await self._enqueue_signal(sig):
+            self.gem_scanner.record_published()
+            log.info(
+                "💎 GEM signal enqueued: {} @ {:.8g} (confidence={:.1f})",
+                symbol, close, gem_sig.confidence,
+            )

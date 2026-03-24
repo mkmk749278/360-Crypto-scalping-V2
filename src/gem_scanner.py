@@ -92,6 +92,15 @@ class GemScanner:
     def enabled(self) -> bool:
         return self._config.enabled
 
+    @property
+    def scan_interval_hours(self) -> int:
+        """Return the configured scan interval in hours."""
+        return self._config.scan_interval_hours
+
+    def update_last_scan(self) -> None:
+        """Record the current wall-clock time as the last gem scan timestamp."""
+        self._last_scan = time.time()
+
     def set_gem_pairs(self, symbols: List[str]) -> None:
         """Store the gem-specific pair list being tracked."""
         self._gem_pairs = list(symbols)
@@ -225,14 +234,19 @@ class GemScanner:
                 )
                 ma_crossover = price_above_now and price_below_recent
 
-        if not ma_crossover:
-            return None
-
-        # Step 5: Calculate x-potential and confidence
         x_potential = ath / current_price
 
         # Confidence scoring for gems
         confidence = 50.0  # Base
+
+        # MA crossover: soft modifier instead of hard gate.
+        # A fresh golden cross boosts confidence; absence applies a penalty but
+        # still allows the signal through so the min_confidence check can decide.
+        if ma_crossover:
+            confidence += 10.0
+        else:
+            confidence -= 15.0
+
         if drawdown_pct >= 85:
             confidence += 15.0
         elif drawdown_pct >= 75:

@@ -49,26 +49,26 @@ class SpotChannel(BaseChannel):
 
         # EMA200 filter — only LONG above EMA200 (spot accumulation is buy-only)
         ema200 = ind_h4.get("ema200_last")
-        if ema200 is not None and close_h4 < ema200 * 0.98:
+        if ema200 is not None and close_h4 < ema200 * 0.95:
             return None
 
         # --- Accumulation breakout: price must clear recent H4 resistance ---
         highs = h4.get("high", [])
-        if len(highs) < 20:
+        if len(highs) < 10:
             return None
-        recent_high = max(float(h) for h in highs[-20:-1])
-        if close_h4 <= recent_high:
+        recent_high = max(float(h) for h in highs[-10:-1])
+        if close_h4 < recent_high * 0.998:
             return None  # No breakout yet
 
-        # Volume expansion: current USD volume must exceed 20-bar average
+        # Volume expansion: current USD volume must exceed 10-bar average
         # Use USD-approximated volume (base vol × close price) to avoid
         # price-change bias when comparing raw base-asset volumes.
         volumes = h4.get("volume", [])
         closes_list = h4.get("close", [])
-        if len(volumes) < 20 or len(closes_list) < 20:
+        if len(volumes) < 10 or len(closes_list) < 10:
             return None
-        usd_volumes = [float(v) * float(c) for v, c in zip(volumes[-20:], closes_list[-20:])]
-        avg_usd_vol = sum(usd_volumes[:-1]) / 19
+        usd_volumes = [float(v) * float(c) for v, c in zip(volumes[-10:], closes_list[-10:])]
+        avg_usd_vol = sum(usd_volumes[:-1]) / 9
         current_usd_vol = usd_volumes[-1]
         if current_usd_vol < avg_usd_vol * 1.2:
             return None  # Insufficient volume expansion
