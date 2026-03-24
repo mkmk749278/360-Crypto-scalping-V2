@@ -477,6 +477,11 @@ class SignalRouter:
                 context["sector"] = self.sector_comparator.get_sector(signal.symbol)
             except Exception:
                 pass
+        # AI sentiment fields (populated for SPOT/GEM channels)
+        if signal.ai_sentiment_label:
+            context["sentiment_label"] = signal.ai_sentiment_label
+        if signal.ai_sentiment_summary:
+            context["sentiment_summary"] = signal.ai_sentiment_summary
         return context
 
     def _build_portfolio_chart(self, signal: Signal) -> Optional[bytes]:

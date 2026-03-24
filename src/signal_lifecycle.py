@@ -118,6 +118,9 @@ class SignalLifecycleMonitor:
     exchange_mgr:
         Optional exchange manager (not currently used; reserved for future
         price cross-checks against a second exchange).
+    send_photo:
+        Optional async callable ``(chat_id: str, photo_bytes: bytes) → bool``.
+        When provided, chart images are sent alongside text lifecycle updates.
     """
 
     def __init__(
@@ -127,12 +130,14 @@ class SignalLifecycleMonitor:
         regime_detector: MarketRegimeDetector,
         send_telegram: Callable[[str, str], Coroutine],
         exchange_mgr: Any = None,
+        send_photo: Optional[Callable[[str, bytes], Coroutine]] = None,
     ) -> None:
         self._router = router
         self._data_store = data_store
         self._regime_detector = regime_detector
         self._send_telegram = send_telegram
         self._exchange_mgr = exchange_mgr
+        self._send_photo = send_photo
         self._running: bool = False
 
     # ------------------------------------------------------------------
@@ -246,6 +251,10 @@ class SignalLifecycleMonitor:
             close_reason=close_reason,
         )
         await self._post_update(signal, message)
+
+        # Send chart image alongside text update when photo callback is available (feature 4)
+        if self._send_photo is not None:
+            await self._post_chart(signal, candles)
 
     # ------------------------------------------------------------------
     # Individual assessment helpers
@@ -567,5 +576,60 @@ class SignalLifecycleMonitor:
         except Exception as exc:
             log.error(
                 "Failed to post lifecycle update for {} {}: {}",
+                signal.symbol, signal.channel, exc,
+            )
+
+    async def _post_chart(
+        self,
+        signal: Signal,
+        candles: Optional[Any],
+    ) -> None:
+        """Generate and post a portfolio chart image for *signal* (feature 4).
+
+        Uses :func:`~src.chart_generator.generate_portfolio_chart` to produce
+        a PNG with entry/SL/TP overlays, then sends it via the ``_send_photo``
+        callback.  Silently skips when candle data is insufficient or chart
+        generation fails.
+        """
+        if self._send_photo is None:
+            return
+
+        chat_id = CHANNEL_TELEGRAM_MAP.get(signal.channel, "")
+        if not chat_id:
+            return
+
+        if not candles:
+            return
+
+        try:
+            from src.chart_generator import generate_portfolio_chart  # local import to avoid circular
+
+            closes = [float(v) for v in candles.get("close", [])]
+            highs = [float(v) for v in candles.get("high", [])]
+            lows = [float(v) for v in candles.get("low", [])]
+            volumes = [float(v) for v in candles.get("volume", [])]
+
+            tp_levels = [t for t in [signal.tp1, signal.tp2, signal.tp3] if t]
+
+            chart_bytes = generate_portfolio_chart(
+                symbol=signal.symbol,
+                closes=closes,
+                highs=highs,
+                lows=lows,
+                volumes=volumes,
+                entry=signal.entry,
+                sl=signal.stop_loss,
+                tp_levels=tp_levels,
+                channel_name=signal.channel,
+            )
+            if chart_bytes:
+                await self._send_photo(chat_id, chart_bytes)
+                log.debug(
+                    "Lifecycle chart sent for {} {} ({} bytes)",
+                    signal.symbol, signal.channel, len(chart_bytes),
+                )
+        except Exception as exc:
+            log.debug(
+                "Lifecycle chart generation failed for {} {}: {}",
                 signal.symbol, signal.channel, exc,
             )

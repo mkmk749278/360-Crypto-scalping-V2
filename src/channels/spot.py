@@ -1,6 +1,7 @@
 """360_SPOT – H4/D1 Spot Accumulation Channel 📈
 
-Trigger : H4/D1 accumulation breakout with sustained volume expansion
+Trigger : H4/D1 accumulation breakout with sustained volume expansion (LONG)
+          OR H4/D1 distribution breakdown with sustained volume on down-move (SHORT)
 Filters : EMA200, ADX, ATR, spread, volume
 Risk    : SL 0.5–2 %, TP1 2R, TP2 5R, TP3 10R, Trailing 3×ATR, max hold 7 days
 """
@@ -16,6 +17,9 @@ from src.dca import compute_dca_zone
 from src.filters import check_adx, check_spread, check_volume
 from src.smc import Direction
 from src.utils import utcnow
+
+# Short signals require a higher minimum confidence to guard against false shorts.
+_SHORT_CONFIDENCE_BOOST = 5.0
 
 
 class SpotChannel(BaseChannel):
@@ -46,72 +50,205 @@ class SpotChannel(BaseChannel):
             return None
 
         close_h4 = float(h4["close"][-1])
-
-        # EMA200 filter — only LONG above EMA200 (spot accumulation is buy-only)
         ema200 = ind_h4.get("ema200_last")
-        if ema200 is not None and close_h4 < ema200:
-            return None
-
-        # Daily EMA50 alignment: ensure the daily trend is also up
         ind_d1 = indicators.get("1d", {})
         ema50_daily = ind_d1.get("ema50_last")
-        if ema50_daily is not None and close_h4 < ema50_daily:
-            return None  # Daily trend is down, don't spot-accumulate
-
-        # Bollinger squeeze detection: require tight BB before breakout
+        rsi_last = ind_h4.get("rsi_last")
+        mss = smc_data.get("mss")
         bb_width = ind_h4.get("bb_width_pct")
+        highs = h4.get("high", [])
+        lows = h4.get("low", [])
+        volumes = h4.get("volume", [])
+        closes_list = h4.get("close", [])
+        atr_val = ind_h4.get("atr_last", close_h4 * 0.01)
+
+        # -------------------------------------------------------------------
+        # LONG path: price above EMA200, both trend filters bullish
+        # -------------------------------------------------------------------
+        if ema200 is not None and close_h4 >= ema200:
+            # Daily EMA50 alignment: ensure the daily trend is also up
+            if ema50_daily is not None and close_h4 < ema50_daily:
+                pass  # fall through to SHORT check
+            else:
+                long_sig = self._try_long(
+                    symbol, close_h4, atr_val, h4, highs, lows, volumes,
+                    closes_list, bb_width, rsi_last, mss,
+                )
+                if long_sig is not None:
+                    return long_sig
+
+        # -------------------------------------------------------------------
+        # SHORT path (feature 6): price below EMA200 AND below daily EMA50
+        # Both conditions must be true to filter out mixed/neutral setups.
+        # -------------------------------------------------------------------
+        if ema200 is not None and close_h4 < ema200:
+            if ema50_daily is not None and close_h4 < ema50_daily:
+                return self._try_short(
+                    symbol, close_h4, atr_val, h4, highs, lows, volumes,
+                    closes_list, bb_width, rsi_last, mss,
+                )
+
+        return None
+
+    # ------------------------------------------------------------------
+    # LONG signal builder
+    # ------------------------------------------------------------------
+
+    def _try_long(
+        self,
+        symbol: str,
+        close: float,
+        atr_val: float,
+        h4: dict,
+        highs: list,
+        lows: list,
+        volumes: list,
+        closes_list: list,
+        bb_width: Optional[float],
+        rsi_last: Optional[float],
+        mss: object,
+    ) -> Optional[Signal]:
+        """Attempt to build a LONG spot signal."""
+        # Bollinger squeeze detection: require tight BB before breakout
         if bb_width is not None and bb_width > 4.0:
             return None  # Not squeezing, not a real accumulation pattern
 
-        # --- Accumulation breakout: price must clear recent H4 resistance ---
-        highs = h4.get("high", [])
+        # Accumulation breakout: price must clear recent H4 resistance
         if len(highs) < 10:
             return None
         recent_high = max(float(h) for h in highs[-10:-1])
-        if close_h4 < recent_high * 0.998:
+        if close < recent_high * 0.998:
             return None  # No breakout yet
 
-        # Volume expansion: current USD volume must exceed 10-bar average
-        # Use USD-approximated volume (base vol × close price) to avoid
-        # price-change bias when comparing raw base-asset volumes.
-        volumes = h4.get("volume", [])
-        closes_list = h4.get("close", [])
+        # Volume expansion
         if len(volumes) < 10 or len(closes_list) < 10:
             return None
         usd_volumes = [float(v) * float(c) for v, c in zip(volumes[-10:], closes_list[-10:])]
         avg_usd_vol = sum(usd_volumes[:-1]) / 9
-        current_usd_vol = usd_volumes[-1]
-        if current_usd_vol < avg_usd_vol * 1.8:
-            return None  # Insufficient volume expansion
+        if usd_volumes[-1] < avg_usd_vol * 1.8:
+            return None
 
-        # SMC trigger (optional) — check for bearish MSS that would contradict accumulation
-        mss = smc_data.get("mss")
+        # SMC: bearish structure contradicts LONG
+        if mss is not None and getattr(mss, "direction", None) == Direction.SHORT:
+            return None
 
-        # Determine direction — spot channel is LONG-biased accumulation
-        direction = Direction.LONG
-        if mss is not None and mss.direction == Direction.SHORT:
-            return None  # Structural short bias contradicts accumulation setup
-
-        # RSI overbought gate: don't buy into an already overbought market
-        rsi_last = ind_h4.get("rsi_last")
+        # RSI overbought gate
         if rsi_last is not None and rsi_last > 75:
             return None
 
-        close = close_h4
-        atr_val = ind_h4.get("atr_last", close * 0.01)
-
-        # Wider SL for H4/D1 timeframe
         sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val * 1.5)
-
         sl = close - sl_dist
         tp1 = close + sl_dist * self.config.tp_ratios[0]
         tp2 = close + sl_dist * self.config.tp_ratios[1]
         tp3 = close + sl_dist * self.config.tp_ratios[2]
 
-        # Sanity check
         if sl >= close:
             return None
 
+        return self._build_signal(
+            symbol=symbol,
+            direction=Direction.LONG,
+            close=close,
+            sl=sl,
+            tp1=tp1,
+            tp2=tp2,
+            tp3=tp3,
+            sl_dist=sl_dist,
+        )
+
+    # ------------------------------------------------------------------
+    # SHORT signal builder
+    # ------------------------------------------------------------------
+
+    def _try_short(
+        self,
+        symbol: str,
+        close: float,
+        atr_val: float,
+        h4: dict,
+        highs: list,
+        lows: list,
+        volumes: list,
+        closes_list: list,
+        bb_width: Optional[float],
+        rsi_last: Optional[float],
+        mss: object,
+    ) -> Optional[Signal]:
+        """Attempt to build a SHORT spot signal (feature 6).
+
+        Mirrors the LONG logic with inverted conditions:
+        * Bollinger squeeze required before breakdown
+        * Price breaks below recent H4 support (distribution breakdown)
+        * Volume expansion on the down-move
+        * SMC bullish MSS contradicts SHORT → skip
+        * RSI oversold gate (< 25) prevents chasing drops
+        """
+        # Bollinger squeeze
+        if bb_width is not None and bb_width > 4.0:
+            return None
+
+        # Distribution breakdown: price must breach recent H4 support
+        if len(lows) < 10:
+            return None
+        recent_low = min(float(lo) for lo in lows[-10:-1])
+        if close > recent_low * 1.002:
+            return None  # No breakdown yet
+
+        # Volume expansion on the down-move
+        if len(volumes) < 10 or len(closes_list) < 10:
+            return None
+        usd_volumes = [float(v) * float(c) for v, c in zip(volumes[-10:], closes_list[-10:])]
+        avg_usd_vol = sum(usd_volumes[:-1]) / 9
+        if usd_volumes[-1] < avg_usd_vol * 1.8:
+            return None
+
+        # SMC: bullish structure contradicts SHORT
+        if mss is not None and getattr(mss, "direction", None) == Direction.LONG:
+            return None
+
+        # RSI oversold gate: don't short into an already oversold market
+        if rsi_last is not None and rsi_last < 25:
+            return None
+
+        sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val * 1.5)
+        sl = close + sl_dist          # SL above entry for SHORT
+        tp1 = close - sl_dist * self.config.tp_ratios[0]
+        tp2 = close - sl_dist * self.config.tp_ratios[1]
+        tp3 = close - sl_dist * self.config.tp_ratios[2]
+
+        if sl <= close or tp1 >= close:
+            return None
+
+        return self._build_signal(
+            symbol=symbol,
+            direction=Direction.SHORT,
+            close=close,
+            sl=sl,
+            tp1=tp1,
+            tp2=tp2,
+            tp3=tp3,
+            sl_dist=sl_dist,
+            confidence_boost=_SHORT_CONFIDENCE_BOOST,
+        )
+
+    # ------------------------------------------------------------------
+    # Shared signal factory
+    # ------------------------------------------------------------------
+
+    def _build_signal(
+        self,
+        symbol: str,
+        direction: Direction,
+        close: float,
+        sl: float,
+        tp1: float,
+        tp2: float,
+        tp3: float,
+        sl_dist: float,
+        confidence_boost: float = 0.0,
+    ) -> Signal:
+        """Assemble and return a :class:`Signal` instance."""
+        prefix = "SPOT-SHORT" if direction == Direction.SHORT else "SPOT"
         sig = Signal(
             channel=self.config.name,
             symbol=symbol,
@@ -123,18 +260,18 @@ class SpotChannel(BaseChannel):
             tp3=round(tp3, 8),
             trailing_active=True,
             trailing_desc=f"{self.config.trailing_atr_mult}×ATR",
-            confidence=0.0,
+            confidence=0.0 + confidence_boost,
             ai_sentiment_label="",
             ai_sentiment_summary="",
-            risk_label="Conservative",
+            risk_label="Conservative" if direction == Direction.LONG else "Conservative-Short",
             timestamp=utcnow(),
-            signal_id=f"SPOT-{uuid.uuid4().hex[:8].upper()}",
+            signal_id=f"{prefix}-{uuid.uuid4().hex[:8].upper()}",
             current_price=close,
             original_sl_distance=sl_dist,
         )
 
-        # DCA zone for spot accumulation
-        if self.config.dca_enabled:
+        # DCA zone for LONG spot accumulation only (not SHORT)
+        if direction == Direction.LONG and self.config.dca_enabled:
             dca_lower, dca_upper = compute_dca_zone(
                 close, round(sl, 8), direction, self.config.dca_zone_range
             )
@@ -144,7 +281,6 @@ class SpotChannel(BaseChannel):
             sig.original_tp1 = round(tp1, 8)
             sig.original_tp2 = round(tp2, 8)
             sig.original_tp3 = round(tp3, 8)
-            # Use the DCA zone as the limit-order entry zone for SPOT signals
             sig.entry_zone_low = dca_lower
             sig.entry_zone_high = dca_upper
 

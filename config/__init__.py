@@ -620,6 +620,16 @@ BACKTEST_SLIPPAGE_PCT: float = float(os.getenv("BACKTEST_SLIPPAGE_PCT", "0.03"))
 AUTO_EXECUTION_ENABLED: bool = os.getenv("AUTO_EXECUTION_ENABLED", "false").lower() == "true"
 
 # ---------------------------------------------------------------------------
+# Exchange / CCXT execution config (feature 3)
+# ---------------------------------------------------------------------------
+EXCHANGE_ID: str = os.getenv("EXCHANGE_ID", "binance")
+EXCHANGE_API_KEY: str = os.getenv("EXCHANGE_API_KEY", "")
+EXCHANGE_API_SECRET: str = os.getenv("EXCHANGE_API_SECRET", "")
+EXCHANGE_SANDBOX: bool = os.getenv("EXCHANGE_SANDBOX", "true").lower() == "true"
+POSITION_SIZE_PCT: float = float(os.getenv("POSITION_SIZE_PCT", "2.0"))
+MAX_POSITION_USD: float = float(os.getenv("MAX_POSITION_USD", "100.0"))
+
+# ---------------------------------------------------------------------------
 # Trailing stop – ATR multiplier for adaptive trailing distance
 # ---------------------------------------------------------------------------
 TRAILING_ATR_MULTIPLIER: float = float(os.getenv("TRAILING_ATR_MULTIPLIER", "1.5"))

@@ -70,6 +70,12 @@ class GemScannerConfig:
     min_volume_ratio: float = 1.5
     max_daily_signals: int = 3
     scan_interval_hours: int = 6
+    # On-chain enrichment boosts/penalties (feature 2)
+    whale_accumulation_boost: float = 10.0
+    social_spike_boost: float = 5.0
+    unlock_penalty: float = 10.0
+    # Social volume threshold for "spike" detection
+    social_volume_spike_threshold: float = 2.0
 
 
 class GemScanner:
@@ -122,6 +128,7 @@ class GemScanner:
         symbol: str,
         daily_candles: Dict[str, list],
         weekly_candles: Optional[Dict[str, list]] = None,
+        onchain_data: Optional[Dict] = None,
     ) -> Optional[GemSignal]:
         """Evaluate a single symbol for gem/moonshot potential.
 
@@ -133,6 +140,11 @@ class GemScanner:
             Dict with keys "open", "high", "low", "close", "volume" — daily OHLCV.
         weekly_candles:
             Optional weekly OHLCV for ATH detection. Falls back to daily if None.
+        onchain_data:
+            Optional dict with enrichment data:
+            - ``whale_accumulation`` (bool): whale wallet accumulation detected.
+            - ``social_volume_ratio`` (float): recent vs average social volume.
+            - ``unlock_days`` (int | None): days until next token unlock; None = unknown.
 
         Returns
         -------
@@ -294,6 +306,17 @@ class GemScanner:
                 if obv_slope > 0.1:
                     confidence += 8.0  # Smart money accumulation confirmed via OBV
 
+        # On-chain enrichment modifiers (feature 2)
+        if onchain_data:
+            if onchain_data.get("whale_accumulation"):
+                confidence += self._config.whale_accumulation_boost
+            social_ratio = onchain_data.get("social_volume_ratio", 1.0)
+            if social_ratio > self._config.social_volume_spike_threshold:
+                confidence += self._config.social_spike_boost
+            unlock_days = onchain_data.get("unlock_days")
+            if unlock_days is not None and 0 <= unlock_days <= 7:
+                confidence -= self._config.unlock_penalty
+
         confidence = min(100.0, max(0.0, confidence))
 
         # Daily cap check
@@ -367,6 +390,12 @@ class GemScanner:
                 cfg.max_daily_signals = int(value)
             elif key == "scan_interval_hours":
                 cfg.scan_interval_hours = int(value)
+            elif key == "whale_accumulation_boost":
+                cfg.whale_accumulation_boost = float(value)
+            elif key == "social_spike_boost":
+                cfg.social_spike_boost = float(value)
+            elif key == "unlock_penalty":
+                cfg.unlock_penalty = float(value)
             else:
                 return False, f"Unknown config key: `{key}`"
         except (ValueError, TypeError) as exc:
@@ -374,3 +403,32 @@ class GemScanner:
 
         log.info("GemScanner config updated: %s = %s", key, value)
         return True, f"✅ `{key}` set to `{value}`"
+
+    def adjust_for_regime(self, regime: str) -> None:
+        """Dynamically adjust scanner thresholds based on market regime.
+
+        Parameters
+        ----------
+        regime:
+            Current market regime string from
+            :class:`~src.regime.MarketRegimeDetector`.  Expected values:
+            ``"TRENDING_UP"``, ``"TRENDING_DOWN"``, ``"VOLATILE"``,
+            ``"RANGING"`` (default / fallback).
+        """
+        if regime == "TRENDING_UP":
+            self._config.min_drawdown_pct = 60.0   # Looser in bull
+            self._config.min_volume_ratio = 1.2
+        elif regime == "TRENDING_DOWN":
+            self._config.min_drawdown_pct = 80.0   # Tighter in bear
+            self._config.min_volume_ratio = 2.0
+        elif regime == "VOLATILE":
+            self._config.min_drawdown_pct = 75.0
+            self._config.min_volume_ratio = 1.8
+        else:  # RANGING or unknown
+            self._config.min_drawdown_pct = 70.0   # Default
+            self._config.min_volume_ratio = 1.5
+        log.debug(
+            "GemScanner thresholds adjusted for regime %s: "
+            "min_drawdown=%.0f%% min_vol_ratio=%.1f",
+            regime, self._config.min_drawdown_pct, self._config.min_volume_ratio,
+        )

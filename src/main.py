@@ -54,6 +54,8 @@ from src.signal_router import SignalRouter
 from src.telegram_bot import TelegramBot
 from src.telemetry import TelemetryCollector
 from src.trade_monitor import TradeMonitor
+from src.exchange_client import CCXTClient
+from src.order_manager import OrderManager
 from src.utils import get_logger
 from src.websocket_manager import WebSocketManager
 from src.redis_client import RedisClient
@@ -67,6 +69,13 @@ from config import (
     CHANNEL_TELEGRAM_MAP,
     ONCHAIN_API_KEY,
     PERFORMANCE_TRACKER_PATH,
+    AUTO_EXECUTION_ENABLED,
+    EXCHANGE_ID,
+    EXCHANGE_API_KEY,
+    EXCHANGE_API_SECRET,
+    EXCHANGE_SANDBOX,
+    POSITION_SIZE_PCT,
+    MAX_POSITION_USD,
 )
 
 log = get_logger("main")
@@ -113,6 +122,22 @@ class CryptoSignalEngine:
             pair_mgr=self.pair_mgr,
         )
 
+        # Order execution client and manager (feature 3 — off by default)
+        _exchange_client: Optional[CCXTClient] = None
+        if AUTO_EXECUTION_ENABLED:
+            _exchange_client = CCXTClient(
+                exchange_id=EXCHANGE_ID,
+                api_key=EXCHANGE_API_KEY,
+                secret=EXCHANGE_API_SECRET,
+                sandbox=EXCHANGE_SANDBOX,
+            )
+        self._order_manager = OrderManager(
+            auto_execution_enabled=AUTO_EXECUTION_ENABLED,
+            exchange_client=_exchange_client,
+            position_size_pct=POSITION_SIZE_PCT,
+            max_position_usd=MAX_POSITION_USD,
+        )
+
         # Circuit breaker (must be created before TradeMonitor)
         self._circuit_breaker = CircuitBreaker(
             max_consecutive_sl=CIRCUIT_BREAKER_MAX_CONSECUTIVE_SL,
@@ -139,6 +164,7 @@ class CryptoSignalEngine:
             performance_tracker=self._performance_tracker,
             circuit_breaker=self._circuit_breaker,
             paper_portfolio=self._paper_portfolio,
+            order_manager=self._order_manager,
         )
 
         # Channel strategies
@@ -168,6 +194,7 @@ class CryptoSignalEngine:
             regime_detector=self._regime_detector,
             send_telegram=self.telegram.send_message,
             exchange_mgr=None,  # wired after _exchange_mgr is created below
+            send_photo=self.telegram.send_photo,  # chart images in lifecycle updates (feature 4)
         )
 
         # Predictive AI engine
@@ -464,6 +491,18 @@ class CryptoSignalEngine:
                 await self.router.publish_scoreboard(self._performance_tracker)
             except Exception as exc:
                 log.error("Weekly scoreboard publish error: %s", exc)
+
+    async def _daily_performance_report_loop(self) -> None:
+        """Auto-generate an HTML performance report every 24 hours (feature 5)."""
+        _REPORT_INTERVAL_SECONDS = 86400  # 24 hours
+        while True:
+            await asyncio.sleep(_REPORT_INTERVAL_SECONDS)
+            try:
+                from src.performance_report import generate_html_report
+                path = generate_html_report(self._performance_tracker)
+                log.info("Daily performance report generated: %s", path)
+            except Exception as exc:
+                log.error("Daily performance report generation failed: %s", exc)
 
     def _current_ws_symbol_sets(self) -> tuple[set[str], set[str]]:
         ws_limit = _WS_SYMBOL_LIMIT

@@ -334,6 +334,9 @@ class Scanner:
         # Regime history: symbol → list of (monotonic_time, regime_value) tuples
         # Used to detect oscillating / unstable regimes (too many flips in window).
         self._regime_history: Dict[str, List[Tuple[float, str]]] = {}
+        # Most recent overall-market regime value (updated per scan cycle; used by
+        # gem scanner for adaptive threshold adjustment — feature 7).
+        self._last_market_regime: str = "RANGING"
 
         # Semaphore to limit concurrent symbol scans
         self._scan_semaphore: asyncio.Semaphore = asyncio.Semaphore(_MAX_CONCURRENT_SCANS)
@@ -745,6 +748,10 @@ class Scanner:
         regime_candles = candles.get("5m", candles.get("1m"))
         regime_result = self.regime_detector.classify(regime_ind, regime_candles, timeframe=regime_tf)
         log.debug("{} regime: {}", symbol, regime_result.regime.value)
+        # Keep a rolling picture of the overall market regime using BTCUSDT as
+        # the representative benchmark (feature 7 – gem adaptive thresholds).
+        if "BTC" in symbol.upper():
+            self._last_market_regime = regime_result.regime.value
 
         # Record regime history for oscillation / instability detection
         _now = time.monotonic()
@@ -1376,6 +1383,8 @@ class Scanner:
             try:
                 ai_result = await get_ai_insight(symbol)
                 sentiment_score = ai_result.score
+                sig.ai_sentiment_label = ai_result.label
+                sig.ai_sentiment_summary = ai_result.summary
             except Exception as _exc:
                 log.debug("Sentiment fetch failed for {}: {}", symbol, _exc)
 
@@ -1571,6 +1580,12 @@ class Scanner:
         if self.gem_scanner is None or not self.gem_scanner.enabled:
             return
 
+        # Adjust gem scanner thresholds for the current market regime (feature 7)
+        try:
+            self.gem_scanner.adjust_for_regime(self._last_market_regime)
+        except Exception as _rexc:
+            log.debug("Regime adjustment for gem scanner failed: {}", _rexc)
+
         daily_raw = self.data_store.get_candles(symbol, "1d")
         if not daily_raw:
             return
@@ -1579,7 +1594,21 @@ class Scanner:
         weekly_raw = self.data_store.get_candles(symbol, "1w")
         weekly_candles = _normalize_candle_dict(weekly_raw) if weekly_raw else None
 
-        gem_sig = self.gem_scanner.scan(symbol, daily_candles, weekly_candles)
+        # Fetch on-chain enrichment data (feature 2) — fail-open on errors
+        onchain_data: Optional[dict] = None
+        if self.onchain_client is not None:
+            try:
+                oc_result = await self.onchain_client.get_exchange_flow(symbol)
+                # Interpret a high (>7.5) exchange-flow score as whale accumulation
+                onchain_data = {
+                    "whale_accumulation": oc_result.score >= 7.5,
+                    "social_volume_ratio": 1.0,  # placeholder; extend with real social API
+                    "unlock_days": None,          # placeholder; extend with token unlock API
+                }
+            except Exception as _oexc:
+                log.debug("On-chain enrichment fetch failed for {}: {}", symbol, _oexc)
+
+        gem_sig = self.gem_scanner.scan(symbol, daily_candles, weekly_candles, onchain_data)
         if gem_sig is None:
             return
 

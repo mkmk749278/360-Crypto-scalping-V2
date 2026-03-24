@@ -181,6 +181,7 @@ class Bootstrap:
             asyncio.create_task(engine._macro_watchdog.start()),
             asyncio.create_task(engine._liquidation_flush_loop()),
             asyncio.create_task(engine._lifecycle_monitor.start()),
+            asyncio.create_task(engine._daily_performance_report_loop()),
         ]
 
         # OI poller – background REST polling for Binance Futures Open Interest

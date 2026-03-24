@@ -152,3 +152,36 @@ async def handle_gem_config(args: List[str], ctx: CommandContext) -> None:
         return
     _success, msg = ctx.gem_scanner.update_config(args[0], args[1])
     await ctx.reply(msg)
+
+
+@registry.command(
+    "/report",
+    aliases=["/performance_report"],
+    admin=True,
+    group="channels",
+    help_text="Generate HTML performance dashboard: /report",
+)
+async def handle_report(args: List[str], ctx: CommandContext) -> None:
+    """Generate and optionally send an HTML performance report."""
+    if ctx.performance_tracker is None:
+        await ctx.reply("ℹ️ Performance tracker is not enabled.")
+        return
+    try:
+        from src.performance_report import generate_html_report
+        path = generate_html_report(ctx.performance_tracker)
+        await ctx.reply(f"✅ Performance report generated: `{path}`")
+        # Send the HTML file as a Telegram document if the API supports it
+        try:
+            report_bytes = open(path, "rb").read()
+            await ctx.telegram.send_document(
+                ctx.chat_id,
+                document=report_bytes,
+                filename="performance_report.html",
+                caption="📊 360 Crypto — Performance Dashboard",
+            )
+        except Exception:
+            # send_document may not be implemented in all TelegramBot versions;
+            # the text confirmation above is sufficient.
+            pass
+    except Exception as exc:
+        await ctx.reply(f"❌ Report generation failed: {exc}")
