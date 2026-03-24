@@ -130,20 +130,29 @@ class ExchangeManager:
     async def _fetch_price_second(self, symbol: str) -> Optional[float]:
         """Fetch the latest price from the second exchange.
 
-        Default implementation calls ``{second_exchange_url}?symbol={symbol}``
-        and expects a JSON response with a ``"price"`` or ``"lastPrice"`` field.
-
-        Override this method to integrate Bybit, OKX, or any other exchange.
+        Supports URLs that already contain query parameters (e.g. Bybit V5
+        ``?category=linear``) by appending ``&symbol=`` instead of
+        ``?symbol=``.  Handles both Bybit V5 nested response format
+        (``{"result": {"list": [{"lastPrice": "..."}]}}``) and Binance-style
+        flat format (``{"price": "..."}`` or ``{"lastPrice": "..."}`).
         """
         if not self._second_url:
             return None
         try:
             session = await self._ensure_session()
-            url = f"{self._second_url}?symbol={symbol}"
+            sep = "&" if "?" in self._second_url else "?"
+            url = f"{self._second_url}{sep}symbol={symbol}"
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                 if resp.status != 200:
                     return None
                 data = await resp.json()
+                # Bybit V5 nested format: {"result": {"list": [{"lastPrice": "..."}]}}
+                if "result" in data and "list" in data.get("result", {}):
+                    items = data["result"]["list"]
+                    if items:
+                        raw = items[0].get("lastPrice") or items[0].get("last")
+                        return float(raw) if raw else None
+                # Binance-style flat format: {"price": "..."} or {"lastPrice": "..."}
                 raw = data.get("price") or data.get("lastPrice") or data.get("last")
                 return float(raw) if raw is not None else None
         except Exception as exc:
