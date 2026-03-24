@@ -176,6 +176,7 @@ class Bootstrap:
                 on_new_member=engine._welcome_new_member,
             )),
             asyncio.create_task(engine._free_channel_loop()),
+            asyncio.create_task(engine._weekly_scoreboard_loop()),
             asyncio.create_task(engine._snapshot_loop()),
             asyncio.create_task(engine._macro_watchdog.start()),
             asyncio.create_task(engine._liquidation_flush_loop()),

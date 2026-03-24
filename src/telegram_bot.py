@@ -210,9 +210,141 @@ class TelegramBot:
             text = text.replace(ch, f"\\{ch}")
         return text
 
+    # Channel display names (strip 360_ prefix, use friendly names)
+    _CHANNEL_DISPLAY_NAME = {
+        "360_SCALP": "SCALP",
+        "360_SCALP_FVG": "SCALP FVG",
+        "360_SCALP_CVD": "SCALP CVD",
+        "360_SCALP_VWAP": "SCALP VWAP",
+        "360_SCALP_OBI": "SCALP OBI",
+        "360_SWING": "SWING",
+        "360_SPOT": "SPOT",
+        "360_GEM": "GEM",
+    }
+
+    # Estimated hold time per channel
+    _ESTIMATED_HOLD = {
+        "360_SCALP": "~1-2h",
+        "360_SCALP_FVG": "~1-2h",
+        "360_SCALP_CVD": "~1-2h",
+        "360_SCALP_VWAP": "~1-2h",
+        "360_SCALP_OBI": "~1-2h",
+        "360_SWING": "~1-2d",
+        "360_SPOT": "~3-7d",
+        "360_GEM": "~2-4w",
+    }
+
     @staticmethod
     def format_signal(sig: Signal) -> str:
-        """Produce the rich, emoji-laden Telegram message for a signal."""
+        """Produce the compact, copy-pasteable Telegram signal message.
+
+        Format::
+
+            ⚡ SCALP │ BTCUSDT │ LONG
+            ━━━━━━━━━━━━━━━━━━━━━━━━
+
+            📍 Entry: 67,234.50
+            🛑 SL: 66,980.00 (-0.38%)
+            🎯 TP1: 67,520.00 (+0.42%)
+            🎯 TP2: 67,800.00 (+0.84%)
+            🎯 TP3: 68,100.00 (+1.29%)
+
+            📊 Setup: SWEEP_RECLAIM | Confidence: 82.4 (A+)
+            ⏱ Hold: ~2h | R:R 1:2.2
+            💡 BTC sweep at 67,200 + bullish FVG + negative funding
+
+            🏷 Risk: LOW | Quality: PREMIUM
+        """
+        # Route WATCHLIST signals to a distinct, lightweight format
+        if getattr(sig, "signal_tier", "B") == "WATCHLIST":
+            return TelegramBot.format_watchlist_signal(sig)
+
+        chan_emojis = {
+            "360_SCALP": "⚡",
+            "360_SCALP_FVG": "⚡",
+            "360_SCALP_CVD": "⚡",
+            "360_SCALP_VWAP": "⚡",
+            "360_SCALP_OBI": "⚡",
+            "360_SWING": "🏛️",
+            "360_SPOT": "📈",
+            "360_GEM": "💎",
+        }
+        emoji = chan_emojis.get(sig.channel, "📡")
+        chan_name = TelegramBot._CHANNEL_DISPLAY_NAME.get(sig.channel, sig.channel)
+        dir_word = sig.direction.value
+        separator = "━" * 24
+
+        # Percentage helpers relative to entry
+        def _pct(price: float) -> str:
+            if sig.entry and sig.entry != 0:
+                pct = (price - sig.entry) / sig.entry * 100
+                return f"{pct:+.2f}%"
+            return ""
+
+        lines = [
+            f"{emoji} *{TelegramBot._escape_md(chan_name)}* │ *{TelegramBot._escape_md(sig.symbol)}* │ *{dir_word}*",
+            TelegramBot._escape_md(separator),
+            "",
+            f"📍 Entry: `{fmt_price(sig.entry)}`",
+            f"🛑 SL: `{fmt_price(sig.stop_loss)}` ({TelegramBot._escape_md(_pct(sig.stop_loss))})",
+            f"🎯 TP1: `{fmt_price(sig.tp1)}` ({TelegramBot._escape_md(_pct(sig.tp1))})",
+            f"🎯 TP2: `{fmt_price(sig.tp2)}` ({TelegramBot._escape_md(_pct(sig.tp2))})",
+        ]
+        if sig.tp3 is not None:
+            lines.append(f"🎯 TP3: `{fmt_price(sig.tp3)}` ({TelegramBot._escape_md(_pct(sig.tp3))})")
+        else:
+            lines.append("🎯 TP3: Dynamic/trailing")
+
+        lines.append("")
+
+        # Setup + confidence line
+        setup_label = ""
+        if sig.setup_class and sig.setup_class != "UNCLASSIFIED":
+            setup_label = sig.setup_class.replace("_", " ").upper()
+        conf_tier = f" ({TelegramBot._escape_md(sig.quality_tier)})" if sig.quality_tier else ""
+        if setup_label:
+            lines.append(
+                f"📊 Setup: {TelegramBot._escape_md(setup_label)} | Confidence: *{sig.confidence:.1f}*{conf_tier}"
+            )
+        else:
+            lines.append(f"📊 Confidence: *{sig.confidence:.1f}*{conf_tier}")
+
+        # Hold time + R:R
+        hold = TelegramBot._ESTIMATED_HOLD.get(sig.channel, "~?")
+        sl_dist = abs(sig.entry - sig.stop_loss) if sig.entry and sig.stop_loss else 0
+        tp1_dist = abs(sig.tp1 - sig.entry) if sig.entry and sig.tp1 else 0
+        rr_str = f"1:{tp1_dist / sl_dist:.1f}" if sl_dist > 0 else "N/A"
+        lines.append(
+            f"⏱ Hold: {TelegramBot._escape_md(hold)} | R:R {TelegramBot._escape_md(rr_str)}"
+        )
+
+        # Narrative reason (from liquidity_info + invalidation_summary)
+        narrative_parts = []
+        if sig.liquidity_info:
+            narrative_parts.append(sig.liquidity_info)
+        if sig.invalidation_summary:
+            narrative_parts.append(sig.invalidation_summary)
+        if sig.analyst_reason:
+            narrative_parts.append(sig.analyst_reason)
+        if narrative_parts:
+            narrative = " + ".join(narrative_parts[:2])  # keep it one line
+            lines.append(f"💡 {TelegramBot._escape_md(narrative)}")
+
+        lines.append("")
+
+        # Risk + quality label
+        risk_part = TelegramBot._escape_md(sig.risk_label) if sig.risk_label else "N/A"
+        quality_part = TelegramBot._escape_md(sig.quality_tier) if sig.quality_tier else "N/A"
+        lines.append(f"🏷 Risk: *{risk_part}* | Quality: *{quality_part}*")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def format_signal_legacy(sig: Signal) -> str:
+        """Produce the original rich, emoji-laden Telegram message for a signal.
+
+        This is the pre-redesign format kept for backward compatibility.
+        """
         # Route WATCHLIST signals to a distinct, lightweight format
         if getattr(sig, "signal_tier", "B") == "WATCHLIST":
             return TelegramBot.format_watchlist_signal(sig)

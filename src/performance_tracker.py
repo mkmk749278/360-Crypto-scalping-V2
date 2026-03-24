@@ -170,6 +170,53 @@ class PerformanceTracker:
         records = self._filter(channel=channel, window_days=window_days)
         return self._compute_stats(channel or "ALL", records)
 
+    def get_channel_scoreboard(self, window_days: int = 7) -> Dict[str, Dict[str, Any]]:
+        """Return per-channel win/loss/winrate/avg_pnl for the last N days.
+
+        Parameters
+        ----------
+        window_days:
+            Rolling window in days (default: 7).
+
+        Returns
+        -------
+        dict mapping channel name → stats dict with keys:
+            ``wins``, ``losses``, ``breakeven``, ``total_pnl``, ``count``,
+            ``win_rate``, ``avg_pnl``.
+        """
+        cutoff = time.time() - (window_days * 86400)
+        recent = [r for r in self._records if r.timestamp >= cutoff]
+
+        scoreboard: Dict[str, Dict[str, Any]] = {}
+        for r in recent:
+            ch = r.channel
+            if ch not in scoreboard:
+                scoreboard[ch] = {
+                    "wins": 0,
+                    "losses": 0,
+                    "breakeven": 0,
+                    "total_pnl": 0.0,
+                    "count": 0,
+                }
+            entry = scoreboard[ch]
+            entry["count"] += 1
+            entry["total_pnl"] += r.pnl_pct
+
+            if r.hit_sl:
+                entry["losses"] += 1
+            elif r.hit_tp > 0:
+                entry["wins"] += 1
+            else:
+                entry["breakeven"] += 1
+
+        # Compute derived stats
+        for ch, data in scoreboard.items():
+            total = data["wins"] + data["losses"]
+            data["win_rate"] = round(data["wins"] / total * 100, 1) if total > 0 else 0.0
+            data["avg_pnl"] = round(data["total_pnl"] / data["count"], 2) if data["count"] > 0 else 0.0
+
+        return scoreboard
+
     def format_stats_message(
         self,
         channel: Optional[str] = None,

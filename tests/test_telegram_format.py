@@ -37,20 +37,30 @@ class TestFormatSignal:
             component_scores={"market": 19.0, "setup": 21.0, "execution": 16.0, "risk": 15.0, "context": 8.0},
             timestamp=utcnow(),
         )
+        # Test the new compact format
         text = TelegramBot.format_signal(sig)
         assert "⚡" in text
-        assert r"360\_SCALP" in text
+        assert "SCALP" in text
         assert "BTCUSDT" in text
         assert "LONG" in text
         assert "32,150" in text
-        assert "87%" in text
-        assert "Whale Activity" in text
         assert "Aggressive" in text
-        assert "Trailing Active" in text
-        assert "Breakout Retest" in text
-        assert "A" in text
-        assert "Thesis" in text
-        assert "Execution" in text
+
+        # Test the legacy format still exposes the old fields
+        legacy_text = TelegramBot.format_signal_legacy(sig)
+        assert "⚡" in legacy_text
+        assert r"360\_SCALP" in legacy_text
+        assert "BTCUSDT" in legacy_text
+        assert "LONG" in legacy_text
+        assert "32,150" in legacy_text
+        assert "87%" in legacy_text
+        assert "Whale Activity" in legacy_text
+        assert "Aggressive" in legacy_text
+        assert "Trailing Active" in legacy_text
+        assert "Breakout Retest" in legacy_text
+        assert "A" in legacy_text
+        assert "Thesis" in legacy_text
+        assert "Execution" in legacy_text
 
     def test_swing_short_format(self):
         sig = Signal(
@@ -70,11 +80,18 @@ class TestFormatSignal:
             risk_label="Medium",
             timestamp=utcnow(),
         )
+        # New format
         text = TelegramBot.format_signal(sig)
         assert "🏛️" in text
         assert "SHORT" in text
-        assert "⬇️" in text
-        assert "92%" in text
+        assert "92.0" in text
+
+        # Legacy format keeps old fields
+        legacy_text = TelegramBot.format_signal_legacy(sig)
+        assert "🏛️" in legacy_text
+        assert "SHORT" in legacy_text
+        assert "⬇️" in legacy_text
+        assert "92%" in legacy_text
 
     def test_spot_format_with_ai_adaptive(self):
         sig = Signal(
@@ -94,11 +111,18 @@ class TestFormatSignal:
             risk_label="Conservative",
             timestamp=utcnow(),
         )
+        # New format
         text = TelegramBot.format_signal(sig)
         assert "📈" in text
         assert "Dynamic/trailing" in text
-        assert "AI Adaptive" in text
-        assert "95%" in text
+        assert "95.0" in text
+
+        # Legacy format includes trailing_desc
+        legacy_text = TelegramBot.format_signal_legacy(sig)
+        assert "📈" in legacy_text
+        assert "Dynamic/trailing" in legacy_text
+        assert "AI Adaptive" in legacy_text
+        assert "95%" in legacy_text
 
     def test_spot_format(self):
         sig = Signal(
@@ -118,10 +142,17 @@ class TestFormatSignal:
             risk_label="Conservative",
             timestamp=utcnow(),
         )
+        # New format
         text = TelegramBot.format_signal(sig)
         assert "📈" in text
         assert "Conservative" in text
-        assert "80%" in text
+        assert "80.0" in text
+
+        # Legacy format
+        legacy_text = TelegramBot.format_signal_legacy(sig)
+        assert "📈" in legacy_text
+        assert "Conservative" in legacy_text
+        assert "80%" in legacy_text
 
 
 class TestEscapeMd:
@@ -205,7 +236,7 @@ class TestFormatSignalEscaping:
         assert "\\`69594\\`" in text
 
     def test_ai_sentiment_summary_escaped(self):
-        """AI sentiment summary with Markdown chars should be escaped."""
+        """AI sentiment summary with Markdown chars should be escaped (legacy format)."""
         sig = Signal(
             channel="360_SCALP",
             symbol="ETHUSDT",
@@ -224,12 +255,12 @@ class TestFormatSignalEscaping:
             liquidity_info="Standard",
             timestamp=utcnow(),
         )
-        text = TelegramBot.format_signal(sig)
+        text = TelegramBot.format_signal_legacy(sig)
         assert "\\*near\\*" in text
         assert "support\\_level" in text
 
     def test_trailing_desc_escaped(self):
-        """trailing_desc with × should pass through; * would be escaped."""
+        """trailing_desc with × should pass through; * would be escaped (legacy format)."""
         sig = Signal(
             channel="360_SCALP",
             symbol="BTCUSDT",
@@ -243,7 +274,7 @@ class TestFormatSignalEscaping:
             confidence=80,
             timestamp=utcnow(),
         )
-        text = TelegramBot.format_signal(sig)
+        text = TelegramBot.format_signal_legacy(sig)
         assert "1.5\\*ATR" in text
 
     def test_premium_fields_render_markdown_safe(self):
@@ -265,13 +296,19 @@ class TestFormatSignalEscaping:
             component_scores={"market": 22.0, "setup": 22.0, "execution": 17.0, "risk": 17.0, "context": 9.0},
             timestamp=utcnow(),
         )
+        # New format: shows quality tier, setup, risk; escapes narrative fields
         text = TelegramBot.format_signal(sig)
         assert "A+" in text
-        assert "31\\_980 - 32\\_020" in text
-        assert "\\*with\\*" in text
-        assert "\\[confirmed]" in text
-        assert "don't" in text
-        assert "\\_extension\\_" in text
+        assert "\\*with\\*" in text  # from invalidation_summary in narrative
+
+        # Legacy format: shows all fields including entry_zone and execution_note
+        legacy_text = TelegramBot.format_signal_legacy(sig)
+        assert "A+" in legacy_text
+        assert "31\\_980 - 32\\_020" in legacy_text
+        assert "\\*with\\*" in legacy_text
+        assert "\\[confirmed]" in legacy_text
+        assert "don't" in legacy_text
+        assert "\\_extension\\_" in legacy_text
 
 
 class TestSendMessageFallback:

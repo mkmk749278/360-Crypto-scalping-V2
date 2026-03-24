@@ -92,7 +92,7 @@ class TestFormatFreeSignal:
             liquidity_info="Low",
             timestamp=utcnow(),
         )
-        text = TelegramBot.format_signal(sig)
+        text = TelegramBot.format_signal_legacy(sig)
         assert "Market Phase: Bearish" in text
         assert "Liquidity Pool: Low" in text
 
@@ -108,7 +108,7 @@ class TestFormatFreeSignal:
             confidence=75,
             timestamp=utcnow(),
         )
-        text = TelegramBot.format_signal(sig)
+        text = TelegramBot.format_signal_legacy(sig)
         assert "Market Phase: N/A" in text
         assert "Liquidity Pool: Standard" in text
 

@@ -420,6 +420,28 @@ class CryptoSignalEngine:
             except Exception as exc:
                 log.error("Free channel publish error: %s", exc)
 
+    async def _weekly_scoreboard_loop(self) -> None:
+        """Publish weekly scoreboard every Sunday at ~00:00 UTC."""
+        import datetime
+        while True:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            # Compute seconds until next Sunday 00:00 UTC (weekday 6 = Sunday)
+            days_until_sunday = (6 - now.weekday()) % 7
+            next_sunday = (now + datetime.timedelta(days=days_until_sunday)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            wait_secs = (next_sunday - now).total_seconds()
+            # If we are already past or very close to the target time (<60 s), push to
+            # the following Sunday to avoid posting multiple times in the same window.
+            if wait_secs < 60:
+                next_sunday += datetime.timedelta(days=7)
+                wait_secs = (next_sunday - now).total_seconds()
+            await asyncio.sleep(max(wait_secs, 1))
+            try:
+                await self.router.publish_scoreboard(self._performance_tracker)
+            except Exception as exc:
+                log.error("Weekly scoreboard publish error: %s", exc)
+
     def _current_ws_symbol_sets(self) -> tuple[set[str], set[str]]:
         ws_limit = _WS_SYMBOL_LIMIT
         return (

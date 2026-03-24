@@ -99,6 +99,9 @@ class SignalRouter:
         # Free-channel highlight rate limiting
         self._highlight_count_today: int = 0
         self._highlight_date: Optional[date] = None
+        # Free-signal daily tracking: keyed by user-facing group ("active" or "portfolio")
+        self._free_signals_today: Dict[str, bool] = {}
+        self._free_signal_date: Optional[date] = None
         # Detect whether queue.get() supports a timeout keyword argument
         self._queue_has_timeout = "timeout" in inspect.signature(queue.get).parameters
 
@@ -400,6 +403,9 @@ class SignalRouter:
         self._daily_best.sort(key=lambda s: s.confidence, reverse=True)
         self._trim_daily_best()
 
+        # Publish a condensed version to the free channel (Phase 4)
+        await self._maybe_publish_free_signal(signal)
+
     # ------------------------------------------------------------------
     # Free-channel publication (call once/day or on demand)
     # ------------------------------------------------------------------
@@ -494,8 +500,174 @@ class SignalRouter:
         return TelegramBot.format_daily_recap(summary)
 
     # ------------------------------------------------------------------
-    # Active-signal helpers
+    # Free channel – condensed signal (Phase 4)
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _free_channel_group(channel: str) -> str:
+        """Map a signal channel to a user-facing group name for free-signal tracking."""
+        if channel in ("360_SPOT", "360_GEM"):
+            return "portfolio"
+        return "active"
+
+    async def _maybe_publish_free_signal(self, signal: Signal) -> None:
+        """Publish a condensed version of the signal to the free channel.
+
+        Only posts once per user-facing channel group ("active" / "portfolio")
+        per calendar day, and only when confidence >= 75.
+        """
+        if not TELEGRAM_FREE_CHANNEL_ID:
+            return
+
+        # Reset tracking on a new day
+        today = date.today()
+        if self._free_signal_date != today:
+            self._free_signal_date = today
+            self._free_signals_today = {}
+
+        group = self._free_channel_group(signal.channel)
+        if self._free_signals_today.get(group):
+            return  # Already posted for this group today
+        if signal.confidence < 75:
+            return  # Only show high-confidence signals for free
+
+        text = self._format_condensed_free(signal)
+        try:
+            await self._send_telegram(TELEGRAM_FREE_CHANNEL_ID, text)
+            self._free_signals_today[group] = True
+            log.info(
+                "Posted free condensed signal ({} group): {} {}",
+                group, signal.symbol, signal.direction.value,
+            )
+        except Exception as exc:
+            log.warning("Failed to post condensed free signal: {}", exc)
+
+    def _format_condensed_free(self, signal: Signal) -> str:
+        """Format a condensed free-channel version of a signal (Entry/SL/TP1 only)."""
+        from src.telegram_bot import TelegramBot
+        from src.utils import fmt_price
+
+        chan_emojis = {
+            "360_SCALP": "⚡",
+            "360_SCALP_FVG": "⚡",
+            "360_SCALP_CVD": "⚡",
+            "360_SCALP_VWAP": "⚡",
+            "360_SCALP_OBI": "⚡",
+            "360_SWING": "🏛️",
+            "360_SPOT": "📈",
+            "360_GEM": "💎",
+        }
+        emoji = chan_emojis.get(signal.channel, "📡")
+        chan_name = TelegramBot._CHANNEL_DISPLAY_NAME.get(signal.channel, signal.channel)
+        dir_word = signal.direction.value
+
+        def _pct(price: float) -> str:
+            if signal.entry and signal.entry != 0:
+                pct = (price - signal.entry) / signal.entry * 100
+                return f"{pct:+.2f}%"
+            return ""
+
+        lines = [
+            "🆓 *FREE SIGNAL PREVIEW* 🆓",
+            "",
+            f"{emoji} *{TelegramBot._escape_md(chan_name)}* │ *{TelegramBot._escape_md(signal.symbol)}* │ *{dir_word}*",
+            TelegramBot._escape_md("━" * 24),
+            "",
+            f"📍 Entry: `{fmt_price(signal.entry)}`",
+            f"🛑 SL: `{fmt_price(signal.stop_loss)}` ({TelegramBot._escape_md(_pct(signal.stop_loss))})",
+            f"🎯 TP1: `{fmt_price(signal.tp1)}` ({TelegramBot._escape_md(_pct(signal.tp1))})",
+            "",
+            "🔒 _Premium members see TP2, TP3 and full analysis_",
+            "📲 _Join our premium channels for real-time signals_",
+        ]
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Scoreboard (Phase 3)
+    # ------------------------------------------------------------------
+
+    async def publish_scoreboard(self, performance_tracker: Any) -> None:
+        """Post the weekly win-rate scoreboard to the free channel."""
+        if not TELEGRAM_FREE_CHANNEL_ID:
+            return
+
+        scoreboard = performance_tracker.get_channel_scoreboard(window_days=7)
+        if not scoreboard:
+            return
+
+        text = self._format_scoreboard(scoreboard)
+        try:
+            await self._send_telegram(TELEGRAM_FREE_CHANNEL_ID, text)
+            log.info("Posted weekly scoreboard to free channel")
+        except Exception as exc:
+            log.warning("Failed to post scoreboard: {}", exc)
+
+    @staticmethod
+    def _format_scoreboard(scoreboard: Dict[str, Any]) -> str:
+        """Format the weekly scoreboard for Telegram."""
+        chan_emojis = {
+            "360_SCALP": "⚡",
+            "360_SCALP_FVG": "⚡",
+            "360_SCALP_CVD": "⚡",
+            "360_SCALP_VWAP": "⚡",
+            "360_SCALP_OBI": "⚡",
+            "360_SWING": "🏛️",
+            "360_SPOT": "📈",
+            "360_GEM": "💎",
+        }
+        chan_labels = {
+            "360_SCALP": "Scalp",
+            "360_SCALP_FVG": "Scalp FVG",
+            "360_SCALP_CVD": "Scalp CVD",
+            "360_SCALP_VWAP": "Scalp VWAP",
+            "360_SCALP_OBI": "Scalp OBI",
+            "360_SWING": "Swing",
+            "360_SPOT": "Spot",
+            "360_GEM": "Gem",
+        }
+        separator = "━" * 30
+        lines = [
+            "📊 *360 Crypto — Weekly Performance*",
+            separator,
+            "",
+        ]
+
+        total_wins = 0
+        total_losses = 0
+
+        for channel in [
+            "360_SCALP", "360_SCALP_FVG", "360_SCALP_CVD",
+            "360_SCALP_VWAP", "360_SCALP_OBI", "360_SWING",
+            "360_SPOT", "360_GEM",
+        ]:
+            data = scoreboard.get(channel)
+            if not data:
+                continue
+            emoji = chan_emojis.get(channel, "📡")
+            label = chan_labels.get(channel, channel)
+            wins = data["wins"]
+            losses = data["losses"]
+            win_rate = data["win_rate"]
+            avg_pnl = data["avg_pnl"]
+            total_wins += wins
+            total_losses += losses
+            wr_str = f"({win_rate:.0f}%)"
+            lines.append(
+                f"{emoji} {label}:  {wins}W / {losses}L  {wr_str}  Avg {avg_pnl:+.1f}%"
+            )
+
+        # Grand total
+        grand_total = total_wins + total_losses
+        grand_wr = round(total_wins / grand_total * 100, 1) if grand_total > 0 else 0.0
+        lines.extend([
+            separator,
+            f"Total: {total_wins}W / {total_losses}L ({grand_wr:.1f}%)",
+            "",
+            "📈 _Join our premium channels for real-time signals._",
+            "⏰ _Updated every Sunday._",
+        ])
+
+        return "\n".join(lines)
 
     @property
     def active_signals(self) -> Dict[str, Signal]:

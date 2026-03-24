@@ -38,6 +38,13 @@ TELEGRAM_ADMIN_CHAT_ID: str = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "")
 # If left empty, signals are silently dropped by the signal router.
 TELEGRAM_GEM_CHANNEL_ID: str = os.getenv("TELEGRAM_GEM_CHANNEL_ID", "")
 
+# --- Merged Telegram Channels (recommended for user-facing deployment) ---
+# When set, these OVERRIDE the individual per-channel IDs above.
+# "Active Trading" channel receives: SCALP + SWING signals
+# "Portfolio" channel receives: SPOT + GEM signals
+TELEGRAM_ACTIVE_CHANNEL_ID: str = os.getenv("TELEGRAM_ACTIVE_CHANNEL_ID", "")
+TELEGRAM_PORTFOLIO_CHANNEL_ID: str = os.getenv("TELEGRAM_PORTFOLIO_CHANNEL_ID", "")
+
 # ---------------------------------------------------------------------------
 # AI / Sentiment keys (optional)
 # ---------------------------------------------------------------------------
@@ -208,7 +215,7 @@ CHANNEL_SCALP = ChannelConfig(
     adx_min=15,
     adx_max=100,
     spread_max=0.02,
-    min_confidence=70,
+    min_confidence=68,
     min_volume=5_000_000.0,
     dca_enabled=True,
 )
@@ -223,7 +230,7 @@ CHANNEL_SWING = ChannelConfig(
     adx_min=20,
     adx_max=40,
     spread_max=0.02,
-    min_confidence=75,
+    min_confidence=72,
     min_volume=10_000_000.0,
     dca_enabled=True,
 )
@@ -253,7 +260,7 @@ CHANNEL_SPOT = ChannelConfig(
     adx_min=0,
     adx_max=100,
     spread_max=0.02,
-    min_confidence=60,
+    min_confidence=65,
     min_volume=1_000_000.0,
     dca_enabled=True,
     dca_zone_range=(0.30, 0.70),
@@ -276,7 +283,7 @@ CHANNEL_SCALP_FVG = ChannelConfig(
     adx_min=15,
     adx_max=100,
     spread_max=0.02,
-    min_confidence=65,
+    min_confidence=68,
     min_volume=5_000_000.0,
     dca_enabled=True,
 )
@@ -291,7 +298,7 @@ CHANNEL_SCALP_CVD = ChannelConfig(
     adx_min=15,
     adx_max=100,
     spread_max=0.02,
-    min_confidence=65,
+    min_confidence=68,
     min_volume=5_000_000.0,
     dca_enabled=True,
 )
@@ -306,7 +313,7 @@ CHANNEL_SCALP_VWAP = ChannelConfig(
     adx_min=0,
     adx_max=25,
     spread_max=0.02,
-    min_confidence=65,
+    min_confidence=68,
     min_volume=5_000_000.0,
     dca_enabled=True,
 )
@@ -321,7 +328,7 @@ CHANNEL_SCALP_OBI = ChannelConfig(
     adx_min=0,
     adx_max=100,
     spread_max=0.02,
-    min_confidence=65,
+    min_confidence=68,
     min_volume=5_000_000.0,
     dca_enabled=True,
 )
@@ -340,12 +347,31 @@ CHANNEL_EMOJIS: Dict[str, str] = {
     "360_GEM": "💎",
 }
 
-CHANNEL_TELEGRAM_MAP: Dict[str, str] = {
-    "360_SCALP": TELEGRAM_SCALP_CHANNEL_ID,
-    "360_SWING": TELEGRAM_SWING_CHANNEL_ID,
-    "360_SPOT": TELEGRAM_SPOT_CHANNEL_ID,
-    "360_GEM": TELEGRAM_GEM_CHANNEL_ID,
-}
+def _build_channel_telegram_map() -> Dict[str, str]:
+    """Build the channel → Telegram chat-ID mapping.
+
+    If the merged ``TELEGRAM_ACTIVE_CHANNEL_ID`` / ``TELEGRAM_PORTFOLIO_CHANNEL_ID``
+    env vars are set they take precedence over the individual per-channel IDs,
+    routing all SCALP*/SWING signals to the "Active Trading" channel and
+    SPOT/GEM signals to the "Portfolio" channel.  When the merged vars are
+    **not** set the mapping falls back to the individual channel IDs, preserving
+    full backward compatibility.
+    """
+    active = TELEGRAM_ACTIVE_CHANNEL_ID
+    portfolio = TELEGRAM_PORTFOLIO_CHANNEL_ID
+    return {
+        "360_SCALP":      active or TELEGRAM_SCALP_CHANNEL_ID,
+        "360_SCALP_FVG":  active or TELEGRAM_SCALP_CHANNEL_ID,
+        "360_SCALP_CVD":  active or TELEGRAM_SCALP_CHANNEL_ID,
+        "360_SCALP_VWAP": active or TELEGRAM_SCALP_CHANNEL_ID,
+        "360_SCALP_OBI":  active or TELEGRAM_SCALP_CHANNEL_ID,
+        "360_SWING":      active or TELEGRAM_SWING_CHANNEL_ID,
+        "360_SPOT":       portfolio or TELEGRAM_SPOT_CHANNEL_ID,
+        "360_GEM":        portfolio or TELEGRAM_GEM_CHANNEL_ID,
+    }
+
+
+CHANNEL_TELEGRAM_MAP: Dict[str, str] = _build_channel_telegram_map()
 
 # ---------------------------------------------------------------------------
 # WebSocket settings
@@ -460,10 +486,14 @@ PERFORMANCE_TRACKER_PATH: str = os.getenv(
 # Max concurrent signals per channel (5 per channel, independently capped)
 # ---------------------------------------------------------------------------
 MAX_CONCURRENT_SIGNALS_PER_CHANNEL: Dict[str, int] = {
-    "360_SCALP": int(os.getenv("MAX_SCALP_SIGNALS", "8")),
-    "360_SWING": int(os.getenv("MAX_SWING_SIGNALS", "5")),
-    "360_SPOT": int(os.getenv("MAX_SPOT_SIGNALS", "10")),
-    "360_GEM": int(os.getenv("MAX_GEM_SIGNALS", "3")),
+    "360_SCALP":      int(os.getenv("MAX_SCALP_SIGNALS", "5")),
+    "360_SCALP_FVG":  int(os.getenv("MAX_SCALP_FVG_SIGNALS", "3")),
+    "360_SCALP_CVD":  int(os.getenv("MAX_SCALP_CVD_SIGNALS", "3")),
+    "360_SCALP_VWAP": int(os.getenv("MAX_SCALP_VWAP_SIGNALS", "3")),
+    "360_SCALP_OBI":  int(os.getenv("MAX_SCALP_OBI_SIGNALS", "3")),
+    "360_SWING":      int(os.getenv("MAX_SWING_SIGNALS", "3")),
+    "360_SPOT":       int(os.getenv("MAX_SPOT_SIGNALS", "5")),
+    "360_GEM":        int(os.getenv("MAX_GEM_SIGNALS", "2")),
 }
 
 # ---------------------------------------------------------------------------
