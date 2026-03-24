@@ -31,6 +31,7 @@ def _outcome(
     r_multiple: float = 1.5,
     execution: float = 15.0,
     market: float = 20.0,
+    timestamp: float = 0.0,
 ) -> TradeOutcome:
     return TradeOutcome(
         symbol="SOLUSDT",
@@ -49,7 +50,7 @@ def _outcome(
         r_multiple=r_multiple,
         outcome=outcome,
         hold_duration_seconds=240.0,
-        timestamp=time.monotonic(),
+        timestamp=timestamp or time.monotonic(),
     )
 
 
@@ -196,7 +197,7 @@ def test_market_boost_applied_when_history_warrants_it():
 # ---------------------------------------------------------------------------
 
 
-def test_adjustment_clamped_to_minus_10():
+def test_adjustment_clamped_to_minus_15():
     loop = FeedbackLoop()
     # Trigger both setup penalty and exec penalty simultaneously
     _fill_loop(loop, _MIN_SAMPLE_SIZE + 5, "360_SPOT", "BAD", "SL")
@@ -205,10 +206,10 @@ def test_adjustment_clamped_to_minus_10():
     adj = loop.get_confidence_adjustment(
         {"execution": 5.0, "market": 5.0}, "360_SPOT", "BAD"
     )
-    assert adj >= -10.0
+    assert adj >= -15.0
 
 
-def test_adjustment_clamped_to_plus_10():
+def test_adjustment_clamped_to_plus_15():
     loop = FeedbackLoop()
     _fill_loop(loop, _MIN_SAMPLE_SIZE + 5, "360_SCALP", "GREAT", "TP3")
     for _ in range(_MIN_SAMPLE_SIZE + 5):
@@ -216,4 +217,100 @@ def test_adjustment_clamped_to_plus_10():
     adj = loop.get_confidence_adjustment(
         {"execution": 15.0, "market": 25.0}, "360_SCALP", "GREAT"
     )
-    assert adj <= 10.0
+    assert adj <= 15.0
+
+
+# ---------------------------------------------------------------------------
+# Time-decay weighting
+# ---------------------------------------------------------------------------
+
+
+def test_time_weight_recent_is_near_one():
+    """Very recent outcomes have weight close to 1.0."""
+    loop = FeedbackLoop()
+    o = _outcome(timestamp=time.monotonic())  # use keyword arg
+    # Recent outcome: age ≈ 0 → weight ≈ 1.0
+    weight = loop._time_weight(o)
+    assert weight == pytest.approx(1.0, abs=0.01)
+
+
+def test_time_weight_decays_with_age():
+    """Older outcome should weigh less than a recent one."""
+    loop = FeedbackLoop()
+    # Simulate an "old" outcome by setting timestamp to a past time.monotonic()
+    new_o = _outcome(timestamp=time.monotonic())
+    old_o = _outcome(timestamp=time.monotonic() - 7 * 24 * 3600)  # 7 days ago
+    assert loop._time_weight(old_o) < loop._time_weight(new_o)
+
+
+def test_time_weight_half_life():
+    """Outcome exactly at half-life age should have weight ≈ 0.5."""
+    from src.feedback_loop import _DECAY_HALF_LIFE_SECONDS
+    loop = FeedbackLoop()
+    o = _outcome(timestamp=time.monotonic() - _DECAY_HALF_LIFE_SECONDS)
+    assert loop._time_weight(o) == pytest.approx(0.5, abs=0.02)
+
+
+def test_win_rate_dominated_by_recent_wins():
+    """Time-decay: 10 old losses + 10 very recent wins → win rate > 0.5."""
+    loop = FeedbackLoop()
+    # Old losses (simulated ~14 days ago) — each has weight ≈ 0.25
+    for _ in range(10):
+        old_loss = TradeOutcome(
+            symbol="BTCUSDT",
+            channel="360_SCALP",
+            direction="LONG",
+            setup_class="SWEEP_REVERSAL",
+            market_state="TRENDING",
+            component_scores={"market": 20.0, "setup": 18.0, "execution": 15.0, "risk": 12.0, "context": 6.0},
+            confidence=70.0,
+            r_multiple=-1.0,
+            outcome="SL",
+            hold_duration_seconds=120.0,
+            timestamp=time.monotonic() - 14 * 24 * 3600,
+        )
+        loop._outcomes.append(old_loss)
+    # Recent wins — each has weight ≈ 1.0
+    for _ in range(10):
+        new_win = TradeOutcome(
+            symbol="BTCUSDT",
+            channel="360_SCALP",
+            direction="LONG",
+            setup_class="SWEEP_REVERSAL",
+            market_state="TRENDING",
+            component_scores={"market": 20.0, "setup": 18.0, "execution": 15.0, "risk": 12.0, "context": 6.0},
+            confidence=70.0,
+            r_multiple=2.0,
+            outcome="TP2",
+            hold_duration_seconds=180.0,
+            timestamp=time.monotonic(),
+        )
+        loop._outcomes.append(new_win)
+    loop._recompute_weights()
+    rate = loop.get_setup_win_rate("SWEEP_REVERSAL", "360_SCALP")
+    # Recent wins (weight≈1 each) dominate old losses (weight≈0.25 each)
+    assert rate > 0.5
+
+
+# ---------------------------------------------------------------------------
+# Widened adjustment range
+# ---------------------------------------------------------------------------
+
+
+def test_widened_adj_range_allows_greater_penalty():
+    """With _ADJ_MIN=-15 and _SETUP_PENALTY=-8, combined with exec can exceed -10."""
+    from src.feedback_loop import _ADJ_MIN, _ADJ_MAX, _SETUP_PENALTY, _SETUP_BOOST
+    assert _ADJ_MIN == -15.0
+    assert _ADJ_MAX == +15.0
+    assert _SETUP_PENALTY == -8.0
+    assert _SETUP_BOOST == +5.0
+
+
+def test_setup_penalty_is_8():
+    """_SETUP_PENALTY changed from -5 to -8."""
+    assert _SETUP_PENALTY == pytest.approx(-8.0)
+
+
+def test_setup_boost_is_5():
+    """_SETUP_BOOST changed from +3 to +5."""
+    assert _SETUP_BOOST == pytest.approx(5.0)

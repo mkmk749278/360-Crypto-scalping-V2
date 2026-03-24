@@ -136,6 +136,38 @@ _CHANNEL_SMC_TIMEFRAMES: Dict[str, tuple[str, ...]] = {
     "360_SPOT":       ("4h", "1h"),
 }
 
+# Which gates are active per channel family.
+# True = gate runs normally, False = gate is skipped entirely.
+# Channels not listed default to all-True (fail-safe).
+_CHANNEL_GATE_PROFILE: Dict[str, Dict[str, bool]] = {
+    # SCALP channels: ALL gates active — microstructure matters at 1m/5m
+    "360_SCALP":      {"mtf": True,  "vwap": True,  "kill_zone": True,  "oi": True,  "cross_asset": True,  "spoof": True,  "volume_div": True,  "cluster": True},
+    "360_SCALP_FVG":  {"mtf": True,  "vwap": True,  "kill_zone": True,  "oi": True,  "cross_asset": True,  "spoof": True,  "volume_div": True,  "cluster": True},
+    "360_SCALP_CVD":  {"mtf": True,  "vwap": True,  "kill_zone": True,  "oi": True,  "cross_asset": True,  "spoof": True,  "volume_div": True,  "cluster": True},
+    "360_SCALP_VWAP": {"mtf": True,  "vwap": True,  "kill_zone": True,  "oi": True,  "cross_asset": True,  "spoof": True,  "volume_div": True,  "cluster": True},
+    "360_SCALP_OBI":  {"mtf": True,  "vwap": True,  "kill_zone": True,  "oi": True,  "cross_asset": True,  "spoof": True,  "volume_div": True,  "cluster": True},
+    # SWING: trend gates matter, microstructure does not
+    "360_SWING":      {"mtf": True,  "vwap": True,  "kill_zone": False, "oi": True,  "cross_asset": True,  "spoof": False, "volume_div": True,  "cluster": False},
+    # SPOT: macro gates only — intraday noise is irrelevant at 4h/1d
+    "360_SPOT":       {"mtf": True,  "vwap": False, "kill_zone": False, "oi": False, "cross_asset": True,  "spoof": False, "volume_div": False, "cluster": False},
+    # GEM: almost no gates — macro reversal scanner
+    "360_GEM":        {"mtf": False, "vwap": False, "kill_zone": False, "oi": False, "cross_asset": False, "spoof": False, "volume_div": False, "cluster": False},
+}
+
+# Per-channel soft penalty base weights.
+# These override the hard-coded defaults in _prepare_signal().
+# Gates not listed use the original fallback values.
+_CHANNEL_PENALTY_WEIGHTS: Dict[str, Dict[str, float]] = {
+    "360_SCALP":      {"vwap": 15.0, "kill_zone": 10.0, "oi": 8.0,  "volume_div": 12.0, "cluster": 10.0, "spoof": 12.0},
+    "360_SCALP_FVG":  {"vwap": 15.0, "kill_zone": 10.0, "oi": 8.0,  "volume_div": 12.0, "cluster": 10.0, "spoof": 12.0},
+    "360_SCALP_CVD":  {"vwap": 12.0, "kill_zone": 8.0,  "oi": 10.0, "volume_div": 10.0, "cluster": 10.0, "spoof": 10.0},
+    "360_SCALP_VWAP": {"vwap": 18.0, "kill_zone": 8.0,  "oi": 6.0,  "volume_div": 10.0, "cluster": 10.0, "spoof": 10.0},
+    "360_SCALP_OBI":  {"vwap": 12.0, "kill_zone": 8.0,  "oi": 6.0,  "volume_div": 10.0, "cluster": 10.0, "spoof": 15.0},
+    "360_SWING":      {"vwap": 10.0, "kill_zone": 0.0,  "oi": 10.0, "volume_div": 8.0,  "cluster": 0.0,  "spoof": 0.0},
+    "360_SPOT":       {"vwap": 0.0,  "kill_zone": 0.0,  "oi": 0.0,  "volume_div": 0.0,  "cluster": 0.0,  "spoof": 0.0},
+    "360_GEM":        {"vwap": 0.0,  "kill_zone": 0.0,  "oi": 0.0,  "volume_div": 0.0,  "cluster": 0.0,  "spoof": 0.0},
+}
+
 
 def _normalize_candle_dict(cd: dict) -> dict:
     """Ensure all array-like values in a candle dict are flat 1-D Python lists.
@@ -916,6 +948,8 @@ class Scanner:
         sig: Any,
         ctx: ScanContext,
         cross_verified: Optional[bool],
+        chan_name: str = "",
+        funding_rate: Optional[float] = None,
     ) -> Optional[float]:
         # Gate: if OI is rising against the sweep direction, block the signal
         if ctx.smc_data.get("oi_invalidated", False):
@@ -973,6 +1007,7 @@ class Scanner:
                 liq_vol_usd=liq_vol,
                 cvd_divergence=cvd_div,
                 signal_direction=sig.direction.value,
+                funding_rate=funding_rate,
             )
 
         cinp = ConfidenceInput(
@@ -986,7 +1021,7 @@ class Scanner:
                 adx_value=ctx.ind_for_predict.get("adx_last") or 0.0,
                 momentum_strength=ctx.ind_for_predict.get("momentum_last") or 0.0,
             ),
-            liquidity_score=score_liquidity(volume_24h),
+            liquidity_score=score_liquidity(volume_24h, channel=chan_name),
             spread_score=score_spread(ctx.spread_pct),
             data_sufficiency=score_data_sufficiency(ctx.candle_total),
             multi_exchange=score_multi_exchange(verified=cross_verified),
@@ -998,7 +1033,7 @@ class Scanner:
                 for s in self.router.active_signals.values()
             ),
         )
-        result = compute_confidence(cinp)
+        result = compute_confidence(cinp, channel=chan_name)
         if result.blocked:
             return None
         return result.total
@@ -1115,23 +1150,29 @@ class Scanner:
 
         # ── Filter 1: MTF Confluence Gate ──────────────────────────────────
         # Relaxed min_score for scalp signals (range-fade setups need less confluence)
-        _mtf_min_score = 0.4 if chan_name == "360_SCALP" else 0.5
-        mtf_data: Dict[str, Dict[str, float]] = {}
-        for tf_label, ind in ctx.indicators.items():
-            ema_fast = ind.get("ema9_last")
-            ema_slow = ind.get("ema21_last")
-            cd = ctx.candles.get(tf_label, {})
-            closes = cd.get("close", [])
-            if ema_fast is not None and ema_slow is not None and len(closes) > 0:
-                mtf_data[tf_label] = {
-                    "ema_fast": float(ema_fast),
-                    "ema_slow": float(ema_slow),
-                    "close": float(closes[-1]),
-                }
-        mtf_allowed, mtf_reason = check_mtf_gate(sig.direction.value, mtf_data, min_score=_mtf_min_score)
-        if not mtf_allowed:
-            log.debug("MTF gate blocked {} {}: {}", symbol, chan_name, mtf_reason)
-            return None, None
+        # Look up this channel's gate profile and penalty weights.
+        # Unknown channels default to an empty profile (all gates on via .get(key, True))
+        # and empty weights (gate-specific defaults apply via .get(key, default)).
+        _gate_profile = _CHANNEL_GATE_PROFILE.get(chan_name, {})
+        _penalty_weights = _CHANNEL_PENALTY_WEIGHTS.get(chan_name, {})
+        if _gate_profile.get("mtf", True):
+            _mtf_min_score = 0.4 if chan_name == "360_SCALP" else 0.5
+            mtf_data: Dict[str, Dict[str, float]] = {}
+            for tf_label, ind in ctx.indicators.items():
+                ema_fast = ind.get("ema9_last")
+                ema_slow = ind.get("ema21_last")
+                cd = ctx.candles.get(tf_label, {})
+                closes = cd.get("close", [])
+                if ema_fast is not None and ema_slow is not None and len(closes) > 0:
+                    mtf_data[tf_label] = {
+                        "ema_fast": float(ema_fast),
+                        "ema_slow": float(ema_slow),
+                        "close": float(closes[-1]),
+                    }
+            mtf_allowed, mtf_reason = check_mtf_gate(sig.direction.value, mtf_data, min_score=_mtf_min_score)
+            if not mtf_allowed:
+                log.debug("MTF gate blocked {} {}: {}", symbol, chan_name, mtf_reason)
+                return None, None
 
         # Resolve regime penalty multiplier for all soft gates below
         _regime_name = getattr(ctx.regime_result, "regime", None)
@@ -1144,46 +1185,49 @@ class Scanner:
         regime_mult = _REGIME_PENALTY_MULTIPLIER.get(_regime_key, 1.0)
 
         # ── Filter 2: VWAP Extension Rejection ─────────────────────────────
-        try:
-            _primary_tf = self._get_primary_timeframe(chan_name)
-            _cd = self._resolve_candles(ctx.candles, _primary_tf)
-            _vwap_result = compute_vwap(
-                _cd.get("high", []),
-                _cd.get("low", []),
-                _cd.get("close", []),
-                _cd.get("volume", []),
-            )
-            vwap_allowed, vwap_reason = check_vwap_extension(
-                sig.direction.value, sig.entry, _vwap_result
-            )
-            if not vwap_allowed:
-                _base = 12.0
-                _scaled = round(_base * regime_mult, 1)
-                soft_penalty += _scaled
-                _fired_gates.append("VWAP")
-                log.debug(
-                    "SOFT_PENALTY {} {} {:+.1f} (base={:.0f} × regime={:.1f}) total={:.1f}: {}",
-                    symbol, chan_name, _scaled, _base, regime_mult, soft_penalty, vwap_reason,
+        if _gate_profile.get("vwap", True):
+            try:
+                _primary_tf = self._get_primary_timeframe(chan_name)
+                _cd = self._resolve_candles(ctx.candles, _primary_tf)
+                _vwap_result = compute_vwap(
+                    _cd.get("high", []),
+                    _cd.get("low", []),
+                    _cd.get("close", []),
+                    _cd.get("volume", []),
                 )
-        except Exception as _vwap_exc:
-            log.debug("VWAP gate error for {} {} (fail open): {}", symbol, chan_name, _vwap_exc)
+                vwap_allowed, vwap_reason = check_vwap_extension(
+                    sig.direction.value, sig.entry, _vwap_result
+                )
+                if not vwap_allowed:
+                    _base = _penalty_weights.get("vwap", 12.0)
+                    _scaled = round(_base * regime_mult, 1)
+                    soft_penalty += _scaled
+                    _fired_gates.append("VWAP")
+                    log.debug(
+                        "SOFT_PENALTY {} {} {:+.1f} (base={:.0f} × regime={:.1f}) total={:.1f}: {}",
+                        symbol, chan_name, _scaled, _base, regime_mult, soft_penalty, vwap_reason,
+                    )
+            except Exception as _vwap_exc:
+                log.debug("VWAP gate error for {} {} (fail open): {}", symbol, chan_name, _vwap_exc)
 
         # ── Filter 3: Kill Zone / Session Filter ────────────────────────────
-        # Relaxed minimum multiplier for scalp signals (scalps can trade lower-liquidity windows)
-        _kz_min_mult = 0.40 if chan_name == "360_SCALP" else 0.50
-        kz_allowed, kz_reason = check_kill_zone_gate(minimum_multiplier=_kz_min_mult)
-        if not kz_allowed:
-            _base = 10.0
-            _scaled = round(_base * regime_mult, 1)
-            soft_penalty += _scaled
-            _fired_gates.append("KZ")
-            log.debug(
-                "SOFT_PENALTY {} {} {:+.1f} (base={:.0f} × regime={:.1f}) total={:.1f}: {}",
-                symbol, chan_name, _scaled, _base, regime_mult, soft_penalty, kz_reason,
-            )
+        if _gate_profile.get("kill_zone", True):
+            # Relaxed minimum multiplier for scalp signals (scalps can trade lower-liquidity windows)
+            _kz_min_mult = 0.40 if chan_name == "360_SCALP" else 0.50
+            kz_allowed, kz_reason = check_kill_zone_gate(minimum_multiplier=_kz_min_mult)
+            if not kz_allowed:
+                _base = _penalty_weights.get("kill_zone", 10.0)
+                _scaled = round(_base * regime_mult, 1)
+                soft_penalty += _scaled
+                _fired_gates.append("KZ")
+                log.debug(
+                    "SOFT_PENALTY {} {} {:+.1f} (base={:.0f} × regime={:.1f}) total={:.1f}: {}",
+                    symbol, chan_name, _scaled, _base, regime_mult, soft_penalty, kz_reason,
+                )
 
         # ── Filter 4: OI + Funding Rate Gate ────────────────────────────────
-        if self.order_flow_store is not None:
+        _funding_rate: Optional[float] = None
+        if _gate_profile.get("oi", True) and self.order_flow_store is not None:
             try:
                 _oi_tf = self._get_primary_timeframe(chan_name)
                 _oi_cd = self._resolve_candles(ctx.candles, _oi_tf)
@@ -1192,9 +1236,12 @@ class Scanner:
                 _oi_values = [s.open_interest for s in _oi_snaps]
                 if _prices and _oi_values:
                     oi_analysis = analyse_oi(_prices, _oi_values)
+                    _fr = oi_analysis.latest_funding_rate
+                    if isinstance(_fr, (int, float)):
+                        _funding_rate = float(_fr)
                     oi_allowed, oi_reason = check_oi_gate(sig.direction.value, oi_analysis)
                     if not oi_allowed:
-                        _base = 15.0
+                        _base = _penalty_weights.get("oi", 15.0)
                         _scaled = round(_base * regime_mult, 1)
                         soft_penalty += _scaled
                         _fired_gates.append("OI")
@@ -1206,7 +1253,7 @@ class Scanner:
                 log.debug("OI gate error for {} {} (fail open): {}", symbol, chan_name, _oi_exc)
 
         # ── Filter 5: Cross-Asset Correlation ───────────────────────────────
-        if symbol not in ("BTCUSDT", "ETHUSDT"):
+        if _gate_profile.get("cross_asset", True) and symbol not in ("BTCUSDT", "ETHUSDT"):
             try:
                 _asset_states: List[AssetState] = []
                 for _major in ("BTCUSDT", "ETHUSDT"):
@@ -1232,63 +1279,66 @@ class Scanner:
                 )
 
         # ── Filter 6: Spoofing / Layering Detection ───────────────────────
-        try:
-            _ob = self._get_order_book_depth(symbol)
-            spoof_allowed, spoof_reason = check_spoof_gate(
-                sig.direction.value, _ob, sig.entry
-            )
-            if not spoof_allowed:
-                _base = 10.0
-                _scaled = round(_base * regime_mult, 1)
-                soft_penalty += _scaled
-                _fired_gates.append("SPOOF")
-                log.debug(
-                    "SOFT_PENALTY {} {} {:+.1f} (base={:.0f} × regime={:.1f}) total={:.1f}: {}",
-                    symbol, chan_name, _scaled, _base, regime_mult, soft_penalty, spoof_reason,
+        if _gate_profile.get("spoof", True):
+            try:
+                _ob = self._get_order_book_depth(symbol)
+                spoof_allowed, spoof_reason = check_spoof_gate(
+                    sig.direction.value, _ob, sig.entry
                 )
-        except Exception as _spoof_exc:
-            log.debug(
-                "Spoof gate error for {} {} (fail open): {}", symbol, chan_name, _spoof_exc
-            )
+                if not spoof_allowed:
+                    _base = _penalty_weights.get("spoof", 10.0)
+                    _scaled = round(_base * regime_mult, 1)
+                    soft_penalty += _scaled
+                    _fired_gates.append("SPOOF")
+                    log.debug(
+                        "SOFT_PENALTY {} {} {:+.1f} (base={:.0f} × regime={:.1f}) total={:.1f}: {}",
+                        symbol, chan_name, _scaled, _base, regime_mult, soft_penalty, spoof_reason,
+                    )
+            except Exception as _spoof_exc:
+                log.debug(
+                    "Spoof gate error for {} {} (fail open): {}", symbol, chan_name, _spoof_exc
+                )
 
         # ── Filter 7: Cross-Timeframe Volume Divergence ───────────────────
-        try:
-            _vol_primary_tf = self._get_primary_timeframe(chan_name)
-            # Relaxed spike threshold for scalp signals (volume spikes ARE valid for scalps)
-            _vol_spike_thresh = 2.5 if chan_name == "360_SCALP" else 2.0
-            vol_div_allowed, vol_div_reason = check_volume_divergence_gate(
-                sig.direction.value, ctx.candles, _vol_primary_tf,
-                spike_threshold=_vol_spike_thresh,
-                regime=_regime_key if _regime_key else None,
-            )
-            if not vol_div_allowed:
-                _base = 10.0
-                _scaled = round(_base * regime_mult, 1)
-                soft_penalty += _scaled
-                _fired_gates.append("VOL_DIV")
-                log.debug(
-                    "SOFT_PENALTY {} {} {:+.1f} (base={:.0f} × regime={:.1f}) total={:.1f}: {}",
-                    symbol, chan_name, _scaled, _base, regime_mult, soft_penalty, vol_div_reason,
+        if _gate_profile.get("volume_div", True):
+            try:
+                _vol_primary_tf = self._get_primary_timeframe(chan_name)
+                # Relaxed spike threshold for scalp signals (volume spikes ARE valid for scalps)
+                _vol_spike_thresh = 2.5 if chan_name == "360_SCALP" else 2.0
+                vol_div_allowed, vol_div_reason = check_volume_divergence_gate(
+                    sig.direction.value, ctx.candles, _vol_primary_tf,
+                    spike_threshold=_vol_spike_thresh,
+                    regime=_regime_key if _regime_key else None,
                 )
-        except Exception as _vol_div_exc:
-            log.debug(
-                "Volume divergence gate error for {} {} (fail open): {}",
-                symbol, chan_name, _vol_div_exc,
-            )
+                if not vol_div_allowed:
+                    _base = _penalty_weights.get("volume_div", 10.0)
+                    _scaled = round(_base * regime_mult, 1)
+                    soft_penalty += _scaled
+                    _fired_gates.append("VOL_DIV")
+                    log.debug(
+                        "SOFT_PENALTY {} {} {:+.1f} (base={:.0f} × regime={:.1f}) total={:.1f}: {}",
+                        symbol, chan_name, _scaled, _base, regime_mult, soft_penalty, vol_div_reason,
+                    )
+            except Exception as _vol_div_exc:
+                log.debug(
+                    "Volume divergence gate error for {} {} (fail open): {}",
+                    symbol, chan_name, _vol_div_exc,
+                )
 
         # ── Filter 8: Signal Clustering Suppression ───────────────────────
-        cluster_allowed, cluster_reason = self.cluster_suppressor.check_cluster_gate(
-            symbol, sig.direction.value
-        )
-        if not cluster_allowed:
-            _base = 8.0
-            _scaled = round(_base * regime_mult, 1)
-            soft_penalty += _scaled
-            _fired_gates.append("CLUSTER")
-            log.debug(
-                "SOFT_PENALTY {} {} {:+.1f} (base={:.0f} × regime={:.1f}) total={:.1f}: {}",
-                symbol, chan_name, _scaled, _base, regime_mult, soft_penalty, cluster_reason,
+        if _gate_profile.get("cluster", True):
+            cluster_allowed, cluster_reason = self.cluster_suppressor.check_cluster_gate(
+                symbol, sig.direction.value
             )
+            if not cluster_allowed:
+                _base = _penalty_weights.get("cluster", 8.0)
+                _scaled = round(_base * regime_mult, 1)
+                soft_penalty += _scaled
+                _fired_gates.append("CLUSTER")
+                log.debug(
+                    "SOFT_PENALTY {} {} {:+.1f} (base={:.0f} × regime={:.1f}) total={:.1f}: {}",
+                    symbol, chan_name, _scaled, _base, regime_mult, soft_penalty, cluster_reason,
+                )
 
         risk = self._evaluate_risk(sig, ctx, setup, chan_name=chan_name)
         if not risk.passed:
@@ -1305,6 +1355,8 @@ class Scanner:
             sig,
             ctx,
             cross_verified,
+            chan_name=chan_name,
+            funding_rate=_funding_rate,
         )
         if legacy_confidence is None:
             return None, cross_verified

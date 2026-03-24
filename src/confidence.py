@@ -26,6 +26,25 @@ from config import NEW_PAIR_MIN_CONFIDENCE
 # USD liquidation volume at which the order-flow liq bonus is maximised (5 pts).
 _ORDER_FLOW_LIQ_CAP_USD: float = 500_000.0
 
+# Absolute funding rate (decimal) beyond which positioning is considered extreme.
+# Binance funding is typically ±0.01%–0.1%; ≥1% (0.01) is extreme and signals
+# contrarian opportunity when aligned with the signal direction.
+_EXTREME_FUNDING_RATE: float = 0.01
+
+# Per-channel liquidity thresholds (USD 24h volume).
+# SCALP needs $5M+ (tight execution), SWING $10M+ (sustained trend),
+# SPOT $1M+ (macro entry), GEM only $250K (micro-cap discovery).
+_LIQUIDITY_THRESHOLDS: Dict[str, float] = {
+    "360_SCALP":      5_000_000.0,
+    "360_SCALP_FVG":  5_000_000.0,
+    "360_SCALP_CVD":  5_000_000.0,
+    "360_SCALP_VWAP": 5_000_000.0,
+    "360_SCALP_OBI":  5_000_000.0,
+    "360_SWING":      10_000_000.0,
+    "360_SPOT":       1_000_000.0,
+    "360_GEM":        250_000.0,
+}
+
 
 @dataclass
 class ConfidenceInput:
@@ -37,7 +56,7 @@ class ConfidenceInput:
     data_sufficiency: float = 0.0   # 0-10
     multi_exchange: float = 0.0     # 0-5
     onchain_score: float = 0.0      # 0-5 (populated by score_onchain(); 0 = no data)
-    order_flow_score: float = 0.0   # 0-15 (OI squeeze + CVD divergence bonus)
+    order_flow_score: float = 0.0   # 0-20 (OI squeeze + CVD divergence + funding rate bonus)
     has_enough_history: bool = True
     opposing_position_open: bool = False
 
@@ -127,8 +146,21 @@ def score_trend(
     return min(s, 25.0)
 
 
-def score_liquidity(volume_24h_usd: float, threshold: float = 5_000_000) -> float:
-    """Liquidity component (max 20)."""
+def score_liquidity(volume_24h_usd: float, threshold: float = 5_000_000, channel: Optional[str] = None) -> float:
+    """Liquidity component (max 20).
+
+    Parameters
+    ----------
+    volume_24h_usd:
+        24-hour USD trading volume.
+    threshold:
+        Default volume threshold.  Overridden per channel when *channel* is provided.
+    channel:
+        Optional channel name used to select the appropriate liquidity threshold.
+        SCALP channels require $5M+, SWING $10M+, SPOT $1M+, GEM only $250K.
+    """
+    if channel and channel in _LIQUIDITY_THRESHOLDS:
+        threshold = _LIQUIDITY_THRESHOLDS[channel]
     if volume_24h_usd <= 0:
         return 0.0
     ratio = min(volume_24h_usd / threshold, 1.0)
@@ -173,11 +205,13 @@ def score_order_flow(
     liq_vol_usd: float = 0.0,
     cvd_divergence: Optional[str] = None,
     signal_direction: Optional[str] = None,
+    funding_rate: Optional[float] = None,
 ) -> float:
-    """Order-flow component (max 15).
+    """Order-flow component (max 20).
 
-    Rewards institutional-grade squeeze confirmation (falling OI + liquidations)
-    and CVD divergence signals aligned with the trade direction.
+    Rewards institutional-grade squeeze confirmation (falling OI + liquidations),
+    CVD divergence signals aligned with the trade direction, and contrarian
+    funding-rate alignment (crowd paying against the signal direction).
 
     Parameters
     ----------
@@ -196,14 +230,20 @@ def score_order_flow(
         while a contra divergence (LONG+BEARISH or SHORT+BULLISH) applies a −3
         penalty (total floored at 0).  When ``None`` (backward-compat / no
         direction context), CVD divergence contributes 0 points.
+    funding_rate:
+        Optional latest funding rate (decimal, e.g. 0.0001 for 0.01%).
+        When |funding_rate| ≥ 1% and aligns contrarily with signal direction
+        (extreme negative funding + LONG, or extreme positive funding + SHORT),
+        a bonus of up to 5 pts is added.
 
     Returns
     -------
     float
-        0–15 score representing order-flow confirmation quality.
+        0–20 score representing order-flow confirmation quality.
         * Squeeze confirmed (OI falling + liquidations) → up to 10.
         * CVD divergence aligned with signal direction → +5.
         * CVD divergence contra to signal direction → −3 (floored at 0).
+        * Contrarian funding rate alignment → up to +5.
     """
     s = 0.0
 
@@ -228,10 +268,21 @@ def score_order_flow(
         else:
             s -= 3.0
 
-    return min(max(s, 0.0), 15.0)
+    # Funding rate alignment bonus (0–5): contrarian edge when crowd is wrong
+    if funding_rate is not None and signal_direction is not None:
+        if abs(funding_rate) >= _EXTREME_FUNDING_RATE:
+            contrarian = (
+                (signal_direction == "LONG" and funding_rate < -_EXTREME_FUNDING_RATE)
+                or (signal_direction == "SHORT" and funding_rate > _EXTREME_FUNDING_RATE)
+            )
+            if contrarian:
+                funding_bonus = min(abs(funding_rate) / 0.03, 1.0) * 5.0
+                s += funding_bonus
+
+    return min(max(s, 0.0), 20.0)
 
 
-def get_session_multiplier(now: Optional[datetime] = None) -> float:
+def get_session_multiplier(now: Optional[datetime] = None, channel: Optional[str] = None) -> float:
     """Return a confidence multiplier based on the current trading session.
 
     Crypto markets have different volatility and liquidity profiles across
@@ -241,10 +292,18 @@ def get_session_multiplier(now: Optional[datetime] = None) -> float:
     * **European session** (08:00–16:00 UTC): moderate volume, cleaner moves → 1.0×
     * **US session** (16:00–00:00 UTC): highest volume, strongest trends → 1.05×
 
+    Higher-timeframe channels (SPOT, GEM) operate on 4h/1d/1w candles where
+    intraday session is irrelevant → always 1.0×.  SWING channels see a reduced
+    session impact (half penalty/boost).
+
     Parameters
     ----------
     now:
         Optional UTC datetime for testing.  Defaults to the current UTC time.
+    channel:
+        Optional channel name.  When ``"360_SPOT"`` or ``"360_GEM"``, the
+        session multiplier is always 1.0 (session is irrelevant at 4h/1d/1w).
+        When ``"360_SWING"``, a reduced impact is applied.
 
     Returns
     -------
@@ -253,9 +312,24 @@ def get_session_multiplier(now: Optional[datetime] = None) -> float:
     """
     if now is None:
         now = datetime.now(timezone.utc)
+
+    # Higher-timeframe channels: session is irrelevant → always 1.0
+    if channel in ("360_SPOT", "360_GEM"):
+        return 1.0
+
     hour = now.hour  # UTC hour 0–23
+
+    # SWING: reduced session impact (half penalty/boost)
+    if channel == "360_SWING":
+        if 0 <= hour < 8:
+            return 0.95   # Asian: mild penalty
+        if 8 <= hour < 16:
+            return 1.0    # European session
+        return 1.02       # US: mild boost
+
+    # SCALP channels (and unknown channels): full session impact
     if 0 <= hour < 8:
-        return 0.9   # Asian session
+        return 0.90   # Asian session
     if 8 <= hour < 16:
         return 1.0   # European session
     return 1.05      # US session (16–24)
@@ -264,6 +338,7 @@ def get_session_multiplier(now: Optional[datetime] = None) -> float:
 def compute_confidence(
     inp: ConfidenceInput,
     session_now: Optional[datetime] = None,
+    channel: Optional[str] = None,
 ) -> ConfidenceResult:
     """Combine all sub-scores into the final 0–100 confidence.
 
@@ -278,6 +353,9 @@ def compute_confidence(
         Optional UTC datetime used to determine the active trading session.
         Defaults to the current UTC time.  Pass an explicit value in tests to
         avoid time-dependent results.
+    channel:
+        Optional channel name passed through to :func:`get_session_multiplier`
+        to apply channel-appropriate session weighting.
     """
     breakdown: Dict[str, float] = {
         "smc": inp.smc_score,
@@ -292,7 +370,7 @@ def compute_confidence(
     total = sum(breakdown.values())
 
     # Apply session multiplier before capping
-    session_mult = get_session_multiplier(session_now)
+    session_mult = get_session_multiplier(session_now, channel=channel)
     total = total * session_mult
 
     total = round(min(max(total, 0.0), 100.0), 2)

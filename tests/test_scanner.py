@@ -1395,3 +1395,129 @@ class TestNormalizeCandles:
                 assert bool(val) is True
 
 
+
+
+# ---------------------------------------------------------------------------
+# Channel-aware gate profile tests
+# ---------------------------------------------------------------------------
+
+
+class TestChannelGateProfile:
+    """_CHANNEL_GATE_PROFILE correctly skips gates for SPOT/GEM/SWING."""
+
+    def test_scalp_all_gates_enabled(self):
+        """360_SCALP has all 8 gates enabled."""
+        from src.scanner import _CHANNEL_GATE_PROFILE
+        profile = _CHANNEL_GATE_PROFILE["360_SCALP"]
+        assert all(profile.values()), "All gates must be True for 360_SCALP"
+
+    def test_spot_only_mtf_and_cross_asset(self):
+        """360_SPOT enables only MTF and cross_asset gates."""
+        from src.scanner import _CHANNEL_GATE_PROFILE
+        profile = _CHANNEL_GATE_PROFILE["360_SPOT"]
+        assert profile["mtf"] is True
+        assert profile["cross_asset"] is True
+        # Intraday gates must be disabled
+        assert profile["vwap"] is False
+        assert profile["kill_zone"] is False
+        assert profile["oi"] is False
+        assert profile["spoof"] is False
+        assert profile["volume_div"] is False
+        assert profile["cluster"] is False
+
+    def test_gem_no_gates(self):
+        """360_GEM disables all gates."""
+        from src.scanner import _CHANNEL_GATE_PROFILE
+        profile = _CHANNEL_GATE_PROFILE["360_GEM"]
+        assert not any(profile.values()), "All gates must be False for 360_GEM"
+
+    def test_swing_disables_microstructure_gates(self):
+        """360_SWING disables kill_zone, spoof, and cluster gates."""
+        from src.scanner import _CHANNEL_GATE_PROFILE
+        profile = _CHANNEL_GATE_PROFILE["360_SWING"]
+        assert profile["mtf"] is True
+        assert profile["vwap"] is True
+        assert profile["oi"] is True
+        assert profile["cross_asset"] is True
+        assert profile["volume_div"] is True
+        # Microstructure gates disabled
+        assert profile["kill_zone"] is False
+        assert profile["spoof"] is False
+        assert profile["cluster"] is False
+
+    def test_unknown_channel_defaults_all_true(self):
+        """Channels not in the profile dict default to True (all gates on)."""
+        from src.scanner import _CHANNEL_GATE_PROFILE
+        profile = _CHANNEL_GATE_PROFILE.get("NONEXISTENT_CHANNEL", {})
+        # Default .get() with True fallback means unknown = all-True behavior
+        assert profile.get("mtf", True) is True
+        assert profile.get("spoof", True) is True
+
+
+class TestChannelPenaltyWeights:
+    """_CHANNEL_PENALTY_WEIGHTS provides per-channel soft penalty base values."""
+
+    def test_scalp_vwap_penalty_is_15(self):
+        from src.scanner import _CHANNEL_PENALTY_WEIGHTS
+        assert _CHANNEL_PENALTY_WEIGHTS["360_SCALP"]["vwap"] == pytest.approx(15.0)
+
+    def test_spot_all_penalties_zero(self):
+        """360_SPOT has 0.0 for all soft penalties (gates are skipped anyway)."""
+        from src.scanner import _CHANNEL_PENALTY_WEIGHTS
+        weights = _CHANNEL_PENALTY_WEIGHTS["360_SPOT"]
+        assert all(v == 0.0 for v in weights.values())
+
+    def test_gem_all_penalties_zero(self):
+        from src.scanner import _CHANNEL_PENALTY_WEIGHTS
+        weights = _CHANNEL_PENALTY_WEIGHTS["360_GEM"]
+        assert all(v == 0.0 for v in weights.values())
+
+    def test_scalp_obi_spoof_highest(self):
+        """360_SCALP_OBI has the highest spoof penalty (15.0) — OBI is spoof-sensitive."""
+        from src.scanner import _CHANNEL_PENALTY_WEIGHTS
+        assert _CHANNEL_PENALTY_WEIGHTS["360_SCALP_OBI"]["spoof"] == pytest.approx(15.0)
+
+    def test_scalp_vwap_vwap_highest(self):
+        """360_SCALP_VWAP has the highest VWAP penalty (18.0)."""
+        from src.scanner import _CHANNEL_PENALTY_WEIGHTS
+        assert _CHANNEL_PENALTY_WEIGHTS["360_SCALP_VWAP"]["vwap"] == pytest.approx(18.0)
+
+
+@pytest.mark.asyncio
+async def test_spot_skips_kill_zone_gate():
+    """360_SPOT channel: kill_zone gate is never called."""
+    channel = MagicMock()
+    channel.config = SimpleNamespace(name="360_SPOT", min_confidence=10.0)
+    channel.evaluate.return_value = _make_signal(channel="360_SPOT")
+    signal_queue = MagicMock()
+    signal_queue.put = AsyncMock(return_value=True)
+    scanner = _make_scan_ready_scanner(channel=channel, signal_queue=signal_queue)
+
+    mock_kz = MagicMock(return_value=(False, "wrong session"))
+    with _common_gate_patches(scanner, [
+        patch("src.scanner.check_kill_zone_gate", mock_kz),
+    ]):
+        await scanner._scan_symbol("SOLUSDT", 5_000_000)
+
+    # kill_zone gate must NOT be called for 360_SPOT
+    mock_kz.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_gem_skips_mtf_gate():
+    """360_GEM channel: MTF gate is never called."""
+    channel = MagicMock()
+    channel.config = SimpleNamespace(name="360_GEM", min_confidence=10.0)
+    channel.evaluate.return_value = _make_signal(channel="360_GEM")
+    signal_queue = MagicMock()
+    signal_queue.put = AsyncMock(return_value=True)
+    scanner = _make_scan_ready_scanner(channel=channel, signal_queue=signal_queue)
+
+    mock_mtf = MagicMock(return_value=(False, "MTF misaligned"))
+    with _common_gate_patches(scanner, [
+        patch("src.scanner.check_mtf_gate", mock_mtf),
+    ]):
+        await scanner._scan_symbol("SOLUSDT", 500_000)
+
+    # MTF gate must NOT be called for 360_GEM
+    mock_mtf.assert_not_called()

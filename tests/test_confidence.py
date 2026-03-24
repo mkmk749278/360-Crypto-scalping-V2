@@ -348,3 +348,149 @@ class TestScoreOrderFlow:
         )
         result = compute_confidence(inp, session_now=self._EU)
         assert result.total >= 95.0
+
+
+# ---------------------------------------------------------------------------
+# score_order_flow with funding_rate parameter
+# ---------------------------------------------------------------------------
+
+
+class TestScoreOrderFlowFundingRate:
+    def test_funding_rate_contrarian_long(self):
+        """Extreme negative funding + LONG signal → contrarian edge bonus."""
+        score = score_order_flow(signal_direction="LONG", funding_rate=-0.03)
+        assert score == pytest.approx(5.0)
+
+    def test_funding_rate_contrarian_short(self):
+        """Extreme positive funding + SHORT signal → contrarian edge bonus."""
+        score = score_order_flow(signal_direction="SHORT", funding_rate=0.03)
+        assert score == pytest.approx(5.0)
+
+    def test_funding_rate_not_extreme_no_bonus(self):
+        """Funding rate below 1% threshold gives no bonus."""
+        score = score_order_flow(signal_direction="LONG", funding_rate=-0.005)
+        assert score == pytest.approx(0.0)
+
+    def test_funding_rate_aligned_direction_no_bonus(self):
+        """Positive funding + LONG is NOT contrarian → no bonus."""
+        score = score_order_flow(signal_direction="LONG", funding_rate=0.03)
+        assert score == pytest.approx(0.0)
+
+    def test_funding_rate_no_direction_no_bonus(self):
+        """funding_rate without signal_direction → no bonus."""
+        score = score_order_flow(funding_rate=-0.03)
+        assert score == pytest.approx(0.0)
+
+    def test_partial_funding_bonus(self):
+        """funding_rate at -1.5% → 2.5 pts bonus (50% of max 5)."""
+        score = score_order_flow(signal_direction="LONG", funding_rate=-0.015)
+        assert score == pytest.approx(2.5)
+
+    def test_order_flow_capped_at_20(self):
+        """Full squeeze + aligned CVD + contrarian funding → capped at 20."""
+        score = score_order_flow(
+            oi_trend="FALLING",
+            liq_vol_usd=500_000.0,
+            cvd_divergence="BULLISH",
+            signal_direction="LONG",
+            funding_rate=-0.03,
+        )
+        assert score == pytest.approx(20.0)
+
+    def test_backward_compat_no_funding_rate(self):
+        """Omitting funding_rate doesn't break existing behavior."""
+        # Full squeeze (10) + aligned CVD (5) = 15, capped at old behavior
+        score = score_order_flow(
+            oi_trend="FALLING",
+            liq_vol_usd=500_000.0,
+            cvd_divergence="BULLISH",
+            signal_direction="LONG",
+        )
+        assert score == pytest.approx(15.0)
+
+
+# ---------------------------------------------------------------------------
+# score_liquidity with channel parameter
+# ---------------------------------------------------------------------------
+
+
+class TestScoreLiquidityWithChannel:
+    def test_gem_full_score_at_250k(self):
+        """360_GEM achieves max score at $250K."""
+        assert score_liquidity(250_000.0, channel="360_GEM") == pytest.approx(20.0)
+
+    def test_spot_full_score_at_1m(self):
+        """360_SPOT achieves max score at $1M."""
+        assert score_liquidity(1_000_000.0, channel="360_SPOT") == pytest.approx(20.0)
+
+    def test_swing_full_score_at_10m(self):
+        """360_SWING achieves max score at $10M."""
+        assert score_liquidity(10_000_000.0, channel="360_SWING") == pytest.approx(20.0)
+
+    def test_scalp_full_score_at_5m(self):
+        """360_SCALP uses $5M threshold (default)."""
+        assert score_liquidity(5_000_000.0, channel="360_SCALP") == pytest.approx(20.0)
+
+    def test_gem_scores_higher_than_scalp_at_1m(self):
+        """GEM scores 20.0 at $1M; SCALP scores only 4.0."""
+        assert score_liquidity(1_000_000.0, channel="360_GEM") > score_liquidity(1_000_000.0, channel="360_SCALP")
+
+    def test_unknown_channel_uses_default(self):
+        """Unknown channel falls back to default $5M threshold."""
+        assert score_liquidity(5_000_000.0, channel="UNKNOWN") == pytest.approx(20.0)
+
+    def test_no_channel_backward_compat(self):
+        """Omitting channel preserves old behavior."""
+        assert score_liquidity(5_000_000.0) == pytest.approx(20.0)
+
+
+# ---------------------------------------------------------------------------
+# get_session_multiplier with channel parameter
+# ---------------------------------------------------------------------------
+
+
+class TestGetSessionMultiplierWithChannel:
+    _ASIAN = datetime(2024, 1, 15, 3, 0, 0, tzinfo=timezone.utc)
+    _EU = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+    _US = datetime(2024, 1, 15, 20, 0, 0, tzinfo=timezone.utc)
+
+    def test_spot_always_one(self):
+        """360_SPOT returns 1.0 regardless of session."""
+        for t in (self._ASIAN, self._EU, self._US):
+            assert get_session_multiplier(t, channel="360_SPOT") == pytest.approx(1.0)
+
+    def test_gem_always_one(self):
+        """360_GEM returns 1.0 regardless of session."""
+        for t in (self._ASIAN, self._EU, self._US):
+            assert get_session_multiplier(t, channel="360_GEM") == pytest.approx(1.0)
+
+    def test_swing_asian_mild_penalty(self):
+        """360_SWING: Asian session → 0.95×."""
+        assert get_session_multiplier(self._ASIAN, channel="360_SWING") == pytest.approx(0.95)
+
+    def test_swing_eu_neutral(self):
+        """360_SWING: EU session → 1.0×."""
+        assert get_session_multiplier(self._EU, channel="360_SWING") == pytest.approx(1.0)
+
+    def test_swing_us_mild_boost(self):
+        """360_SWING: US session → 1.02×."""
+        assert get_session_multiplier(self._US, channel="360_SWING") == pytest.approx(1.02)
+
+    def test_scalp_asian_full_penalty(self):
+        """360_SCALP: Asian session → 0.90×."""
+        assert get_session_multiplier(self._ASIAN, channel="360_SCALP") == pytest.approx(0.90)
+
+    def test_scalp_us_full_boost(self):
+        """360_SCALP: US session → 1.05×."""
+        assert get_session_multiplier(self._US, channel="360_SCALP") == pytest.approx(1.05)
+
+    def test_no_channel_default_behavior(self):
+        """Omitting channel behaves like SCALP (full impact)."""
+        assert get_session_multiplier(self._ASIAN) == pytest.approx(0.90)
+
+    def test_compute_confidence_spot_ignores_session(self):
+        """360_SPOT: Asian and EU sessions give same total (1.0× always)."""
+        inp = ConfidenceInput(smc_score=20, trend_score=15)
+        r_asian = compute_confidence(inp, session_now=self._ASIAN, channel="360_SPOT")
+        r_eu = compute_confidence(inp, session_now=self._EU, channel="360_SPOT")
+        assert r_asian.total == r_eu.total

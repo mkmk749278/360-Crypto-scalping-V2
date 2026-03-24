@@ -249,7 +249,7 @@ class TestRegimeScaledVWAPPenalty:
 
     @pytest.mark.asyncio
     async def test_soft_penalty_volatile_regime_scaling(self):
-        """VOLATILE regime: VWAP penalty = 12.0 × 1.5 = 18.0."""
+        """VOLATILE regime: VWAP penalty = 15.0 × 1.5 = 22.5 (360_SCALP weight)."""
         channel = MagicMock()
         channel.config = SimpleNamespace(name="360_SCALP", min_confidence=10.0)
         channel.evaluate.return_value = _make_signal()
@@ -274,13 +274,13 @@ class TestRegimeScaledVWAPPenalty:
 
         sig = captured.get("sig")
         assert sig is not None, "Signal must be enqueued (soft penalty, not hard block)"
-        assert sig.soft_penalty_total == pytest.approx(18.0, abs=0.1)
+        assert sig.soft_penalty_total == pytest.approx(22.5, abs=0.1)
         assert sig.regime_penalty_multiplier == pytest.approx(1.5)
         assert "VWAP" in sig.soft_gate_flags
 
     @pytest.mark.asyncio
     async def test_soft_penalty_trending_lenient(self):
-        """TRENDING_UP regime: VWAP penalty = 12.0 × 0.6 = 7.2."""
+        """TRENDING_UP regime: VWAP penalty = 15.0 × 0.6 = 9.0 (360_SCALP weight)."""
         channel = MagicMock()
         channel.config = SimpleNamespace(name="360_SCALP", min_confidence=10.0)
         channel.evaluate.return_value = _make_signal()
@@ -304,7 +304,7 @@ class TestRegimeScaledVWAPPenalty:
 
         sig = captured.get("sig")
         assert sig is not None
-        assert sig.soft_penalty_total == pytest.approx(7.2, abs=0.1)
+        assert sig.soft_penalty_total == pytest.approx(9.0, abs=0.1)
         assert sig.regime_penalty_multiplier == pytest.approx(0.6)
 
 
@@ -317,7 +317,7 @@ class TestMultipleSoftGatesAccumulate:
 
     @pytest.mark.asyncio
     async def test_multiple_soft_gates_accumulate_ranging(self):
-        """RANGING regime: VWAP (12.0) + OI (15.0) = 27.0 total penalty."""
+        """RANGING regime: VWAP (15.0) + OI (8.0) = 23.0 total penalty (360_SCALP weights)."""
         from src.order_flow import OISnapshot
 
         channel = MagicMock()
@@ -353,8 +353,8 @@ class TestMultipleSoftGatesAccumulate:
 
         sig = captured.get("sig")
         assert sig is not None
-        # RANGING multiplier = 1.0 → 12.0 + 15.0 = 27.0
-        assert sig.soft_penalty_total == pytest.approx(27.0, abs=0.1)
+        # RANGING multiplier = 1.0 → 15.0 + 8.0 = 23.0 (360_SCALP channel weights)
+        assert sig.soft_penalty_total == pytest.approx(23.0, abs=0.1)
         assert "VWAP" in sig.soft_gate_flags
         assert "OI" in sig.soft_gate_flags
 

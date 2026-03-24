@@ -48,6 +48,7 @@ Typical usage
 
 from __future__ import annotations
 
+import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -71,10 +72,10 @@ _PENALTY_WIN_RATE: float = 0.40
 _BOOST_WIN_RATE: float = 0.70
 
 #: Confidence penalty applied when win rate is below :data:`_PENALTY_WIN_RATE`.
-_SETUP_PENALTY: float = -5.0
+_SETUP_PENALTY: float = -8.0
 
 #: Confidence boost applied when win rate exceeds :data:`_BOOST_WIN_RATE`.
-_SETUP_BOOST: float = +3.0
+_SETUP_BOOST: float = +5.0
 
 #: Execution score below which a penalty is applied when historical lose rate > 60%.
 _EXEC_PENALTY_THRESHOLD: float = 14.0
@@ -88,11 +89,15 @@ _MARKET_BOOST: float = +2.0
 
 #: Clamp range for the total confidence adjustment returned by
 #: :meth:`FeedbackLoop.get_confidence_adjustment`.
-_ADJ_MIN: float = -10.0
-_ADJ_MAX: float = +10.0
+_ADJ_MIN: float = -15.0
+_ADJ_MAX: float = +15.0
 
 #: Minimum number of outcomes in a group before we trust its statistics.
 _MIN_SAMPLE_SIZE: int = 10
+
+#: Half-life for exponential time-decay of outcomes (7 days in seconds).
+#: Recent outcomes weigh more than older ones when computing win rates.
+_DECAY_HALF_LIFE_SECONDS: float = 7 * 24 * 3600
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +253,7 @@ class FeedbackLoop:
         """Return the historical win rate for *setup_class* in *channel*.
 
         Returns ``0.5`` (neutral) when there is insufficient history.
+        Uses exponential time-decay so recent outcomes weigh more heavily.
         """
         group = [
             o for o in self._outcomes
@@ -255,12 +261,23 @@ class FeedbackLoop:
         ]
         if len(group) < _MIN_SAMPLE_SIZE:
             return 0.5
-        wins = sum(1 for o in group if o.outcome in _WIN_OUTCOMES)
-        return wins / len(group)
+        total_weight = sum(self._time_weight(r) for r in group)
+        win_weight = sum(self._time_weight(r) for r in group if r.outcome in _WIN_OUTCOMES)
+        return win_weight / total_weight if total_weight > 0 else 0.5
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _time_weight(self, outcome: TradeOutcome) -> float:
+        """Exponential decay weight — recent outcomes matter more.
+
+        Outcomes decay with a half-life of :data:`_DECAY_HALF_LIFE_SECONDS`
+        (7 days by default), so a 7-day-old outcome has weight 0.5 and a
+        14-day-old outcome has weight 0.25.
+        """
+        age = time.monotonic() - outcome.timestamp
+        return math.exp(-math.log(2) * age / _DECAY_HALF_LIFE_SECONDS)
 
     def _recompute_weights(self) -> None:
         """Analyse recent outcomes and update the stored weight adjustments."""
@@ -274,8 +291,9 @@ class FeedbackLoop:
         for (channel, setup_class), records in groups.items():
             if len(records) < _MIN_SAMPLE_SIZE:
                 continue
-            wins = sum(1 for r in records if r.outcome in _WIN_OUTCOMES)
-            win_rate = wins / len(records)
+            total_weight = sum(self._time_weight(r) for r in records)
+            win_weight = sum(self._time_weight(r) for r in records if r.outcome in _WIN_OUTCOMES)
+            win_rate = win_weight / total_weight if total_weight > 0 else 0.5
             if win_rate < _PENALTY_WIN_RATE:
                 new_adjustments[(channel, setup_class)] = _SETUP_PENALTY
             elif win_rate > _BOOST_WIN_RATE:
