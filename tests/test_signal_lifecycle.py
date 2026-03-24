@@ -458,9 +458,20 @@ class TestCheckSignal:
 
 
 class TestIsDue:
-    def test_never_checked_is_always_due(self):
+    def test_new_signal_not_due_immediately(self):
+        """A brand-new signal (last_lifecycle_check=None) must not fire immediately."""
         sig = _make_signal(channel="360_SPOT")
         sig.last_lifecycle_check = None
+        # timestamp defaults to utcnow() in _make_signal — elapsed ≈ 0s
+        monitor = _make_monitor(sig)
+        assert not monitor._is_due(sig)
+
+    def test_old_signal_with_no_check_is_due(self):
+        """A signal created more than one interval ago with no check should fire."""
+        sig = _make_signal(channel="360_SPOT")
+        sig.last_lifecycle_check = None
+        # Back-date the creation timestamp by 7h (SPOT interval is 6h)
+        sig.timestamp = utcnow() - timedelta(hours=7)
         monitor = _make_monitor(sig)
         assert monitor._is_due(sig)
 
@@ -514,6 +525,22 @@ class TestFormatUpdateMessage:
         )
         assert "CLOSE RECOMMENDED" in msg
         assert "thesis invalidated" in msg
+
+    def test_regime_underscores_escaped_in_message(self):
+        """Regime names like TRENDING_UP must have underscores escaped for Telegram Markdown."""
+        sig = _make_signal(channel="360_SPOT", entry=1.0)
+        monitor = _make_monitor(sig)
+        msg = monitor._format_update_message(
+            signal=sig,
+            assessments=["🔴 Regime: flipped TRENDING_UP → TRENDING_DOWN"],
+            current_price=0.95,
+            alert_level="RED",
+            should_close=False,
+            close_reason="",
+        )
+        # Underscores in regime names must be escaped for Markdown safety
+        assert "TRENDING\\_UP" in msg
+        assert "TRENDING\\_DOWN" in msg
 
 
 # ---------------------------------------------------------------------------

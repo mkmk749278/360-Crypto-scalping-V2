@@ -713,6 +713,32 @@ class TestSignalToDict:
         # Must not raise
         json.dumps(d)
 
+    def test_lifecycle_datetime_fields_serialized(self):
+        """last_lifecycle_check and dca_timestamp must be ISO strings, not datetime objects."""
+        sig = _make_signal()
+        sig.last_lifecycle_check = utcnow()
+        sig.dca_timestamp = utcnow()
+        d = _signal_to_dict(sig)
+        # Both datetime fields must be ISO strings
+        assert isinstance(d["last_lifecycle_check"], str)
+        assert isinstance(d["dca_timestamp"], str)
+        datetime.fromisoformat(d["last_lifecycle_check"])
+        datetime.fromisoformat(d["dca_timestamp"])
+        # Must not raise
+        json.dumps(d)
+
+    def test_lifecycle_datetime_fields_roundtrip(self):
+        """last_lifecycle_check and dca_timestamp must survive a serialize→deserialize round-trip."""
+        now = utcnow()
+        sig = _make_signal()
+        sig.last_lifecycle_check = now
+        sig.dca_timestamp = now
+        d = _signal_to_dict(sig)
+        restored = _signal_from_dict(d)
+        assert restored is not None
+        assert restored.last_lifecycle_check == now
+        assert restored.dca_timestamp == now
+
 
 class TestRedisPersistence:
     """SignalRouter must persist and restore state via RedisClient."""

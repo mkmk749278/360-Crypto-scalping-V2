@@ -60,6 +60,13 @@ def _utcnow() -> datetime:
     return utcnow()
 
 
+def _escape_md(text: str) -> str:
+    """Escape Telegram MarkdownV1 special characters in dynamic text fields."""
+    for ch in ("\\", "*", "_", "`", "["):
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
 def _compute_ema(prices: List[float], period: int) -> Optional[float]:
     """Compute the last EMA value for *prices* with the given *period*.
 
@@ -168,8 +175,11 @@ class SignalLifecycleMonitor:
         if interval is None:
             return False
         if signal.last_lifecycle_check is None:
-            return True
-        elapsed = (_utcnow() - signal.last_lifecycle_check).total_seconds()
+            # Use the signal's creation time so the first check respects the
+            # full interval (prevents immediate firing after signal creation).
+            elapsed = (_utcnow() - signal.timestamp).total_seconds()
+        else:
+            elapsed = (_utcnow() - signal.last_lifecycle_check).total_seconds()
         return elapsed >= interval
 
     # ------------------------------------------------------------------
@@ -521,7 +531,7 @@ class SignalLifecycleMonitor:
         ]
 
         for assessment in assessments:
-            lines.append(assessment)
+            lines.append(_escape_md(assessment))
 
         if should_close:
             lines.append("⛔ CLOSE RECOMMENDED — thesis invalidated")

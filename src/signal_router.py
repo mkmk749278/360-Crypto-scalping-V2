@@ -54,8 +54,10 @@ def _signal_from_dict(data: dict) -> Optional[Signal]:
         d = data.copy()
         if isinstance(d.get("direction"), str):
             d["direction"] = Direction(d["direction"])
-        if isinstance(d.get("timestamp"), str):
-            d["timestamp"] = datetime.fromisoformat(d["timestamp"])
+        # Restore all datetime fields that were serialized as ISO strings
+        for field in ("timestamp", "last_lifecycle_check", "dca_timestamp"):
+            if isinstance(d.get(field), str):
+                d[field] = datetime.fromisoformat(d[field])
         return Signal(**d)
     except Exception as exc:
         log.warning("Failed to reconstruct Signal from dict: {}", exc)
@@ -66,7 +68,10 @@ def _signal_to_dict(sig: Signal) -> dict:
     """Serialize a Signal to a JSON-serializable dict."""
     d = dataclasses.asdict(sig)
     d["direction"] = sig.direction.value  # Direction enum → string
-    d["timestamp"] = sig.timestamp.isoformat()  # datetime → ISO string
+    # Convert ALL datetime fields to ISO strings for JSON compatibility
+    for k in list(d.keys()):
+        if isinstance(d[k], datetime):
+            d[k] = d[k].isoformat()
     return d
 
 
