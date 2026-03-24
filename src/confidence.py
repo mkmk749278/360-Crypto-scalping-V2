@@ -45,6 +45,46 @@ _LIQUIDITY_THRESHOLDS: Dict[str, float] = {
     "360_GEM":        250_000.0,
 }
 
+# Channel-specific sub-score weight profiles.  Keys match the 8 breakdown
+# sub-scores; missing keys default to 1.0 (no scaling).  Scalp channels
+# are intentionally flat (1.0 everywhere) so they raw-sum identically to
+# the pre-weight behaviour.  SWING, SPOT and GEM profiles tilt weights
+# toward the factors that matter most for each investment horizon.
+_CHANNEL_WEIGHT_PROFILES: Dict[str, Dict[str, float]] = {
+    "360_SCALP": {
+        "smc": 1.0, "trend": 1.0, "liquidity": 1.0, "spread": 1.0,
+        "data_sufficiency": 1.0, "multi_exchange": 1.0, "onchain": 1.0, "order_flow": 1.0,
+    },
+    "360_SCALP_FVG": {
+        "smc": 1.0, "trend": 1.0, "liquidity": 1.0, "spread": 1.0,
+        "data_sufficiency": 1.0, "multi_exchange": 1.0, "onchain": 1.0, "order_flow": 1.0,
+    },
+    "360_SCALP_CVD": {
+        "smc": 1.0, "trend": 1.0, "liquidity": 1.0, "spread": 1.0,
+        "data_sufficiency": 1.0, "multi_exchange": 1.0, "onchain": 1.0, "order_flow": 1.0,
+    },
+    "360_SCALP_VWAP": {
+        "smc": 1.0, "trend": 1.0, "liquidity": 1.0, "spread": 1.0,
+        "data_sufficiency": 1.0, "multi_exchange": 1.0, "onchain": 1.0, "order_flow": 1.0,
+    },
+    "360_SCALP_OBI": {
+        "smc": 1.0, "trend": 1.0, "liquidity": 1.0, "spread": 1.0,
+        "data_sufficiency": 1.0, "multi_exchange": 1.0, "onchain": 1.0, "order_flow": 1.0,
+    },
+    "360_SWING": {
+        "smc": 0.7, "trend": 1.4, "liquidity": 1.0, "spread": 0.8,
+        "data_sufficiency": 1.0, "multi_exchange": 1.0, "onchain": 1.2, "order_flow": 0.9,
+    },
+    "360_SPOT": {
+        "smc": 0.5, "trend": 1.4, "liquidity": 0.75, "spread": 0.8,
+        "data_sufficiency": 1.0, "multi_exchange": 1.0, "onchain": 1.5, "order_flow": 0.8,
+    },
+    "360_GEM": {
+        "smc": 0.2, "trend": 0.8, "liquidity": 0.5, "spread": 0.5,
+        "data_sufficiency": 1.0, "multi_exchange": 0.5, "onchain": 2.0, "order_flow": 0.5,
+    },
+}
+
 
 @dataclass
 class ConfidenceInput:
@@ -357,15 +397,16 @@ def compute_confidence(
         Optional channel name passed through to :func:`get_session_multiplier`
         to apply channel-appropriate session weighting.
     """
+    weights = _CHANNEL_WEIGHT_PROFILES.get(channel or "", {})
     breakdown: Dict[str, float] = {
-        "smc": inp.smc_score,
-        "trend": inp.trend_score,
-        "liquidity": inp.liquidity_score,
-        "spread": inp.spread_score,
-        "data_sufficiency": inp.data_sufficiency,
-        "multi_exchange": inp.multi_exchange,
-        "onchain": inp.onchain_score,
-        "order_flow": inp.order_flow_score,
+        "smc": inp.smc_score * weights.get("smc", 1.0),
+        "trend": inp.trend_score * weights.get("trend", 1.0),
+        "liquidity": inp.liquidity_score * weights.get("liquidity", 1.0),
+        "spread": inp.spread_score * weights.get("spread", 1.0),
+        "data_sufficiency": inp.data_sufficiency * weights.get("data_sufficiency", 1.0),
+        "multi_exchange": inp.multi_exchange * weights.get("multi_exchange", 1.0),
+        "onchain": inp.onchain_score * weights.get("onchain", 1.0),
+        "order_flow": inp.order_flow_score * weights.get("order_flow", 1.0),
     }
     total = sum(breakdown.values())
 

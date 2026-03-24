@@ -87,6 +87,14 @@ class ScalpChannel(BaseChannel):
 
         direction = sweep.direction
 
+        # RSI extreme gate: don't chase overbought LONGs or fade oversold SHORTs
+        rsi_last = ind.get("rsi_last")
+        if rsi_last is not None:
+            if direction == Direction.LONG and rsi_last > 75:
+                return None
+            if direction == Direction.SHORT and rsi_last < 25:
+                return None
+
         # Momentum must agree with sweep direction
         if direction == Direction.LONG and mom < 0:
             return None
@@ -157,6 +165,13 @@ class ScalpChannel(BaseChannel):
         else:
             return None
 
+        # RSI extreme gate: don't chase overbought LONGs or fade oversold SHORTs
+        if rsi_val is not None:
+            if direction == Direction.LONG and rsi_val > 75:
+                return None
+            if direction == Direction.SHORT and rsi_val < 25:
+                return None
+
         if not check_rsi(rsi_val, 70.0, 30.0, direction.value):
             return None
 
@@ -219,6 +234,14 @@ class ScalpChannel(BaseChannel):
             direction = Direction.SHORT
         else:
             return None
+
+        # RSI extreme gate: don't chase overbought LONGs or fade oversold SHORTs
+        rsi_last = indicators.get("1m", {}).get("rsi_last")
+        if rsi_last is not None:
+            if direction == Direction.LONG and rsi_last > 75:
+                return None
+            if direction == Direction.SHORT and rsi_last < 25:
+                return None
 
         # Order book imbalance check
         order_book = smc_data.get("order_book")

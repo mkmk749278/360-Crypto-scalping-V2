@@ -113,7 +113,15 @@ class ScalpOBIChannel(BaseChannel):
         if direction is None:
             return None
 
+        # RSI extreme gate: don't chase overbought LONGs or fade oversold SHORTs
         ind = indicators.get("5m", {})
+        rsi_last = ind.get("rsi_last")
+        if rsi_last is not None:
+            if direction == Direction.LONG and rsi_last > 75:
+                return None
+            if direction == Direction.SHORT and rsi_last < 25:
+                return None
+
         atr_val = ind.get("atr_last", close * 0.001)
         sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val * 0.5)
 

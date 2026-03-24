@@ -210,9 +210,9 @@ class TestSpotChannel:
         closes[-1] = max(closes[-20:-1]) + 1.0
         highs = closes + 0.5
         lows = closes - 0.5
-        # Volume: last bar is 1.5× the 19-bar average
+        # Volume: last bar is 2.0× the 19-bar average (above 1.8× expansion threshold)
         volumes = np.ones(60) * 1000.0
-        volumes[-1] = volumes[:-1].mean() * 1.5
+        volumes[-1] = volumes[:-1].mean() * 2.0
         candles_data = {
             "open": closes - 0.1,
             "high": highs,

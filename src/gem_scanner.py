@@ -206,6 +206,13 @@ class GemScanner:
         if avg_vol <= 0:
             return None
 
+        # Market cap proxy filter: reject likely-dead or abandoned tokens
+        # NOTE: Consider raising GEM_MIN_VOLUME_RATIO to 2.5 via config for stricter
+        # quality control on live deployments.
+        avg_daily_usd_vol = avg_vol * current_price
+        if avg_daily_usd_vol < 250_000:
+            return None  # Likely dead/abandoned project
+
         vol_ratio = float(recent_vol / avg_vol)
 
         if vol_ratio < self._config.min_volume_ratio:
@@ -240,12 +247,13 @@ class GemScanner:
         confidence = 50.0  # Base
 
         # MA crossover: soft modifier instead of hard gate.
-        # A fresh golden cross boosts confidence; absence applies a penalty but
-        # still allows the signal through so the min_confidence check can decide.
+        # A fresh golden cross boosts confidence; absence applies a small penalty
+        # (5 pts) so that slow-accumulation setups without a fresh cross still
+        # pass — they are valid gem patterns.
         if ma_crossover:
             confidence += 10.0
         else:
-            confidence -= 15.0
+            confidence -= 5.0
 
         if drawdown_pct >= 85:
             confidence += 15.0
@@ -270,6 +278,21 @@ class GemScanner:
             confidence += 10.0
         elif x_potential >= 5:
             confidence += 5.0
+
+        # OBV accumulation detection: smart money buying on down days is a
+        # strong leading indicator that confirms the gem thesis.
+        if len(float_volumes) >= 30 and len(np_closes) >= 30:
+            price_diffs = np.diff(np_closes[-31:])
+            vol_slice = np.array(float_volumes[-30:], dtype=np.float64)
+            obv_changes = np.where(
+                price_diffs > 0, vol_slice,
+                np.where(price_diffs < 0, -vol_slice, 0.0)
+            )
+            obv = np.cumsum(obv_changes)
+            if len(obv) >= 2:
+                obv_slope = (obv[-1] - obv[0]) / max(abs(obv[0]), float(vol_slice.mean()), 1.0)
+                if obv_slope > 0.1:
+                    confidence += 8.0  # Smart money accumulation confirmed via OBV
 
         confidence = min(100.0, max(0.0, confidence))
 

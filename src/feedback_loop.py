@@ -93,11 +93,11 @@ _ADJ_MIN: float = -15.0
 _ADJ_MAX: float = +15.0
 
 #: Minimum number of outcomes in a group before we trust its statistics.
-_MIN_SAMPLE_SIZE: int = 10
+_MIN_SAMPLE_SIZE: int = 5
 
-#: Half-life for exponential time-decay of outcomes (7 days in seconds).
+#: Half-life for exponential time-decay of outcomes (5 days in seconds).
 #: Recent outcomes weigh more than older ones when computing win rates.
-_DECAY_HALF_LIFE_SECONDS: float = 7 * 24 * 3600
+_DECAY_HALF_LIFE_SECONDS: float = 5 * 24 * 3600
 
 
 # ---------------------------------------------------------------------------

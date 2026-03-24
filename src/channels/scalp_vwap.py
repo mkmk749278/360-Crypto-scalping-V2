@@ -119,6 +119,14 @@ class ScalpVWAPChannel(BaseChannel):
         else:
             return None
 
+        # RSI extreme gate: don't chase overbought LONGs or fade oversold SHORTs
+        rsi_last = ind.get("rsi_last")
+        if rsi_last is not None:
+            if direction == Direction.LONG and rsi_last > 75:
+                return None
+            if direction == Direction.SHORT and rsi_last < 25:
+                return None
+
         # SL: beyond ±2SD band
         if direction == Direction.LONG:
             sl = lower_band_2 - (vwap_result.std_dev * 0.1)

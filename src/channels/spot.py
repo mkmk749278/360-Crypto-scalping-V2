@@ -49,8 +49,19 @@ class SpotChannel(BaseChannel):
 
         # EMA200 filter — only LONG above EMA200 (spot accumulation is buy-only)
         ema200 = ind_h4.get("ema200_last")
-        if ema200 is not None and close_h4 < ema200 * 0.95:
+        if ema200 is not None and close_h4 < ema200:
             return None
+
+        # Daily EMA50 alignment: ensure the daily trend is also up
+        ind_d1 = indicators.get("1d", {})
+        ema50_daily = ind_d1.get("ema50_last")
+        if ema50_daily is not None and close_h4 < ema50_daily:
+            return None  # Daily trend is down, don't spot-accumulate
+
+        # Bollinger squeeze detection: require tight BB before breakout
+        bb_width = ind_h4.get("bb_width_pct")
+        if bb_width is not None and bb_width > 4.0:
+            return None  # Not squeezing, not a real accumulation pattern
 
         # --- Accumulation breakout: price must clear recent H4 resistance ---
         highs = h4.get("high", [])
@@ -70,7 +81,7 @@ class SpotChannel(BaseChannel):
         usd_volumes = [float(v) * float(c) for v, c in zip(volumes[-10:], closes_list[-10:])]
         avg_usd_vol = sum(usd_volumes[:-1]) / 9
         current_usd_vol = usd_volumes[-1]
-        if current_usd_vol < avg_usd_vol * 1.2:
+        if current_usd_vol < avg_usd_vol * 1.8:
             return None  # Insufficient volume expansion
 
         # SMC trigger (optional) — check for bearish MSS that would contradict accumulation
@@ -80,6 +91,11 @@ class SpotChannel(BaseChannel):
         direction = Direction.LONG
         if mss is not None and mss.direction == Direction.SHORT:
             return None  # Structural short bias contradicts accumulation setup
+
+        # RSI overbought gate: don't buy into an already overbought market
+        rsi_last = ind_h4.get("rsi_last")
+        if rsi_last is not None and rsi_last > 75:
+            return None
 
         close = close_h4
         atr_val = ind_h4.get("atr_last", close * 0.01)

@@ -109,6 +109,14 @@ class ScalpFVGChannel(BaseChannel):
         if direction is None or retest_zone is None:
             return None
 
+        # RSI extreme gate: don't chase overbought LONGs or fade oversold SHORTs
+        rsi_last = ind.get("rsi_last")
+        if rsi_last is not None:
+            if direction == Direction.LONG and rsi_last > 75:
+                return None
+            if direction == Direction.SHORT and rsi_last < 25:
+                return None
+
         gap_high = float(retest_zone.gap_high)
         gap_low = float(retest_zone.gap_low)
 

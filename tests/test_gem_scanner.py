@@ -7,6 +7,10 @@ from datetime import date
 
 from src.gem_scanner import GemScanner, GemScannerConfig, GemSignal
 
+# Volume base used in test fixtures to satisfy the $250K market-cap proxy filter
+# (avg_daily_usd_vol = _TEST_VOLUME_BASE * price >= 250_000 at price = 1.0).
+_TEST_VOLUME_BASE: float = 300_000.0
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -45,6 +49,7 @@ def _gem_candles(
     - tight range in last 30 days
     - volume surge
     - rising close for EMA crossover
+    - volume_base = 300_000 so avg_daily_usd_vol >= 250_000 (market cap proxy)
     """
     closes = [current] * n
     # Make prices rise slightly in the last few candles so EMA20 crosses EMA50
@@ -52,9 +57,9 @@ def _gem_candles(
         closes[i] = current * (1 + 0.002 * (i - (n - 25)))
     highs = [ath] + [c + 0.01 for c in closes[1:]]
     lows = [c - 0.01 for c in closes]
-    volumes = [1000.0] * n
+    volumes = [_TEST_VOLUME_BASE] * n
     for i in range(max(0, n - 7), n):
-        volumes[i] = 1000.0 * vol_surge
+        volumes[i] = _TEST_VOLUME_BASE * vol_surge
     return {
         "open": closes,
         "high": highs,
@@ -157,7 +162,7 @@ class TestGemScannerMACrossover:
         assert result is None  # fails at ≥200 candle check
 
     def test_no_ma_crossover_applies_confidence_penalty(self):
-        """When MA crossover is absent, confidence is penalised by 15 pts but
+        """When MA crossover is absent, confidence is penalised by 5 pts but
         the scanner does NOT hard-block the signal — it still returns a GemSignal
         when all other filters pass."""
         scanner = GemScanner(
@@ -175,8 +180,9 @@ class TestGemScannerMACrossover:
         # ATH in first candle → ≥70% drawdown
         highs = [10.0] + [1.02] * (n - 1)
         lows = [0.98] * n
-        # Strong volume surge in last 7 candles
-        volumes = [1000.0] * (n - 7) + [4000.0] * 7
+        # Strong volume surge in last 7 candles; volume_base = _TEST_VOLUME_BASE so that
+        # avg_daily_usd_vol = ~300_000 * 1.0 = 300_000 ≥ 250_000 (market cap proxy)
+        volumes = [_TEST_VOLUME_BASE] * (n - 7) + [_TEST_VOLUME_BASE * 4] * 7
         candles = {
             "open": closes, "high": highs, "low": lows,
             "close": closes, "volume": volumes,

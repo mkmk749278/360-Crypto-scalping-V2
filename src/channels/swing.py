@@ -66,6 +66,14 @@ class SwingChannel(BaseChannel):
 
         direction = mss.direction
 
+        # RSI extreme gate: don't chase overbought LONGs or fade oversold SHORTs
+        rsi_last = ind_h1.get("rsi_last")
+        if rsi_last is not None:
+            if direction == Direction.LONG and rsi_last > 75:
+                return None
+            if direction == Direction.SHORT and rsi_last < 25:
+                return None
+
         # Validate EMA200 bias
         if direction == Direction.LONG and close_h1 < ema200:
             return None
