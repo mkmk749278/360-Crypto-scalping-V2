@@ -70,6 +70,7 @@ class CommandContext:
     ai_insight_fn: Optional[Callable] = None
     symbols_fn: Optional[Callable] = None
     free_channel_limit: int = 5
+    trade_observer: Optional[Any] = None
     alert_subscribers: Set[str] = field(default_factory=set)
     # Backtest config (mutable, shared via context)
     bt_fee_pct: float = 0.08

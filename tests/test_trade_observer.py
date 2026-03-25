@@ -701,3 +701,144 @@ class TestTradeMonitorWiring:
         sig.pnl_pct = -1.0
         # Must not raise
         monitor._record_outcome(sig, hit_tp=0, hit_sl=True)
+
+
+class TestRunDigestOnDemand:
+    """run_digest_on_demand() must return a string without sending it."""
+
+    def _make_completed_record(
+        self,
+        signal_id: str = "SIG-D001",
+        outcome: str = "TP1_HIT",
+        pnl: float = 1.0,
+        timestamp_offset: float = 0.0,
+    ) -> "TradeRecord":
+        entry = EntrySnapshot(
+            signal_id=signal_id,
+            symbol="BTCUSDT",
+            channel="360_SCALP",
+            direction="LONG",
+            entry_price=30_000.0,
+            stop_loss=29_700.0,
+            tp1=30_300.0,
+            tp2=30_600.0,
+            tp3=30_900.0,
+            confidence=80.0,
+            spread_pct=0.05,
+            regime="TRENDING",
+            fear_greed_value=None,
+            btc_price=None,
+            eth_price=None,
+            order_book_imbalance=None,
+            pre_signal_momentum=None,
+            setup_class="BOS_RETEST",
+        )
+        exit_ = ExitAnalysis(
+            signal_id=signal_id,
+            symbol="BTCUSDT",
+            channel="360_SCALP",
+            direction="LONG",
+            outcome=outcome,
+            pnl_pct=pnl,
+            hold_duration_seconds=300.0,
+            root_cause="tp_hit" if "TP" in outcome else "normal_sl",
+            btc_change_pct=None,
+            regime_transitions=0,
+            reached_tp1_zone="TP" in outcome,
+            time_to_tp1_seconds=120.0 if "TP" in outcome else None,
+            time_to_sl_seconds=None if "TP" in outcome else 300.0,
+            mfe_pct=1.0,
+            mae_pct=-0.3,
+            entry_price=30_000.0,
+            entry_spread_pct=0.05,
+            entry_regime="TRENDING",
+            num_observations=5,
+            timestamp=time.time() - timestamp_offset,
+        )
+        return TradeRecord(entry=entry, exit=exit_, complete=True)
+
+    @pytest.mark.asyncio
+    async def test_no_completed_trades_returns_no_trades_message(self, tmp_path: Path):
+        obs = _make_observer(tmp_path)
+        # _completed is empty by default
+        result = await obs.run_digest_on_demand()
+        assert "No completed trades" in result or "no" in result.lower()
+        assert isinstance(result, str)
+
+    @pytest.mark.asyncio
+    async def test_no_trades_in_lookback_window_returns_no_trades_message(self, tmp_path: Path):
+        obs = _make_observer(tmp_path)
+        # Add an old record outside any reasonable lookback window
+        old_record = self._make_completed_record(timestamp_offset=200 * 3600)  # 200 hours ago
+        obs._completed.append(old_record)
+
+        result = await obs.run_digest_on_demand(lookback_hours=1)
+        assert "No completed trades" in result or "no" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_with_completed_trades_returns_formatted_message(self, tmp_path: Path):
+        obs = _make_observer(tmp_path)
+        obs._completed.append(self._make_completed_record())
+
+        ai_json = json.dumps({
+            "summary": "Good trades overall.",
+            "top_root_causes": ["tp_hit"],
+            "btc_correlation_note": "No BTC correlation.",
+            "best_channel": "360_SCALP",
+            "worst_channel": "360_SCALP",
+            "recommendations": ["Stay the course.", "Keep tight SL.", "Review at TP1."],
+        })
+
+        with patch.object(obs, "_call_openai", new=AsyncMock(return_value=ai_json)):
+            result = await obs.run_digest_on_demand()
+
+        assert isinstance(result, str)
+        assert len(result) > 0
+        # Should contain the AI summary text or standard digest header
+        assert "AI Trade Observer Digest" in result or "Good trades overall" in result
+
+    @pytest.mark.asyncio
+    async def test_custom_lookback_hours_is_respected(self, tmp_path: Path):
+        obs = _make_observer(tmp_path)
+        # Record within last 6 hours
+        obs._completed.append(self._make_completed_record(signal_id="RECENT", timestamp_offset=3600))
+        # Old record from 50 hours ago
+        obs._completed.append(self._make_completed_record(signal_id="OLD", timestamp_offset=50 * 3600))
+
+        captured_windows: list = []
+        original_build = obs._build_digest_prompt
+
+        def capture_prompt(records):
+            captured_windows.append([r.entry.signal_id for r in records])
+            return original_build(records)
+
+        with patch.object(obs, "_build_digest_prompt", side_effect=capture_prompt):
+            with patch.object(obs, "_call_openai", new=AsyncMock(return_value=None)):
+                await obs.run_digest_on_demand(lookback_hours=12)
+
+        assert len(captured_windows) == 1
+        assert "RECENT" in captured_windows[0]
+        assert "OLD" not in captured_windows[0]
+
+    @pytest.mark.asyncio
+    async def test_does_not_send_alert(self, tmp_path: Path):
+        """run_digest_on_demand() must return the message, not send it."""
+        sent: list = []
+
+        async def mock_send(msg: str) -> bool:
+            sent.append(msg)
+            return True
+
+        obs = TradeObserver(
+            send_alert=mock_send,
+            data_store=None,
+            regime_detector=None,
+            data_path=str(tmp_path / "obs.json"),
+        )
+        obs._completed.append(self._make_completed_record())
+
+        with patch.object(obs, "_call_openai", new=AsyncMock(return_value=None)):
+            await obs.run_digest_on_demand()
+
+        # send_alert must NOT have been called by run_digest_on_demand
+        assert sent == []

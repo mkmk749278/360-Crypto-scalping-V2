@@ -542,6 +542,31 @@ class TradeObserver:
             except Exception as exc:
                 log.warning("TradeObserver digest loop error: {}", exc)
 
+    async def run_digest_on_demand(self, lookback_hours: Optional[int] = None) -> str:
+        """Build an AI digest and return it as a string (does not send).
+
+        Parameters
+        ----------
+        lookback_hours:
+            Number of hours of completed trades to include.  Defaults to
+            ``OBSERVER_DIGEST_LOOKBACK_HOURS`` when ``None``.
+
+        Returns
+        -------
+        str
+            A formatted digest message, or a "no trades" notice.
+        """
+        hours = lookback_hours if lookback_hours is not None else OBSERVER_DIGEST_LOOKBACK_HOURS
+        cutoff = time.time() - hours * 3600.0
+        window = [r for r in self._completed if r.exit is not None and r.exit.timestamp >= cutoff]
+
+        if not window:
+            return f"ℹ️ No completed trades in the last {hours}h — nothing to analyse."
+
+        prompt = self._build_digest_prompt(window)
+        ai_text = await self._call_openai(prompt)
+        return self._format_digest_message(window, ai_text)
+
     async def _run_digest(self) -> None:
         """Build and send one AI digest covering the last OBSERVER_DIGEST_LOOKBACK_HOURS."""
         if not TELEGRAM_ADMIN_CHAT_ID:

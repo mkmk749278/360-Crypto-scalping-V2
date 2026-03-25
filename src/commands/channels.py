@@ -185,3 +185,36 @@ async def handle_report(args: List[str], ctx: CommandContext) -> None:
             pass
     except Exception as exc:
         await ctx.reply(f"❌ Report generation failed: {exc}")
+
+
+@registry.command(
+    "/digest",
+    aliases=["/ai_report", "/ai_digest"],
+    admin=True,
+    group="channels",
+    help_text="On-demand AI trade digest: /digest [hours]",
+)
+async def handle_digest(args: List[str], ctx: CommandContext) -> None:
+    """Trigger an on-demand AI trade observer digest."""
+    if ctx.trade_observer is None:
+        await ctx.reply("ℹ️ Trade Observer is not enabled.")
+        return
+
+    lookback_hours = None
+    if args:
+        try:
+            lookback_hours = int(args[0])
+            if lookback_hours < 1:
+                lookback_hours = 1
+            elif lookback_hours > 168:  # cap at 7 days
+                lookback_hours = 168
+        except ValueError:
+            await ctx.reply("Usage: /digest [hours]  (e.g. /digest 12)")
+            return
+
+    await ctx.reply("⏳ Generating AI trade digest…")
+    try:
+        message = await ctx.trade_observer.run_digest_on_demand(lookback_hours)
+        await ctx.reply(message)
+    except Exception as exc:
+        await ctx.reply(f"❌ Digest generation failed: {exc}")

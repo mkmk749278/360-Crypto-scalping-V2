@@ -319,6 +319,7 @@ class CryptoSignalEngine:
             circuit_breaker=self._circuit_breaker,
             gem_scanner=self._gem_scanner,
             paper_portfolio=self._paper_portfolio,
+            trade_observer=self._trade_observer,
         )
 
         # Bootstrap coordinates the boot/shutdown/WS sequence

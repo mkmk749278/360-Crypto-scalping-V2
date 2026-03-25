@@ -128,6 +128,7 @@ class CommandHandler:
         circuit_breaker: Optional[Any] = None,
         gem_scanner: Optional[Any] = None,
         paper_portfolio: Optional[Any] = None,
+        trade_observer: Optional[Any] = None,
     ) -> None:
         self._telegram = telegram
         self._telemetry = telemetry
@@ -152,6 +153,7 @@ class CommandHandler:
         self._circuit_breaker = circuit_breaker
         self._gem_scanner = gem_scanner
         self._paper_portfolio = paper_portfolio
+        self._trade_observer = trade_observer
         # Mutable backtest config shared via CommandContext
         self._bt_fee_pct: float = 0.08
         self._bt_slippage_pct: float = 0.02
@@ -253,6 +255,7 @@ class CommandHandler:
             ai_insight_fn=self._ai_insight_fn,
             symbols_fn=self._symbols_fn,
             free_channel_limit=self.free_channel_limit,
+            trade_observer=self._trade_observer,
             alert_subscribers=self._alert_subscribers,
             bt_fee_pct=self._bt_fee_pct,
             bt_slippage_pct=self._bt_slippage_pct,
