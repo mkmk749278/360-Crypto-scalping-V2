@@ -14,6 +14,11 @@ from src.channels.base import BaseChannel, Signal, build_channel_signal
 from src.filters import check_adx, check_rsi
 from src.smc import Direction
 
+# Percentile position within the Bollinger Band range for rejection gate.
+# For LONG: price must be in the bottom BB_REJECTION_THRESHOLD fraction (near lower band).
+# For SHORT: price must be in the top BB_REJECTION_THRESHOLD fraction (near upper band).
+_BB_REJECTION_THRESHOLD: float = 0.15
+
 
 class SwingChannel(BaseChannel):
     def __init__(self) -> None:
@@ -71,13 +76,23 @@ class SwingChannel(BaseChannel):
         if direction == Direction.SHORT and close_h1 > ema200:
             return None
 
-        # Validate Bollinger rejection
-        if direction == Direction.LONG and bb_lower is not None:
-            if close_h1 > bb_lower * 1.02:  # must be near lower band
-                return None  # Too far from lower band — no BB rejection setup
-        if direction == Direction.SHORT and bb_upper is not None:
-            if close_h1 < bb_upper * 0.98:
-                return None  # Too far from upper band — no BB rejection setup
+        # Validate Bollinger rejection using percentile position within the band range.
+        # This adapts to varying BB widths across regimes rather than using a fixed 2%
+        # threshold that may be too permissive in tight-range environments.
+        if bb_upper is not None and bb_lower is not None and bb_upper != bb_lower:
+            bb_position = (close_h1 - bb_lower) / (bb_upper - bb_lower)
+            if direction == Direction.LONG and bb_position > _BB_REJECTION_THRESHOLD:
+                return None  # Price too far from lower band — no BB rejection setup
+            if direction == Direction.SHORT and bb_position < (1.0 - _BB_REJECTION_THRESHOLD):
+                return None  # Price too far from upper band — no BB rejection setup
+        else:
+            # Fallback: zero-width bands or missing data — use original fixed threshold.
+            if direction == Direction.LONG and bb_lower is not None:
+                if close_h1 > bb_lower * 1.02:
+                    return None
+            if direction == Direction.SHORT and bb_upper is not None:
+                if close_h1 < bb_upper * 0.98:
+                    return None
 
         # Daily S/R confluence check (soft boost, not a hard reject)
         d1 = candles.get("1d")

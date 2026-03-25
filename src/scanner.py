@@ -19,6 +19,8 @@ import uuid
 
 from config import (
     CHANNEL_GEM,
+    MAX_CORRELATED_SCALP_SIGNALS,
+    MTF_HARD_BLOCK,
     SCAN_MIN_VOLUME_USD,
     SEED_TIMEFRAMES,
     SIGNAL_SCAN_COOLDOWN_SECONDS,
@@ -1384,6 +1386,23 @@ class Scanner:
             return None, None
         self._apply_risk_plan_to_signal(sig, risk)
 
+        # ── Correlated position exposure cap ───────────────────────────────
+        # Block new scalp signals when too many same-direction active signals
+        # exist already, to limit correlated BTC-driven stop-out risk.
+        if chan_name in _SCALP_CHANNELS:
+            same_dir_count = sum(
+                1
+                for s in self.router.active_signals.values()
+                if s.direction == sig.direction and s.channel in _SCALP_CHANNELS
+            )
+            if same_dir_count >= MAX_CORRELATED_SCALP_SIGNALS:
+                log.info(
+                    "Correlated exposure cap reached for {} {} (direction={}, active={}): "
+                    "blocking signal",
+                    symbol, chan_name, sig.direction.value, same_dir_count,
+                )
+                return None, None
+
         cross_verified = await self._verify_cross_exchange(
             symbol, sig.direction.value, sig.entry
         ) if chan_name not in _SCALP_CHANNELS else None
@@ -1503,13 +1522,24 @@ class Scanner:
                         symbol, chan_name, _mtf_result.score,
                     )
                 elif not _mtf_result.is_aligned:
-                    sig.confidence -= 5.0
-                    log.debug(
-                        "MTF misalignment penalty {} {}: -5.0 (score={:.2f})",
-                        symbol, chan_name, _mtf_result.score,
-                    )
+                    if MTF_HARD_BLOCK:
+                        log.info(
+                            "Signal blocked by MTF hard gate: {} {} (score={:.2f})",
+                            symbol, chan_name, _mtf_result.score,
+                        )
+                        sig = None
+                    else:
+                        sig.confidence -= 5.0
+                        log.debug(
+                            "MTF misalignment penalty {} {}: -5.0 (score={:.2f})",
+                            symbol, chan_name, _mtf_result.score,
+                        )
         except Exception as _mtf_exc:
             log.debug("MTF confidence modifier error for {} {} (fail open): {}", symbol, chan_name, _mtf_exc)
+
+        # Hard MTF block: signal was vetoed — return immediately.
+        if sig is None:
+            return None, cross_verified
 
         # Apply adaptive confidence decay based on signal freshness.
         # apply_confidence_decay clamps the final value to [0, 100].

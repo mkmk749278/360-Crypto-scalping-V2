@@ -46,3 +46,4 @@ htmlcov/
 # Docker
 *.tar
 docker-compose.override.yml
+data/confidence_log.jsonl

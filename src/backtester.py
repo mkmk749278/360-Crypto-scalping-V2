@@ -34,6 +34,7 @@ class BacktestResult:
     total_signals: int = 0
     wins: int = 0
     losses: int = 0
+    partial_wins: int = 0
     win_rate: float = 0.0
     avg_rr: float = 0.0
     max_drawdown: float = 0.0
@@ -104,6 +105,8 @@ def _simulate_trade(
     sl_multiplier: float = 1.0,
     fee_pct: float = 0.0,
     slippage_pct: float = 0.0,
+    funding_rate_8h: float = 0.0,
+    candle_interval_minutes: int = 5,
 ) -> Tuple[bool, float, int]:
     """Simulate a signal against future price data.
 
@@ -120,11 +123,18 @@ def _simulate_trade(
         E.g. ``0.08`` deducts 0.08 % for a typical Binance maker/taker
         round-trip.  Defaults to ``0.0`` (no fees) for backward compatibility.
     slippage_pct:
-        Per-trade slippage percentage applied to the fill price at SL/TP.
-        Slippage is always adverse: for a LONG SL the actual fill is *below*
-        the stop level; for a SHORT SL it is *above*.  Similarly, TP fills
-        receive a slight haircut in the unfavourable direction.
+        Per-trade slippage percentage applied adversely to both entry and
+        SL/TP fills.  Entry slippage is ``slippage_pct / 2`` applied
+        adversely (LONG entries fill higher, SHORT entries fill lower).
+        SL/TP fills receive a slight haircut in the unfavourable direction.
         Defaults to ``0.0`` (no slippage) for backward compatibility.
+    funding_rate_8h:
+        Funding rate per 8-hour period as a percentage (e.g. ``0.01`` for
+        0.01 % per 8 h).  Deducted from PnL based on how many 8-hour periods
+        the simulated trade is held open.  Defaults to ``0.0``.
+    candle_interval_minutes:
+        Duration of each candle in minutes (used for funding rate calculation).
+        Defaults to ``5`` (5-minute candles).
 
     Returns
     -------
@@ -142,45 +152,154 @@ def _simulate_trade(
     is_long = signal.direction.value == "LONG"
     sl = signal.stop_loss * sl_multiplier
     slip = slippage_pct / 100.0  # fraction
+
+    # --- Entry slippage: applied adversely at half the per-trade rate ---
+    # LONG entries fill slightly higher (worse price for buyer).
+    # SHORT entries fill slightly lower (worse price for seller).
+    entry_slip = slip / 2.0
+    if is_long:
+        entry_fill = signal.entry * (1.0 + entry_slip)
+    else:
+        entry_fill = signal.entry * (1.0 - entry_slip)
+
     targets = [signal.tp1, signal.tp2]
     if signal.tp3 is not None:
         targets.append(signal.tp3)
 
+    # --- Trailing stop state ---
+    # Tracks the moving stop level after TP1/TP2 are hit.
+    current_sl = sl
+    original_sl = sl
+    tp1_hit = False
+    tp2_hit = False
+    partial_pnl_sum = 0.0  # Accumulated PnL from partial exits (33% each at TP1 & TP2)
+    candles_held = 0
+
     for i in range(min(len(highs), len(lows))):
         h, lo = float(highs[i]), float(lows[i])
+        candles_held = i + 1
 
         if is_long:
-            if lo <= sl:
-                # SL hit – fill below the stop level (adverse slippage)
-                fill = sl * (1.0 - slip)
-                pnl = (fill - signal.entry) / signal.entry * 100.0 - fee_pct
-                return False, pnl, 0
-            for level_idx, tp in enumerate(targets, start=1):
-                if h >= tp:
-                    # TP hit – fill slightly below the target level (adverse slippage)
-                    fill = tp * (1.0 - slip)
-                    pnl = (fill - signal.entry) / signal.entry * 100.0 - fee_pct
-                    return True, pnl, level_idx
-        else:
-            if h >= sl:
-                # SL hit – fill above the stop level (adverse slippage)
-                fill = sl * (1.0 + slip)
-                pnl = (signal.entry - fill) / signal.entry * 100.0 - fee_pct
-                return False, -abs(pnl), 0
-            for level_idx, tp in enumerate(targets, start=1):
-                if lo <= tp:
-                    # TP hit – fill slightly above the target level (adverse slippage)
-                    fill = tp * (1.0 + slip)
-                    pnl = (signal.entry - fill) / signal.entry * 100.0 - fee_pct
-                    return True, pnl, level_idx
+            # Check trailing SL first
+            if lo <= current_sl:
+                fill = current_sl * (1.0 - slip)
+                remaining_pct = 1.0 - (0.33 if tp1_hit else 0.0) - (0.33 if tp2_hit else 0.0)
+                close_pnl = (fill - entry_fill) / entry_fill * 100.0
+                total_pnl = partial_pnl_sum + close_pnl * remaining_pct - fee_pct
+                _deduct_funding = _calc_funding(funding_rate_8h, candles_held, candle_interval_minutes)
+                return tp1_hit, total_pnl - _deduct_funding, 2 if tp2_hit else (1 if tp1_hit else 0)
 
-    # No TP or SL hit in the lookahead window
+            # Check TP targets
+            if not tp1_hit and len(targets) >= 1 and h >= targets[0]:
+                tp1_fill = targets[0] * (1.0 - slip)
+                partial_pnl_sum += (tp1_fill - entry_fill) / entry_fill * 100.0 * 0.33
+                tp1_hit = True
+                # Move SL to breakeven + 15% buffer
+                sl_buffer = (entry_fill - original_sl) * 0.15
+                current_sl = entry_fill + sl_buffer
+
+            if tp1_hit and not tp2_hit and len(targets) >= 2 and h >= targets[1]:
+                tp2_fill = targets[1] * (1.0 - slip)
+                partial_pnl_sum += (tp2_fill - entry_fill) / entry_fill * 100.0 * 0.33
+                tp2_hit = True
+                # Move SL to TP1
+                current_sl = targets[0]
+
+            if tp2_hit and len(targets) >= 3 and h >= targets[2]:
+                tp3_fill = targets[2] * (1.0 - slip)
+                final_pnl = partial_pnl_sum + (tp3_fill - entry_fill) / entry_fill * 100.0 * 0.34 - fee_pct
+                _deduct_funding = _calc_funding(funding_rate_8h, candles_held, candle_interval_minutes)
+                return True, final_pnl - _deduct_funding, 3
+
+            if not tp2_hit and tp1_hit and len(targets) < 3 and len(targets) >= 2 and h >= targets[1]:
+                # TP2 is the last target
+                pass  # handled above
+
+            # If only TP1 exists and it was hit, close out remainder now
+            if tp1_hit and not tp2_hit and len(targets) == 1:
+                tp1_fill = targets[0] * (1.0 - slip)
+                final_pnl = (tp1_fill - entry_fill) / entry_fill * 100.0 - fee_pct
+                _deduct_funding = _calc_funding(funding_rate_8h, candles_held, candle_interval_minutes)
+                return True, final_pnl - _deduct_funding, 1
+
+        else:  # SHORT
+            # Check trailing SL first
+            if h >= current_sl:
+                fill = current_sl * (1.0 + slip)
+                remaining_pct = 1.0 - (0.33 if tp1_hit else 0.0) - (0.33 if tp2_hit else 0.0)
+                close_pnl = (entry_fill - fill) / entry_fill * 100.0
+                total_pnl = partial_pnl_sum + close_pnl * remaining_pct - fee_pct
+                _deduct_funding = _calc_funding(funding_rate_8h, candles_held, candle_interval_minutes)
+                return tp1_hit, total_pnl - _deduct_funding, 2 if tp2_hit else (1 if tp1_hit else 0)
+
+            # Check TP targets
+            if not tp1_hit and len(targets) >= 1 and lo <= targets[0]:
+                tp1_fill = targets[0] * (1.0 + slip)
+                partial_pnl_sum += (entry_fill - tp1_fill) / entry_fill * 100.0 * 0.33
+                tp1_hit = True
+                # Move SL to breakeven - 15% buffer
+                sl_buffer = (original_sl - entry_fill) * 0.15
+                current_sl = entry_fill - sl_buffer
+
+            if tp1_hit and not tp2_hit and len(targets) >= 2 and lo <= targets[1]:
+                tp2_fill = targets[1] * (1.0 + slip)
+                partial_pnl_sum += (entry_fill - tp2_fill) / entry_fill * 100.0 * 0.33
+                tp2_hit = True
+                # Move SL to TP1
+                current_sl = targets[0]
+
+            if tp2_hit and len(targets) >= 3 and lo <= targets[2]:
+                tp3_fill = targets[2] * (1.0 + slip)
+                final_pnl = partial_pnl_sum + (entry_fill - tp3_fill) / entry_fill * 100.0 * 0.34 - fee_pct
+                _deduct_funding = _calc_funding(funding_rate_8h, candles_held, candle_interval_minutes)
+                return True, final_pnl - _deduct_funding, 3
+
+            # If only TP1 exists and it was hit, close out remainder now
+            if tp1_hit and not tp2_hit and len(targets) == 1:
+                tp1_fill = targets[0] * (1.0 + slip)
+                final_pnl = (entry_fill - tp1_fill) / entry_fill * 100.0 - fee_pct
+                _deduct_funding = _calc_funding(funding_rate_8h, candles_held, candle_interval_minutes)
+                return True, final_pnl - _deduct_funding, 1
+
+    # No TP or SL hit in the lookahead window — close at last available price
     last_close = float(future_candles.get("close", [signal.entry])[-1])
+    remaining_pct = 1.0 - (0.33 if tp1_hit else 0.0) - (0.33 if tp2_hit else 0.0)
     if is_long:
-        pnl = (last_close - signal.entry) / signal.entry * 100.0 - fee_pct
+        close_pnl = (last_close - entry_fill) / entry_fill * 100.0
     else:
-        pnl = (signal.entry - last_close) / signal.entry * 100.0 - fee_pct
-    return pnl > 0, pnl, 0
+        close_pnl = (entry_fill - last_close) / entry_fill * 100.0
+    total_pnl = partial_pnl_sum + close_pnl * remaining_pct - fee_pct
+    _deduct_funding = _calc_funding(funding_rate_8h, candles_held, candle_interval_minutes)
+    total_pnl -= _deduct_funding
+    won = tp1_hit or total_pnl > 0
+    return won, total_pnl, 2 if tp2_hit else (1 if tp1_hit else 0)
+
+
+def _calc_funding(
+    funding_rate_8h: float,
+    candles_held: int,
+    candle_interval_minutes: int,
+) -> float:
+    """Calculate funding rate cost for the trade duration.
+
+    Parameters
+    ----------
+    funding_rate_8h:
+        Funding rate per 8-hour period as a percentage.
+    candles_held:
+        Number of candles the trade was open for.
+    candle_interval_minutes:
+        Duration of each candle in minutes.
+
+    Returns
+    -------
+    float
+        Funding cost as a percentage of notional to deduct from PnL.
+    """
+    if funding_rate_8h == 0.0:
+        return 0.0
+    funding_periods = candles_held * candle_interval_minutes / 480.0
+    return funding_rate_8h * funding_periods
 
 
 class Backtester:
@@ -212,6 +331,7 @@ class Backtester:
         min_window: int = 50,
         fee_pct: float = 0.08,
         slippage_pct: float = 0.02,
+        funding_rate_per_8h: float = 0.01,
     ) -> None:
         if channels is None:
             channels = [
@@ -225,6 +345,7 @@ class Backtester:
         self._smc_detector = SMCDetector()
         self._fee_pct = fee_pct
         self._slippage_pct = slippage_pct
+        self._funding_rate_per_8h = funding_rate_per_8h
 
     def run(
         self,
@@ -357,12 +478,18 @@ class Backtester:
                 if hasattr(v, "__getitem__"):
                     future[k] = v[i: i + self._lookahead]
             won, pnl, tp_level = _simulate_trade(
-                sig, future, fee_pct=self._fee_pct, slippage_pct=self._slippage_pct
+                sig, future,
+                fee_pct=self._fee_pct,
+                slippage_pct=self._slippage_pct,
+                funding_rate_8h=self._funding_rate_per_8h,
             )
 
             result.total_signals += 1
             if won:
                 result.wins += 1
+                # Count partial wins (TP1 or TP2 hit before final exit)
+                if tp_level >= 1:
+                    result.partial_wins += 1
             else:
                 result.losses += 1
             pnl_history.append(pnl)

@@ -13,6 +13,21 @@ from src.filters import check_spread, check_volume
 from src.smc import Direction
 from src.utils import utcnow
 
+# ---------------------------------------------------------------------------
+# Volatility-adaptive TP ratio constants
+# ---------------------------------------------------------------------------
+# When BB width exceeds this threshold, the environment is considered high-vol
+# and TP targets are stretched to capture larger moves.
+_HIGH_VOL_BB_WIDTH: float = 5.0  # percent
+
+# When BB width is below this threshold, the environment is low-vol and
+# compressed TP targets prevent capital sitting idle in unreached positions.
+_LOW_VOL_BB_WIDTH: float = 1.5  # percent
+
+# Multipliers applied to each TP ratio when volatility regime is detected.
+_VOL_STRETCH_FACTOR: float = 1.3   # High-vol: stretch TP targets
+_VOL_COMPRESS_FACTOR: float = 0.7  # Low-vol: compress TP targets
+
 
 @dataclass
 class Signal:
@@ -181,17 +196,50 @@ def build_channel_signal(
     atr_val: float = 0.0,
     vwap_price: float = 0.0,
     setup_class: str = "",
+    bb_width_pct: Optional[float] = None,
 ) -> Optional[Signal]:
     """Shared signal construction for all scalp-family channels.
 
     Centralises Signal instantiation, DCA zone calculation, and direction-
     biased entry zone logic so that bug fixes propagate automatically to every
     channel that calls this helper.
+
+    Parameters
+    ----------
+    bb_width_pct:
+        Optional Bollinger Band width as a percentage of mid price.  When
+        provided, TP ratios are stretched (high-vol) or compressed (low-vol)
+        to adapt to the current volatility regime:
+
+        * ``bb_width_pct > _HIGH_VOL_BB_WIDTH`` (>5 %): multiply each TP
+          ratio by ``_VOL_STRETCH_FACTOR`` (1.3×) — wider targets because
+          price moves further in high-vol environments.
+        * ``bb_width_pct < _LOW_VOL_BB_WIDTH`` (<1.5 %): multiply each TP
+          ratio by ``_VOL_COMPRESS_FACTOR`` (0.7×) — closer targets because
+          TP2/TP3 are rarely reached in tight ranges.
+        * Otherwise: use base ratios as-is.
     """
     if direction == Direction.LONG and sl >= close:
         return None
     if direction == Direction.SHORT and sl <= close:
         return None
+
+    # Volatility-adaptive TP ratios: only recompute when bb_width_pct is provided.
+    if bb_width_pct is not None:
+        if bb_width_pct > _HIGH_VOL_BB_WIDTH:
+            adj_ratios = [r * _VOL_STRETCH_FACTOR for r in config.tp_ratios]
+        elif bb_width_pct < _LOW_VOL_BB_WIDTH:
+            adj_ratios = [r * _VOL_COMPRESS_FACTOR for r in config.tp_ratios]
+        else:
+            adj_ratios = list(config.tp_ratios)
+        if direction == Direction.LONG:
+            tp1 = close + sl_dist * adj_ratios[0]
+            tp2 = close + sl_dist * adj_ratios[1]
+            tp3 = close + sl_dist * adj_ratios[2] if len(adj_ratios) > 2 else tp3
+        else:
+            tp1 = close - sl_dist * adj_ratios[0]
+            tp2 = close - sl_dist * adj_ratios[1]
+            tp3 = close - sl_dist * adj_ratios[2] if len(adj_ratios) > 2 else tp3
 
     sig = Signal(
         channel=config.name,

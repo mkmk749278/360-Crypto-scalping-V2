@@ -11,19 +11,33 @@ Signal ID prefix: "SOBI-"
 
 from __future__ import annotations
 
+import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from config import CHANNEL_SCALP_OBI
 from src.channels.base import BaseChannel, Signal, build_channel_signal
 from src.filters import check_rsi
 from src.smc import Direction
+from src.utils import get_logger
+
+log = get_logger("scalp_obi")
 
 # OBI thresholds for signal generation
 _OBI_LONG_THRESHOLD: float = 0.65   # Strong bid absorption
 _OBI_SHORT_THRESHOLD: float = -0.65  # Strong ask absorption
 
-# Maximum distance from recent high/low to be considered at S/R
+# Maximum distance from recent high/low to be considered at S/R.
+# Used as fallback when ATR is not available.
 _SR_PROXIMITY_PCT: float = 0.5  # 0.5%
+
+# Order book data older than this threshold (seconds) is considered stale
+# and will cause the OBI signal to be skipped.
+_OBI_MAX_STALENESS_SEC: float = 2.0
+
+# Flag to emit a one-time warning when the order book lacks a timestamp.
+# Using a list so it can be mutated from within functions without `global`.
+_obi_ts_warning_state: list = [False]  # [warned]
 
 
 def _compute_obi(bids: List, asks: List) -> Optional[float]:
@@ -62,6 +76,7 @@ class ScalpOBIChannel(BaseChannel):
         spread_pct: float,
         volume_24h_usd: float,
     ) -> Optional[Signal]:
+
         if not self._pass_basic_filters(spread_pct, volume_24h_usd):
             return None
 
@@ -69,6 +84,31 @@ class ScalpOBIChannel(BaseChannel):
         order_book: Optional[Dict[str, Any]] = smc_data.get("order_book")
         if order_book is None:
             return None
+
+        # Staleness guard: order book data older than _OBI_MAX_STALENESS_SEC
+        # is considered unreliable for scalping decisions.
+        ob_ts = order_book.get("timestamp") or order_book.get("fetched_at")
+        if ob_ts is not None:
+            try:
+                if isinstance(ob_ts, datetime):
+                    ts_float = ob_ts.timestamp()
+                    now_float = datetime.now(timezone.utc).timestamp()
+                else:
+                    ts_float = float(ob_ts)
+                    now_float = time.time()
+                if now_float - ts_float > _OBI_MAX_STALENESS_SEC:
+                    return None
+            except (TypeError, ValueError, OSError):
+                pass  # Unrecognised timestamp format — fail open
+        else:
+            # No timestamp: emit a one-time warning and continue (fail-open).
+            # The scanner should be updated to include 'fetched_at' in order_book data.
+            if not _obi_ts_warning_state[0]:
+                log.warning(
+                    "OBI order book data missing timestamp; staleness guard inactive. "
+                    "Scanner should include 'fetched_at' in order_book data."
+                )
+                _obi_ts_warning_state[0] = True
 
         bids: List = order_book.get("bids", [])
         asks: List = order_book.get("asks", [])
@@ -92,27 +132,39 @@ class ScalpOBIChannel(BaseChannel):
         recent_high = max(float(h) for h in highs[-20:])
         recent_low = min(float(l) for l in lows[-20:])
 
+        # ATR-based S/R proximity: adapts to per-asset volatility.
+        # Falls back to fixed _SR_PROXIMITY_PCT when ATR is not available.
+        ind = indicators.get("5m", {})
+        atr_val = ind.get("atr_last")
+
         # Determine direction based on OBI and price location
         direction: Optional[Direction] = None
         if obi >= _OBI_LONG_THRESHOLD:
             # Strong bid absorption — check if near support
-            if close <= recent_low * (1 + _SR_PROXIMITY_PCT / 100):
+            if atr_val is not None and atr_val > 0:
+                near_support = close <= recent_low + atr_val * 1.0
+            else:
+                near_support = close <= recent_low * (1 + _SR_PROXIMITY_PCT / 100)
+            if near_support:
                 direction = Direction.LONG
         elif obi <= _OBI_SHORT_THRESHOLD:
             # Strong ask absorption — check if near resistance
-            if close >= recent_high * (1 - _SR_PROXIMITY_PCT / 100):
+            if atr_val is not None and atr_val > 0:
+                near_resistance = close >= recent_high - atr_val * 1.0
+            else:
+                near_resistance = close >= recent_high * (1 - _SR_PROXIMITY_PCT / 100)
+            if near_resistance:
                 direction = Direction.SHORT
 
         if direction is None:
             return None
 
         # RSI extreme gate: don't chase overbought LONGs or fade oversold SHORTs
-        ind = indicators.get("5m", {})
         if not check_rsi(ind.get("rsi_last"), overbought=75, oversold=25, direction=direction.value):
             return None
 
-        atr_val = ind.get("atr_last", close * 0.001)
-        sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val * 0.5)
+        atr_for_sl = atr_val if (atr_val is not None and atr_val > 0) else close * 0.001
+        sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_for_sl * 0.5)
 
         if direction == Direction.LONG:
             sl = close - sl_dist
@@ -141,6 +193,6 @@ class ScalpOBIChannel(BaseChannel):
             tp3=tp3,
             sl_dist=sl_dist,
             id_prefix="SOBI",
-            atr_val=atr_val,
+            atr_val=atr_for_sl,
             setup_class="OBI_ABSORPTION",
         )

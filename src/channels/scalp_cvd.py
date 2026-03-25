@@ -19,8 +19,15 @@ from src.filters import check_rsi
 from src.smc import Direction
 
 # Price must be within this percentage of recent 20-bar high/low to be
-# considered "at support/resistance".
+# considered "at support/resistance".  Used as fallback when ATR is unavailable.
 _SR_PROXIMITY_PCT: float = 0.8  # was 0.5; 0.5% is too tight for many valid setups
+
+# CVD divergence recency and magnitude guards.
+# Divergences older than this many candles are considered stale and skipped.
+_CVD_MAX_AGE_CANDLES: int = 10
+# Divergences weaker than this magnitude are considered noise and skipped.
+# NOTE: Activate once SMCDetector populates 'cvd_divergence_strength' in smc_data.
+_CVD_MIN_STRENGTH: float = 0.3
 
 
 class ScalpCVDChannel(BaseChannel):
@@ -58,6 +65,18 @@ class ScalpCVDChannel(BaseChannel):
         if cvd_div is None:
             return None
 
+        # CVD divergence recency guard: stale divergences are less reliable.
+        # NOTE: Activates automatically once SMCDetector populates this field.
+        cvd_div_age = smc_data.get("cvd_divergence_age")
+        if cvd_div_age is not None and cvd_div_age > _CVD_MAX_AGE_CANDLES:
+            return None
+
+        # CVD divergence magnitude guard: weak divergences are noise.
+        # NOTE: Activates automatically once SMCDetector populates this field.
+        cvd_div_strength = smc_data.get("cvd_divergence_strength")
+        if cvd_div_strength is not None and cvd_div_strength < _CVD_MIN_STRENGTH:
+            return None
+
         closes = list(m5.get("close", []))
         if len(closes) < 20:
             return None
@@ -66,15 +85,25 @@ class ScalpCVDChannel(BaseChannel):
         recent_high = max(float(h) for h in list(m5.get("high", closes))[-20:])
         recent_low = min(float(l) for l in list(m5.get("low", closes))[-20:])
 
+        # ATR-based S/R proximity: adapts to per-asset volatility.
+        # Falls back to fixed _SR_PROXIMITY_PCT when ATR is not available.
+        atr_val = ind.get("atr_last")
+
         if cvd_div == "BULLISH":
             direction = Direction.LONG
             # Must be near recent low (support)
-            if close > recent_low * (1 + _SR_PROXIMITY_PCT / 100):
+            if atr_val is not None and atr_val > 0:
+                if close > recent_low + atr_val * 1.0:
+                    return None
+            elif close > recent_low * (1 + _SR_PROXIMITY_PCT / 100):
                 return None
         elif cvd_div == "BEARISH":
             direction = Direction.SHORT
             # Must be near recent high (resistance)
-            if close < recent_high * (1 - _SR_PROXIMITY_PCT / 100):
+            if atr_val is not None and atr_val > 0:
+                if close < recent_high - atr_val * 1.0:
+                    return None
+            elif close < recent_high * (1 - _SR_PROXIMITY_PCT / 100):
                 return None
         else:
             return None
@@ -83,8 +112,8 @@ class ScalpCVDChannel(BaseChannel):
         if not check_rsi(ind.get("rsi_last"), overbought=75, oversold=25, direction=direction.value):
             return None
 
-        atr_val = ind.get("atr_last", close * 0.002)
-        sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val * 0.8)
+        atr_for_sl = atr_val if (atr_val is not None and atr_val > 0) else close * 0.002
+        sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_for_sl * 0.8)
 
         if direction == Direction.LONG:
             sl = close - sl_dist
@@ -113,6 +142,6 @@ class ScalpCVDChannel(BaseChannel):
             tp3=tp3,
             sl_dist=sl_dist,
             id_prefix="SCVD",
-            atr_val=atr_val,
+            atr_val=atr_for_sl,
             setup_class="CVD_DIVERGENCE",
         )

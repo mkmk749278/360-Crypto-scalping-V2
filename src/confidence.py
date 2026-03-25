@@ -18,15 +18,27 @@ where 10 s of network latency is irrelevant).  SCALP and SWING channels
 always receive a neutral 5.0 sentiment score so they fire with zero
 external-network latency.
 Macro/news AI alerts are handled separately by the MacroWatchdog.
+
+Confidence logging
+------------------
+When ``CONFIDENCE_LOG_ENABLED`` is True, :func:`compute_confidence` appends a
+structured JSON record to ``CONFIDENCE_LOG_PATH`` (default:
+``data/confidence_log.jsonl``) for each signal scored.  The log captures all
+sub-score breakdowns and can be used offline for logistic-regression analysis
+to derive data-driven optimal weight profiles that replace the hand-tuned
+``_CHANNEL_WEIGHT_PROFILES``.  The ``outcome`` field in each record is left
+empty at scoring time and can be populated later by the performance tracker.
 """
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
-from config import NEW_PAIR_MIN_CONFIDENCE
+from config import CONFIDENCE_LOG_ENABLED, CONFIDENCE_LOG_PATH, NEW_PAIR_MIN_CONFIDENCE
 
 # USD liquidation volume at which the order-flow liq bonus is maximised (5 pts).
 _ORDER_FLOW_LIQ_CAP_USD: float = 500_000.0
@@ -437,10 +449,65 @@ def get_session_multiplier(now: Optional[datetime] = None, channel: Optional[str
     return 1.05      # US session (16–24)
 
 
+def log_confidence_breakdown(
+    signal_id: str,
+    channel: str,
+    breakdown: Dict[str, float],
+    total: float,
+    session_multiplier: float,
+    outcome: Optional[str] = None,
+) -> None:
+    """Append a structured confidence breakdown record to the confidence log.
+
+    This function is used for offline analysis to derive data-driven optimal
+    weight profiles via logistic regression or similar techniques.  The log
+    file (``CONFIDENCE_LOG_PATH``) is in JSON Lines format, with one record
+    per line.
+
+    The ``outcome`` field is left empty at scoring time and can be populated
+    later by the performance tracker once the trade result is known.
+
+    Parameters
+    ----------
+    signal_id:
+        Unique identifier of the signal being scored.
+    channel:
+        Channel name (e.g. ``"360_SCALP"``, ``"360_SWING"``).
+    breakdown:
+        Dict of sub-score names to weighted values (as returned by
+        :func:`compute_confidence`).
+    total:
+        Final confidence total (0–100, post session-multiplier).
+    session_multiplier:
+        The session multiplier that was applied.
+    outcome:
+        Optional trade outcome string (e.g. ``"WIN"``, ``"LOSS"``).
+        Leave as ``None`` at signal creation time.
+    """
+    record = {
+        "signal_id": signal_id,
+        "channel": channel,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        **breakdown,
+        "total": total,
+        "session_multiplier": session_multiplier,
+        "outcome": outcome,
+    }
+    try:
+        log_dir = os.path.dirname(CONFIDENCE_LOG_PATH)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        with open(CONFIDENCE_LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+    except OSError:
+        pass  # Non-fatal: logging failure must not block signal flow
+
+
 def compute_confidence(
     inp: ConfidenceInput,
     session_now: Optional[datetime] = None,
     channel: Optional[str] = None,
+    signal_id: Optional[str] = None,
 ) -> ConfidenceResult:
     """Combine all sub-scores into the final 0–100 confidence.
 
@@ -458,6 +525,10 @@ def compute_confidence(
     channel:
         Optional channel name passed through to :func:`get_session_multiplier`
         to apply channel-appropriate session weighting.
+    signal_id:
+        Optional signal identifier.  When provided and
+        ``CONFIDENCE_LOG_ENABLED`` is True, the full breakdown is written to
+        the confidence log file for offline weight-profile optimisation.
     """
     weights = _CHANNEL_WEIGHT_PROFILES.get(channel or "", {})
     breakdown: Dict[str, float] = {
@@ -491,6 +562,16 @@ def compute_confidence(
     reason = ""
     if blocked:
         reason = "Correlation lock: opposing position already open"
+
+    # Confidence log: write breakdown for offline weight-profile analysis.
+    if CONFIDENCE_LOG_ENABLED and signal_id:
+        log_confidence_breakdown(
+            signal_id=signal_id,
+            channel=channel or "",
+            breakdown=breakdown,
+            total=total,
+            session_multiplier=session_mult,
+        )
 
     return ConfidenceResult(
         total=total,

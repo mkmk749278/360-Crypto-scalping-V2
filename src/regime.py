@@ -50,6 +50,13 @@ _VOLUME_DELTA_SPIKE_PCT: float = 60.0  # percent of total volume as net delta
 class MarketRegimeDetector:
     """Classifies market regime from a set of pre-computed indicators.
 
+    Parameters
+    ----------
+    hysteresis_candles:
+        Number of consecutive classifications the new regime must be seen
+        before it is officially adopted.  Prevents rapid regime flapping in
+        consolidation zones near EMA crosses.  Defaults to ``3``.
+
     Usage::
 
         detector = MarketRegimeDetector()
@@ -57,6 +64,17 @@ class MarketRegimeDetector:
         if result.regime == MarketRegime.TRENDING_UP:
             ...
     """
+
+    def __init__(self, hysteresis_candles: int = 3) -> None:
+        self._hysteresis_candles: int = hysteresis_candles
+        # Stable (officially adopted) regime — None until first classification.
+        self._previous_regime: Optional[MarketRegime] = None
+        # Candidate regime currently accumulating dwell count.
+        self._pending_regime: Optional[MarketRegime] = None
+        # How many consecutive times the pending regime has been seen.
+        self._regime_dwell_count: int = 0
+        # Track the last timeframe used; hysteresis resets when it changes.
+        self._last_timeframe: Optional[str] = None
 
     def classify(
         self,
@@ -97,6 +115,16 @@ class MarketRegimeDetector:
         bb_lower: Optional[float] = indicators.get("bb_lower_last")
         bb_mid: Optional[float] = indicators.get("bb_mid_last")
 
+        # Reset hysteresis state when the timeframe changes.  In production,
+        # each scanner cycle uses the same timeframe, but tests may call the
+        # same detector instance with different timeframes; resetting ensures
+        # the raw _decide() output is returned directly in that case.
+        if timeframe != self._last_timeframe:
+            self._previous_regime = None
+            self._pending_regime = None
+            self._regime_dwell_count = 0
+            self._last_timeframe = timeframe
+
         # ema_slow defaults to close price from candles when unavailable
         close: Optional[float] = None
         if candles is not None and len(candles.get("close", [])) > 0:
@@ -120,44 +148,114 @@ class MarketRegimeDetector:
 
         regime = self._decide(adx_val, ema_slope, bb_width_pct, timeframe=timeframe)
 
+        # Apply hysteresis to the indicator-derived regime (prevents flapping near
+        # EMA crosses and ADX transition zones).
+        stable_regime = self._apply_hysteresis(regime)
+
         # Volume-delta override: a sudden order-book imbalance should push the
         # regime out of a passive (QUIET / RANGING) state before ADX and EMA
         # can catch up.  When |volume_delta_pct| exceeds the spike threshold:
         #   * Use EMA slope to determine direction if available → TRENDING_UP/DOWN
         #   * Fall back to VOLATILE when direction is unclear
+        #
+        # Volume-delta spikes **bypass hysteresis** — they are designed to react
+        # faster than the multi-candle dwell window, so the forced regime is
+        # adopted immediately and the hysteresis state is updated accordingly.
         volume_delta_pct: Optional[float] = None
         if volume_delta is not None:
             abs_volume_delta = abs(volume_delta)
             if abs_volume_delta >= _VOLUME_DELTA_SPIKE_PCT:
                 volume_delta_pct = float(volume_delta)
-                if regime in (MarketRegime.QUIET, MarketRegime.RANGING):
+                if stable_regime in (MarketRegime.QUIET, MarketRegime.RANGING):
                     ema_slope_threshold = 0.15 if timeframe == "1m" else 0.05
+                    forced_regime: MarketRegime = MarketRegime.VOLATILE  # default
                     if ema_slope is not None and ema_slope > ema_slope_threshold:
-                        regime = MarketRegime.TRENDING_UP
+                        forced_regime = MarketRegime.TRENDING_UP
                         log.debug(
                             "Volume-delta spike (%.1f%%) forced QUIET/RANGING → TRENDING_UP",
                             volume_delta,
                         )
                     elif ema_slope is not None and ema_slope < -ema_slope_threshold:
-                        regime = MarketRegime.TRENDING_DOWN
+                        forced_regime = MarketRegime.TRENDING_DOWN
                         log.debug(
                             "Volume-delta spike (%.1f%%) forced QUIET/RANGING → TRENDING_DOWN",
                             volume_delta,
                         )
                     else:
-                        regime = MarketRegime.VOLATILE
+                        forced_regime = MarketRegime.VOLATILE
                         log.debug(
                             "Volume-delta spike (%.1f%%) forced QUIET/RANGING → VOLATILE",
                             volume_delta,
                         )
+                    # Bypass hysteresis: adopt the forced regime immediately and
+                    # update the stable state so future calls inherit it.
+                    stable_regime = forced_regime
+                    self._previous_regime = forced_regime
+                    self._pending_regime = forced_regime
+                    self._regime_dwell_count = self._hysteresis_candles
 
         return RegimeResult(
-            regime=regime,
+            regime=stable_regime,
             adx=adx_val,
             bb_width_pct=bb_width_pct,
             ema_slope=ema_slope,
             volume_delta_pct=volume_delta_pct,
         )
+
+    def _apply_hysteresis(self, raw_regime: MarketRegime) -> MarketRegime:
+        """Apply 3-candle dwell-time hysteresis to prevent rapid regime flapping.
+
+        A new regime is only officially adopted after it has been the raw
+        classification for ``_hysteresis_candles`` consecutive calls.  Until
+        then the previously stable regime is returned.
+
+        Parameters
+        ----------
+        raw_regime:
+            The regime produced by :meth:`_decide` for the current candle.
+
+        Returns
+        -------
+        MarketRegime
+            The stable (hysteresis-filtered) regime.
+        """
+        if self._previous_regime is None:
+            # Initial state: accept the first classification immediately.
+            self._previous_regime = raw_regime
+            self._pending_regime = raw_regime
+            self._regime_dwell_count = self._hysteresis_candles
+            return raw_regime
+
+        if raw_regime == self._previous_regime:
+            # Raw regime matches the stable regime — reset any pending transition.
+            self._pending_regime = raw_regime
+            self._regime_dwell_count = self._hysteresis_candles
+            return self._previous_regime
+
+        # Raw regime differs from the stable regime — track as a transition candidate.
+        if raw_regime == self._pending_regime:
+            # Same candidate as last time: increment consecutive counter.
+            self._regime_dwell_count += 1
+        else:
+            # New candidate: reset counter from 1.
+            self._pending_regime = raw_regime
+            self._regime_dwell_count = 1
+
+        if self._regime_dwell_count >= self._hysteresis_candles:
+            # Candidate has persisted long enough — officially switch regime.
+            log.debug(
+                "Regime switch: %s → %s (dwell=%d)",
+                self._previous_regime.value,
+                raw_regime.value,
+                self._regime_dwell_count,
+            )
+            self._previous_regime = raw_regime
+            self._pending_regime = raw_regime
+            self._regime_dwell_count = self._hysteresis_candles
+            return raw_regime
+
+        # Not yet enough consecutive readings — return the stable regime.
+        return self._previous_regime
 
     # ------------------------------------------------------------------
 

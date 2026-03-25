@@ -22,6 +22,14 @@ from src.smc import Direction
 # zone width from the zone boundary.
 _FVG_RETEST_PROXIMITY: float = 0.35  # was 0.5; tighter = higher-probability retests
 
+# FVG zone age management.
+# Zones older than _FVG_MAX_AGE_CANDLES are skipped (low institutional relevance).
+_FVG_MAX_AGE_CANDLES: int = 80
+# Minimum decay factor applied to SL distance for very old zones.
+# Decay = max(_FVG_MIN_DECAY, 1.0 - candles_ago / 100.0)
+# A decay of 1.0 = full SL; 0.2 = 20% of original SL (tightest allowed).
+_FVG_MIN_DECAY: float = 0.2
+
 
 class ScalpFVGChannel(BaseChannel):
     """FVG Retest scalp trigger."""
@@ -74,15 +82,26 @@ class ScalpFVGChannel(BaseChannel):
         close = float(cd["close"][-1])
         atr_val = ind.get("atr_last", close * 0.002)
 
+        # Total candle count in the current timeframe window (used for age calculation).
+        total_candles = len(cd.get("close", []))
+
         # Find the most recent FVG zone that price is retesting
         direction: Optional[Direction] = None
         retest_zone = None
+        zone_decay: float = 1.0  # Age decay factor for the matched zone
         for zone in fvg_zones:
             gap_high = float(zone.gap_high)
             gap_low = float(zone.gap_low)
             zone_width = gap_high - gap_low
             if zone_width <= 0:
                 continue
+
+            # Age-based filtering: zones older than _FVG_MAX_AGE_CANDLES are skipped.
+            # FVGZone.index is the bar index where the gap was created; the number of
+            # candles since creation is (total_candles - zone.index).
+            candles_ago = total_candles - int(zone.index)
+            if candles_ago > _FVG_MAX_AGE_CANDLES:
+                continue  # Zone too old — skip regardless of price proximity
 
             if zone.direction == Direction.LONG:
                 # Bullish FVG (gap up): price should retest from above (touching gap_high)
@@ -91,6 +110,7 @@ class ScalpFVGChannel(BaseChannel):
                 if abs(proximity) <= _FVG_RETEST_PROXIMITY:
                     direction = Direction.LONG
                     retest_zone = zone
+                    zone_decay = max(_FVG_MIN_DECAY, 1.0 - candles_ago / 100.0)
                     break
             else:
                 # Bearish FVG (gap down): price should retest from below (touching gap_low)
@@ -99,6 +119,7 @@ class ScalpFVGChannel(BaseChannel):
                 if abs(proximity) <= _FVG_RETEST_PROXIMITY:
                     direction = Direction.SHORT
                     retest_zone = zone
+                    zone_decay = max(_FVG_MIN_DECAY, 1.0 - candles_ago / 100.0)
                     break
 
         if direction is None or retest_zone is None:
@@ -126,15 +147,23 @@ class ScalpFVGChannel(BaseChannel):
         gap_high = float(retest_zone.gap_high)
         gap_low = float(retest_zone.gap_low)
 
-        # SL: below/above FVG zone boundary
+        # SL: below/above FVG zone boundary, scaled by age decay factor.
+        # Older zones carry less conviction (tighter SL = smaller loss if wrong).
         if direction == Direction.LONG:
             sl = min(gap_low - atr_val * 0.5, close * (1 - self.config.sl_pct_range[0] / 100))
         else:
             sl = max(gap_high + atr_val * 0.5, close * (1 + self.config.sl_pct_range[0] / 100))
 
-        sl_dist = abs(close - sl)
+        base_sl_dist = abs(close - sl)
+        sl_dist = base_sl_dist * zone_decay  # Apply age decay (older zone → tighter SL)
         if sl_dist <= 0:
             return None
+
+        # Recompute the actual SL price from the decayed distance.
+        if direction == Direction.LONG:
+            sl = close - sl_dist
+        else:
+            sl = close + sl_dist
 
         if direction == Direction.LONG:
             tp1 = close + sl_dist * self.config.tp_ratios[0]

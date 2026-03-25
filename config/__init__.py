@@ -664,3 +664,32 @@ OBSERVER_DIGEST_INTERVAL_SECONDS: int = int(os.getenv("OBSERVER_DIGEST_INTERVAL"
 OBSERVER_DATA_PATH: str = os.getenv("OBSERVER_DATA_PATH", "data/trade_observations.json")
 OBSERVER_MAX_OBSERVATIONS_PER_TRADE: int = int(os.getenv("OBSERVER_MAX_OBSERVATIONS", "120"))
 OBSERVER_DIGEST_LOOKBACK_HOURS: int = int(os.getenv("OBSERVER_DIGEST_LOOKBACK", "24"))
+
+# ---------------------------------------------------------------------------
+# MTF hard block – when True, MTF misalignment is a hard veto (signal blocked)
+# instead of a soft -5.0 confidence penalty.
+# ---------------------------------------------------------------------------
+MTF_HARD_BLOCK: bool = os.getenv("MTF_HARD_BLOCK", "true").lower() in ("true", "1", "yes")
+
+# ---------------------------------------------------------------------------
+# Correlated position exposure cap
+# Maximum number of same-direction active scalp signals allowed concurrently.
+# When this threshold is reached, additional signals in the same direction are
+# blocked to limit correlated exposure (e.g. all LONG scalps stopped out by BTC).
+# ---------------------------------------------------------------------------
+MAX_CORRELATED_SCALP_SIGNALS: int = int(os.getenv("MAX_CORRELATED_SCALP_SIGNALS", "8"))
+
+# ---------------------------------------------------------------------------
+# Confidence log (data-driven weight profiling infrastructure)
+# When enabled, compute_confidence() appends a structured JSON record to
+# CONFIDENCE_LOG_PATH for each scored signal.  The log can be used offline
+# for logistic-regression analysis to derive optimal weight profiles.
+# ---------------------------------------------------------------------------
+CONFIDENCE_LOG_ENABLED: bool = os.getenv("CONFIDENCE_LOG_ENABLED", "false").lower() in ("true", "1", "yes")
+CONFIDENCE_LOG_PATH: str = os.getenv("CONFIDENCE_LOG_PATH", "data/confidence_log.jsonl")
+
+# ---------------------------------------------------------------------------
+# Macro blackout window – block signals before/after major macro events.
+# ---------------------------------------------------------------------------
+MACRO_BLACKOUT_PRE_MINUTES: int = int(os.getenv("MACRO_BLACKOUT_PRE_MINUTES", "30"))
+MACRO_BLACKOUT_POST_MINUTES: int = int(os.getenv("MACRO_BLACKOUT_POST_MINUTES", "60"))
