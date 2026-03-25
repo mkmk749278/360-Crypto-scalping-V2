@@ -132,6 +132,8 @@ class SignalRouter:
         # Portfolio enrichment (optional — set after construction)
         self.narrative_builder: Optional[Any] = None
         self.sector_comparator: Optional[Any] = None
+        # AI Trade Observer (optional — set after construction in main.py)
+        self.observer: Optional[Any] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -545,6 +547,13 @@ class SignalRouter:
 
         # Publish a condensed version to the free channel (Phase 4)
         await self._maybe_publish_free_signal(signal)
+
+        # Notify AI Trade Observer — capture market state at signal publish time
+        if self.observer is not None:
+            try:
+                self.observer.capture_entry_snapshot(signal)
+            except Exception as exc:
+                log.debug("TradeObserver.capture_entry_snapshot failed (non-critical): {}", exc)
 
     # ------------------------------------------------------------------
     # Portfolio signal enrichment helpers

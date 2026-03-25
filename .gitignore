@@ -35,6 +35,9 @@ logs/
 # Data cache (auto-generated at runtime)
 data/cache/
 
+# AI Trade Observer runtime data
+data/trade_observations.json
+
 # Coverage
 .coverage
 htmlcov/

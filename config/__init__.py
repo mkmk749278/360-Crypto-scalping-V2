@@ -653,3 +653,14 @@ TRAILING_ATR_MULTIPLIER: float = float(os.getenv("TRAILING_ATR_MULTIPLIER", "1.5
 # Logging
 # ---------------------------------------------------------------------------
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+
+# ---------------------------------------------------------------------------
+# AI Trade Observer – background module that captures full trade lifecycle data
+# and generates periodic AI-powered digests for the admin Telegram channel.
+# ---------------------------------------------------------------------------
+OBSERVER_ENABLED: bool = os.getenv("OBSERVER_ENABLED", "true").lower() in ("true", "1", "yes")
+OBSERVER_POLL_INTERVAL: float = float(os.getenv("OBSERVER_POLL_INTERVAL", "60"))
+OBSERVER_DIGEST_INTERVAL_SECONDS: int = int(os.getenv("OBSERVER_DIGEST_INTERVAL", "21600"))  # 6 hours
+OBSERVER_DATA_PATH: str = os.getenv("OBSERVER_DATA_PATH", "data/trade_observations.json")
+OBSERVER_MAX_OBSERVATIONS_PER_TRADE: int = int(os.getenv("OBSERVER_MAX_OBSERVATIONS", "120"))
+OBSERVER_DIGEST_LOOKBACK_HOURS: int = int(os.getenv("OBSERVER_DIGEST_LOOKBACK", "24"))

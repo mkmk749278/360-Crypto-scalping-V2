@@ -102,6 +102,9 @@ class TradeMonitor:
         # Optional callback invoked with (signal, tp_level, tp_pnl_pct) when TP2+ is hit.
         # Used to post highlights to the free channel.
         self.on_highlight_callback: Optional[Any] = None
+        # Optional AI Trade Observer — captures full trade lifecycle data.
+        # Set after construction (e.g. in main.py after router.observer is wired).
+        self.observer: Optional[Any] = None
 
     def _record_outcome(self, sig: Signal, hit_tp: int, hit_sl: bool) -> None:
         """Notify performance tracker and circuit breaker of a completed signal.
@@ -208,6 +211,13 @@ class TradeMonitor:
         # Release order-placement tracking for this closed signal so that the
         # set does not grow without bound across many completed signals.
         self._order_placed_ids.discard(sig.signal_id)
+
+        # Notify the AI Trade Observer with exit analysis (fail-open)
+        if self.observer is not None:
+            try:
+                self.observer.capture_exit_analysis(sig, outcome_label, actual_pnl)
+            except Exception as exc:
+                log.debug("TradeObserver.capture_exit_analysis failed (non-critical): {}", exc)
 
     @staticmethod
     def _set_realized_pnl(sig: Signal, exit_price: float) -> None:
@@ -425,6 +435,13 @@ class TradeMonitor:
             self._record_outcome(sig, hit_tp=0, hit_sl=False)
             self._remove(sig.signal_id)
             return
+
+        # Notify AI Trade Observer with a mid-trade snapshot (fail-open)
+        if self.observer is not None:
+            try:
+                self.observer.observe_trade(sig, price)
+            except Exception as exc:
+                log.debug("TradeObserver.observe_trade failed (non-critical): {}", exc)
 
         # DCA (Double Entry) check — only on ACTIVE signals before TP1 is hit
         if sig.status == "ACTIVE" and not sig.entry_2_filled:

@@ -54,6 +54,7 @@ from src.signal_router import SignalRouter
 from src.telegram_bot import TelegramBot
 from src.telemetry import TelemetryCollector
 from src.trade_monitor import TradeMonitor
+from src.trade_observer import TradeObserver
 from src.exchange_client import CCXTClient
 from src.order_manager import OrderManager
 from src.utils import get_logger
@@ -210,6 +211,17 @@ class CryptoSignalEngine:
             send_alert=self.telegram.send_admin_alert,
             openai_evaluator=self._openai_evaluator,
         )
+
+        # AI Trade Observer – captures full trade lifecycle data and generates
+        # periodic AI-powered digests for the admin channel.
+        self._trade_observer = TradeObserver(
+            send_alert=self.telegram.send_admin_alert,
+            data_store=self.data_store,
+            regime_detector=self._regime_detector,
+        )
+        # Wire observer into router and monitor so they can call the hooks
+        self.router.observer = self._trade_observer
+        self.monitor.observer = self._trade_observer
 
         # On-chain intelligence client (optional — no-op if key is absent)
         self._onchain_client = OnChainClient(api_key=ONCHAIN_API_KEY)

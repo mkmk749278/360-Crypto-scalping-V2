@@ -182,6 +182,7 @@ class Bootstrap:
             asyncio.create_task(engine._liquidation_flush_loop()),
             asyncio.create_task(engine._lifecycle_monitor.start()),
             asyncio.create_task(engine._daily_performance_report_loop()),
+            asyncio.create_task(engine._trade_observer.start()),
         ]
 
         # OI poller – background REST polling for Binance Futures Open Interest
@@ -230,6 +231,11 @@ class Bootstrap:
                 await engine._macro_watchdog.stop()
             except Exception as exc:
                 log.warning("Failed to stop MacroWatchdog: {}", exc)
+        if getattr(engine, "_trade_observer", None) is not None:
+            try:
+                await engine._trade_observer.stop()
+            except Exception as exc:
+                log.warning("Failed to stop TradeObserver: {}", exc)
         if getattr(engine, "_oi_poller", None) is not None:
             try:
                 await engine._oi_poller.stop()
