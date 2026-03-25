@@ -114,11 +114,13 @@ class SpotChannel(BaseChannel):
             return None  # Not squeezing, not a real accumulation pattern
 
         # Accumulation breakout: price must clear recent H4 resistance
+        # using an ATR-adaptive threshold instead of a fixed 0.2% proximity.
         if len(highs) < 10:
             return None
         recent_high = max(float(h) for h in highs[-10:-1])
-        if close < recent_high * 0.998:
-            return None  # No breakout yet
+        breakout_buffer = atr_val * 0.2
+        if close < recent_high + breakout_buffer:
+            return None  # No confirmed breakout — candle must close above resistance + buffer
 
         # Volume expansion
         if len(volumes) < 10 or len(closes_list) < 10:
@@ -199,11 +201,13 @@ class SpotChannel(BaseChannel):
             return None
 
         # Distribution breakdown: price must breach recent H4 support
+        # using an ATR-adaptive threshold instead of a fixed 0.2% proximity.
         if len(lows) < 10:
             return None
         recent_low = min(float(lo) for lo in lows[-10:-1])
-        if close > recent_low * 1.002:
-            return None  # No breakdown yet
+        breakdown_buffer = atr_val * 0.2
+        if close > recent_low - breakdown_buffer:
+            return None  # No confirmed breakdown
 
         # Volume expansion on the down-move
         if len(volumes) < 10 or len(closes_list) < 10:

@@ -179,7 +179,7 @@ class ScalpFVGChannel(BaseChannel):
         if direction == Direction.SHORT and sl <= close:
             return None
 
-        return build_channel_signal(
+        sig = build_channel_signal(
             config=self.config,
             symbol=symbol,
             direction=direction,
@@ -193,3 +193,63 @@ class ScalpFVGChannel(BaseChannel):
             atr_val=atr_val,
             setup_class="FVG_RETEST",
         )
+
+        if sig is not None:
+            # P2-15: annotate with zone age and decay for transparency
+            sig.analyst_reason = (
+                f"FVG retest {candles_ago} candles ago, decay={zone_decay:.2f}"
+            )
+
+            # P1-7: HTF FVG confluence soft-boost
+            htf = "15m" if tf == "5m" else None
+            if htf and self._has_htf_confluence(
+                smc_data, direction, float(retest_zone.gap_high), float(retest_zone.gap_low), htf
+            ):
+                sig.setup_class = "FVG_RETEST_HTF_CONFLUENCE"
+                sig.quality_tier = "A+"
+
+        return sig
+
+    def _has_htf_confluence(
+        self,
+        smc_data: dict,
+        direction: Direction,
+        gap_high: float,
+        gap_low: float,
+        htf: str,
+    ) -> bool:
+        """Return True when a higher-timeframe FVG overlaps the current zone.
+
+        Checks whether any FVG in *smc_data* has the same direction as *direction*
+        and its price range overlaps ``[gap_low, gap_high]``.  The *htf* parameter
+        is informational (the caller already filtered which timeframe to check).
+
+        Parameters
+        ----------
+        smc_data:
+            SMC data dict passed to *evaluate()*.
+        direction:
+            Trade direction of the current lower-timeframe FVG.
+        gap_high:
+            Upper boundary of the lower-timeframe FVG zone.
+        gap_low:
+            Lower boundary of the lower-timeframe FVG zone.
+        htf:
+            Name of the higher timeframe being checked (e.g. ``"15m"``).
+            Currently unused internally but kept for documentation clarity.
+
+        Returns
+        -------
+        bool
+            ``True`` when at least one HTF FVG zone overlaps the LTF zone.
+        """
+        fvg_zones = smc_data.get("fvg", [])
+        for zone in fvg_zones:
+            if zone.direction != direction:
+                continue
+            z_high = float(zone.gap_high)
+            z_low = float(zone.gap_low)
+            # Overlap check: ranges must intersect
+            if z_low <= gap_high and z_high >= gap_low:
+                return True
+        return False

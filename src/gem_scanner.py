@@ -43,6 +43,11 @@ from src.utils import get_logger
 
 log = get_logger("gem_scanner")
 
+# Minimum number of consecutive days the EMA20 > EMA50 crossover must hold
+# before the MA crossover flag is set to True.  This filters dead-cat bounces
+# that reverse within 1-2 days of the initial cross.
+_MA_CROSSOVER_HOLD_DAYS: int = 3
+
 
 @dataclass
 class GemSignal:
@@ -67,7 +72,7 @@ class GemScannerConfig:
     enabled: bool = True
     min_drawdown_pct: float = 70.0
     max_range_pct: float = 40.0
-    min_volume_ratio: float = 1.5
+    min_volume_ratio: float = 2.5  # Increased from 1.5 for stronger conviction filtering on macro reversals
     max_daily_signals: int = 3
     scan_interval_hours: int = 6
     # On-chain enrichment boosts/penalties (feature 2)
@@ -252,6 +257,13 @@ class GemScanner:
                     float(closes[-i]) < ema_20[-i] for i in range(2, min(4, len(ema_20)))
                 )
                 ma_crossover = price_above_now and price_below_recent
+
+        # Crossover persistence check: require EMA20 > EMA50 for at least
+        # _MA_CROSSOVER_HOLD_DAYS consecutive days to filter dead-cat bounces.
+        if ma_crossover and len(ema_20) >= _MA_CROSSOVER_HOLD_DAYS:
+            held = all(ema_20[-i] > ema_50[-i] for i in range(1, _MA_CROSSOVER_HOLD_DAYS + 1))
+            if not held:
+                ma_crossover = False
 
         x_potential = ath / current_price
 

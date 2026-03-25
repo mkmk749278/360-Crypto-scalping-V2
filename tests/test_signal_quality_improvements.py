@@ -165,7 +165,12 @@ class TestCVDChannel:
         candles["5m"]["high"] = np.ones(25) * 102.0
         candles["5m"]["close"] = np.ones(25) * 99.0
         ind = self._make_ind(atr_val=1.0)
-        smc_data = {"cvd_divergence": "BULLISH"}
+        # Provide both age and strength so fail-closed guards are satisfied
+        smc_data = {
+            "cvd_divergence": "BULLISH",
+            "cvd_divergence_age": 5,
+            "cvd_divergence_strength": 0.5,
+        }
         sig = ch.evaluate("BTCUSDT", candles, ind, smc_data, 0.01, 10_000_000)
         assert sig is not None
 
@@ -201,7 +206,7 @@ class TestCVDChannel:
         assert sig is None
 
     def test_fresh_divergence_allowed(self):
-        """CVD divergence age = 5 candles → allowed."""
+        """CVD divergence age = 5 candles + valid strength → allowed."""
         from src.channels.scalp_cvd import ScalpCVDChannel
         ch = ScalpCVDChannel()
         candles = self._make_cvd_candles(close_val=99.0)
@@ -212,6 +217,7 @@ class TestCVDChannel:
         smc_data = {
             "cvd_divergence": "BULLISH",
             "cvd_divergence_age": 5,
+            "cvd_divergence_strength": 0.5,  # also required by fail-closed guard
         }
         sig = ch.evaluate("BTCUSDT", candles, ind, smc_data, 0.01, 10_000_000)
         assert sig is not None
@@ -233,7 +239,7 @@ class TestCVDChannel:
         assert sig is None
 
     def test_strong_divergence_allowed(self):
-        """CVD divergence strength = 0.5 → allowed."""
+        """CVD divergence strength = 0.5 + valid age → allowed."""
         from src.channels.scalp_cvd import ScalpCVDChannel
         ch = ScalpCVDChannel()
         candles = self._make_cvd_candles(close_val=99.0)
@@ -243,13 +249,14 @@ class TestCVDChannel:
         ind = self._make_ind(atr_val=1.0)
         smc_data = {
             "cvd_divergence": "BULLISH",
+            "cvd_divergence_age": 5,   # also required by fail-closed guard
             "cvd_divergence_strength": 0.5,
         }
         sig = ch.evaluate("BTCUSDT", candles, ind, smc_data, 0.01, 10_000_000)
         assert sig is not None
 
     def test_no_age_or_strength_metadata_passes(self):
-        """Without age/strength metadata the guard is inactive (backward compat)."""
+        """Without age/strength metadata the guard is fail-closed (_CVD_REQUIRE_METADATA=True)."""
         from src.channels.scalp_cvd import ScalpCVDChannel
         ch = ScalpCVDChannel()
         candles = self._make_cvd_candles(close_val=99.0)
@@ -259,7 +266,7 @@ class TestCVDChannel:
         ind = self._make_ind(atr_val=1.0)
         smc_data = {"cvd_divergence": "BULLISH"}  # no age/strength keys
         sig = ch.evaluate("BTCUSDT", candles, ind, smc_data, 0.01, 10_000_000)
-        assert sig is not None
+        assert sig is None  # fail-closed: missing metadata rejects the signal
 
 
 # ===========================================================================
@@ -287,9 +294,11 @@ class TestOBIChannel:
             ind["atr_last"] = atr_val
         indicators = {"5m": ind}
         # Strong bid absorption: OBI ≥ 0.65 (bids >> asks)
+        # Include a fresh timestamp so _OBI_REQUIRE_TIMESTAMP is satisfied by default
         order_book = {
             "bids": [[close_val, 1000.0]] * 10,
             "asks": [[close_val + 0.01, 1.0]] * 10,
+            "fetched_at": time.time() - 0.5,  # fresh timestamp — satisfies _OBI_REQUIRE_TIMESTAMP
         }
         smc_data = {"order_book": order_book}
         return candles, indicators, smc_data
@@ -351,15 +360,20 @@ class TestOBIChannel:
         assert sig is not None
 
     def test_missing_timestamp_fails_open(self):
-        """Missing timestamp in order book → fail-open (signal not blocked by staleness)."""
+        """Missing timestamp in order book → fail-closed when _OBI_REQUIRE_TIMESTAMP=True."""
         from src.channels.scalp_obi import ScalpOBIChannel
         ch = ScalpOBIChannel()
-        candles, ind, smc_data = self._make_obi_context(close_val=100.5, atr_val=1.0)
+        candles, ind, _ = self._make_obi_context(close_val=100.5, atr_val=1.0)
         candles["5m"]["low"] = np.ones(25) * 100.0
         candles["5m"]["close"] = np.ones(25) * 100.5
-        # order_book without timestamp — should not block
+        # order_book without timestamp — should be rejected (fail-closed)
+        order_book = {
+            "bids": [[100.0, 1000.0]] * 10,
+            "asks": [[100.01, 1.0]] * 10,
+        }
+        smc_data = {"order_book": order_book}
         sig = ch.evaluate("BTCUSDT", candles, ind, smc_data, 0.01, 10_000_000)
-        assert sig is not None  # fail-open
+        assert sig is None  # fail-closed: missing timestamp rejects the signal
 
 
 # ===========================================================================

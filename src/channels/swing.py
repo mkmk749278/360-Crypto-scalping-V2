@@ -19,6 +19,14 @@ from src.smc import Direction
 # For SHORT: price must be in the top BB_REJECTION_THRESHOLD fraction (near upper band).
 _BB_REJECTION_THRESHOLD: float = 0.15
 
+# EMA200 buffer zone: signals within ±0.5% of EMA200 are ambiguous (price is
+# too close to the long-term trend boundary to determine bias cleanly).
+_EMA200_BUFFER_PCT: float = 0.5
+
+# Minimum MSS candle body size (as % of close) to avoid noise signals.
+# Tiny bodies often indicate indecision candles rather than genuine structure shifts.
+_MSS_MIN_BODY_SIZE_PCT: float = 0.05
+
 
 class SwingChannel(BaseChannel):
     def __init__(self) -> None:
@@ -66,11 +74,26 @@ class SwingChannel(BaseChannel):
 
         direction = mss.direction
 
+        # MSS body-size minimum: tiny sweep candle bodies are noise, not genuine structure shifts.
+        # Use the H4 sweep candle's open_price and close_price (fields on LiquiditySweep).
+        sweep = sweeps[0]
+        sweep_open = getattr(sweep, "open_price", None)
+        sweep_close = getattr(sweep, "close_price", None)
+        if sweep_open is not None and sweep_close is not None and float(sweep_close) > 0:
+            body_size_pct = abs(float(sweep_open) - float(sweep_close)) / float(sweep_close) * 100.0
+            if body_size_pct < _MSS_MIN_BODY_SIZE_PCT:
+                return None  # Sweep candle body too small — likely indecision, not a genuine MSS
+
         # RSI extreme gate: don't chase overbought LONGs or fade oversold SHORTs
         if not check_rsi(ind_h1.get("rsi_last"), overbought=75, oversold=25, direction=direction.value):
             return None
 
-        # Validate EMA200 bias
+        # Validate EMA200 bias — with a buffer zone to suppress ambiguous signals.
+        # Signals within ±_EMA200_BUFFER_PCT of EMA200 are rejected because price
+        # is too close to the long-term trend boundary to determine bias cleanly.
+        ema200_distance_pct = abs(close_h1 - ema200) / ema200 * 100.0
+        if ema200_distance_pct < _EMA200_BUFFER_PCT:
+            return None  # Too close to EMA200 — ambiguous bias
         if direction == Direction.LONG and close_h1 < ema200:
             return None
         if direction == Direction.SHORT and close_h1 > ema200:

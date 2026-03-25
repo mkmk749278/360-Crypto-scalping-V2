@@ -40,6 +40,11 @@ from typing import Dict, Optional
 
 from config import CONFIDENCE_LOG_ENABLED, CONFIDENCE_LOG_PATH, NEW_PAIR_MIN_CONFIDENCE
 
+# Directory where per-channel learned weight files are stored.
+# Each file is named ``learned_weights_{channel}.json`` and contains a dict
+# of sub-score names → float weights that override ``_CHANNEL_WEIGHT_PROFILES``.
+_LEARNED_WEIGHTS_DIR: str = "data"
+
 # USD liquidation volume at which the order-flow liq bonus is maximised (5 pts).
 _ORDER_FLOW_LIQ_CAP_USD: float = 500_000.0
 
@@ -449,8 +454,67 @@ def get_session_multiplier(now: Optional[datetime] = None, channel: Optional[str
     return 1.05      # US session (16–24)
 
 
-def log_confidence_breakdown(
-    signal_id: str,
+def load_learned_weights(channel: str) -> Optional[Dict[str, float]]:
+    """Load per-channel learned weights from disk.
+
+    Checks for a JSON file at ``data/learned_weights_{channel}.json``.
+    If it exists and is valid, returns the weight dict so it can override
+    ``_CHANNEL_WEIGHT_PROFILES`` in :func:`compute_confidence`.  Returns
+    ``None`` when the file is absent or cannot be parsed.
+
+    Parameters
+    ----------
+    channel:
+        Channel name (e.g. ``"360_SCALP"``).  Used to construct the file name.
+
+    Returns
+    -------
+    Optional[Dict[str, float]]
+        Loaded weight dict, or ``None`` to fall back to the built-in profiles.
+    """
+    # Sanitise: strip characters that could allow path traversal or injection.
+    safe_channel = "".join(c for c in channel if c.isalnum() or c in ("_", "-"))
+    if not safe_channel:
+        return None
+    path = os.path.join(_LEARNED_WEIGHTS_DIR, f"learned_weights_{safe_channel}.json")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            return {str(k): float(v) for k, v in data.items()}
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return None
+
+
+def save_learned_weights(channel: str, weights: Dict[str, float]) -> None:
+    """Persist per-channel learned weights to disk.
+
+    Writes *weights* to ``data/learned_weights_{channel}.json``.  The file is
+    created (or overwritten) so that subsequent calls to :func:`load_learned_weights`
+    pick up the updated values without restarting the process.
+
+    Parameters
+    ----------
+    channel:
+        Channel name used to construct the output file name.
+    weights:
+        Dict of sub-score names → float weight values to persist.
+    """
+    # Sanitise: strip characters that could allow path traversal or injection.
+    safe_channel = "".join(c for c in channel if c.isalnum() or c in ("_", "-"))
+    if not safe_channel:
+        return
+    path = os.path.join(_LEARNED_WEIGHTS_DIR, f"learned_weights_{safe_channel}.json")
+    try:
+        os.makedirs(_LEARNED_WEIGHTS_DIR, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(weights, fh, indent=2)
+    except OSError:
+        pass  # Non-fatal: write failure must not block the scoring pipeline
+
+
+def log_confidence_breakdown(    signal_id: str,
     channel: str,
     breakdown: Dict[str, float],
     total: float,
@@ -530,7 +594,7 @@ def compute_confidence(
         ``CONFIDENCE_LOG_ENABLED`` is True, the full breakdown is written to
         the confidence log file for offline weight-profile optimisation.
     """
-    weights = _CHANNEL_WEIGHT_PROFILES.get(channel or "", {})
+    weights = load_learned_weights(channel or "") or _CHANNEL_WEIGHT_PROFILES.get(channel or "", {})
     breakdown: Dict[str, float] = {
         "smc": inp.smc_score * weights.get("smc", 1.0),
         "trend": inp.trend_score * weights.get("trend", 1.0),

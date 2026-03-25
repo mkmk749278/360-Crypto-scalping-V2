@@ -9,6 +9,7 @@ Risk    : SL 0.05–0.1 %, TP1 0.5–1R, TP2 1–1.5R, TP3 optional 20 %, Traili
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 
@@ -36,12 +37,25 @@ class ScalpChannel(BaseChannel):
         spread_pct: float,
         volume_24h_usd: float,
     ) -> Optional[Signal]:
-        # Try each setup class path in priority order
-        return (
-            self._evaluate_standard(symbol, candles, indicators, smc_data, spread_pct, volume_24h_usd)
-            or self._evaluate_range_fade(symbol, candles, indicators, smc_data, spread_pct, volume_24h_usd)
-            or self._evaluate_whale_momentum(symbol, candles, indicators, smc_data, spread_pct, volume_24h_usd)
-        )
+        # Evaluate all three paths and return the one with the best R-multiple.
+        # This ensures that a marginal standard-path signal never blocks a
+        # higher-quality RANGE_FADE or WHALE_MOMENTUM opportunity.
+        candidates = []
+        for evaluator in (
+            self._evaluate_standard,
+            self._evaluate_range_fade,
+            self._evaluate_whale_momentum,
+        ):
+            sig = evaluator(symbol, candles, indicators, smc_data, spread_pct, volume_24h_usd)
+            if sig is not None:
+                candidates.append(sig)
+        if not candidates:
+            return None
+        # Return the candidate with the best risk-reward (highest R-multiple)
+        best = max(candidates, key=lambda s: s.r_multiple)
+        # Apply kill zone check and mark reduced-conviction signals
+        self._apply_kill_zone_note(best)
+        return best
 
     # ------------------------------------------------------------------
     # Standard scalp path (TREND_PULLBACK / BREAKOUT / LIQUIDITY_SWEEP)
@@ -88,6 +102,14 @@ class ScalpChannel(BaseChannel):
         momentum_threshold = max(0.10, min(0.30, atr_pct * 0.5))
         if abs(mom) < momentum_threshold:
             return None
+
+        # Momentum persistence: require momentum above threshold for >= 2 consecutive
+        # candles to avoid whipsaws where a single candle briefly spikes momentum.
+        mom_arr = ind.get("momentum_array")
+        if mom_arr is not None and len(mom_arr) >= 2:
+            prev_mom = float(mom_arr[-2])
+            if abs(prev_mom) < momentum_threshold:
+                return None  # Momentum not persistent — likely whipsaw
 
         direction = sweep.direction
 
@@ -316,3 +338,32 @@ class ScalpChannel(BaseChannel):
             tp2 = close - sl_dist * self.config.tp_ratios[1]
             tp3 = close - sl_dist * self.config.tp_ratios[2]
         return sl, tp1, tp2, tp3
+
+    # ------------------------------------------------------------------
+    # Kill zone integration (P2-13)
+    # ------------------------------------------------------------------
+
+    def _is_kill_zone_active(self, now: Optional[datetime] = None) -> bool:
+        """Return True if the current UTC time falls within a high-liquidity kill zone.
+
+        Kill zones are defined as:
+        * London session     : 07:00–10:00 UTC
+        * NY session         : 12:00–16:00 UTC
+        * London/NY overlap  : 12:00–14:00 UTC (already covered by NY range above)
+        """
+        if now is None:
+            now = datetime.now(timezone.utc)
+        hour = now.hour
+        return (7 <= hour < 10) or (12 <= hour < 16)
+
+    def _apply_kill_zone_note(self, sig: Signal, now: Optional[datetime] = None) -> None:
+        """Annotate the signal with a reduced-conviction note when outside kill zones.
+
+        Does not hard-reject; the signal is still emitted but the execution_note
+        field is set so that downstream consumers can apply their own rules.
+        """
+        if not self._is_kill_zone_active(now):
+            if sig.execution_note:
+                sig.execution_note += "; Outside kill zone — reduced conviction"
+            else:
+                sig.execution_note = "Outside kill zone — reduced conviction"

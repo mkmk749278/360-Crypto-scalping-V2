@@ -6,6 +6,7 @@ performance metrics including win rate, average R:R, and max drawdown.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -24,6 +25,11 @@ log = get_logger("backtester")
 # Thresholds for converting a numeric AI sentiment score ([-1, 1]) to a label.
 _AI_BULLISH_THRESHOLD = 0.2
 _AI_BEARISH_THRESHOLD = -0.2
+
+# Channel name substrings used to identify SCALP channels for automatic
+# execution_delay_candles assignment.  Scalp channels target M1/M5 candles
+# where 0.5–3 s of live-trading latency corresponds to ~1 candle of slippage.
+_SCALP_CHANNEL_NAMES = ("360_SCALP",)
 
 
 @dataclass
@@ -107,6 +113,7 @@ def _simulate_trade(
     slippage_pct: float = 0.0,
     funding_rate_8h: float = 0.0,
     candle_interval_minutes: int = 5,
+    execution_delay_candles: int = 0,
 ) -> Tuple[bool, float, int]:
     """Simulate a signal against future price data.
 
@@ -135,6 +142,13 @@ def _simulate_trade(
     candle_interval_minutes:
         Duration of each candle in minutes (used for funding rate calculation).
         Defaults to ``5`` (5-minute candles).
+    execution_delay_candles:
+        Number of candles to skip before entry to simulate live-trading
+        latency.  When > 0 the entry price is set to the *open* of the candle
+        ``execution_delay_candles`` ahead instead of signal close.  Scalp
+        channels (M1/M5) use 1 by default to account for the 0.5–3 s round-
+        trip between signal detection and exchange fill.  Defaults to ``0``
+        (instant execution at signal candle close).
 
     Returns
     -------
@@ -145,9 +159,21 @@ def _simulate_trade(
     """
     highs = future_candles.get("high", np.array([]))
     lows = future_candles.get("low", np.array([]))
+    opens = future_candles.get("open", np.array([]))
 
     if len(highs) == 0:
         return False, 0.0, 0
+
+    # Execution delay: shift entry to the open of a future candle.
+    # If not enough candles remain after the delay, skip the trade.
+    if execution_delay_candles > 0:
+        if execution_delay_candles >= len(highs):
+            return False, 0.0, 0
+        delayed_open = opens[execution_delay_candles] if len(opens) > execution_delay_candles else None
+        if delayed_open is not None:
+            signal = dataclasses.replace(signal, entry=float(delayed_open))
+        highs = highs[execution_delay_candles:]
+        lows = lows[execution_delay_candles:]
 
     is_long = signal.direction.value == "LONG"
     sl = signal.stop_loss * sl_multiplier
@@ -322,6 +348,9 @@ class Backtester:
         Per-trade slippage percentage applied adversely to every SL/TP fill.
         Defaults to ``0.02`` for a realistic model of spread + market-impact.
         Set to ``0.0`` only when comparing ideal (no-slippage) scenarios.
+    max_concurrent_positions:
+        Maximum number of open simulated positions allowed at the same time.
+        New signals are skipped when this limit is reached.  Defaults to ``5``.
     """
 
     def __init__(
@@ -332,6 +361,7 @@ class Backtester:
         fee_pct: float = 0.08,
         slippage_pct: float = 0.02,
         funding_rate_per_8h: float = 0.01,
+        max_concurrent_positions: int = 5,
     ) -> None:
         if channels is None:
             channels = [
@@ -346,6 +376,7 @@ class Backtester:
         self._fee_pct = fee_pct
         self._slippage_pct = slippage_pct
         self._funding_rate_per_8h = funding_rate_per_8h
+        self._max_concurrent_positions = max_concurrent_positions
 
     def run(
         self,
@@ -427,6 +458,11 @@ class Backtester:
         primary_candles = candles_by_tf[primary_tf]
         total_candles = len(primary_candles.get("close", []))
 
+        # Automatically apply 1-candle execution delay for SCALP channels to
+        # simulate 0.5–3 s live-trading latency between signal detection and fill.
+        is_scalp = any(channel.config.name.startswith(n) for n in _SCALP_CHANNEL_NAMES)
+        execution_delay = 1 if is_scalp else 0
+
         # Derive a human-readable sentiment label from the numeric score so
         # channels that inspect the label field also behave consistently.
         if simulated_ai_score > _AI_BULLISH_THRESHOLD:
@@ -437,7 +473,15 @@ class Backtester:
             ai_label = "Neutral"
         ai_insight = {"label": ai_label, "summary": "", "score": simulated_ai_score}
 
+        # Track open simulated positions (candle index when each trade closes)
+        open_positions: List[int] = []
+
         for i in range(self._min_window, total_candles - self._lookahead):
+            # Enforce max_concurrent_positions: prune positions that have closed
+            open_positions = [end for end in open_positions if end > i]
+            if len(open_positions) >= self._max_concurrent_positions:
+                continue
+
             # Slice candles up to index i for the evaluation window
             window: Dict[str, Dict] = {}
             for tf, cd in candles_by_tf.items():
@@ -482,7 +526,11 @@ class Backtester:
                 fee_pct=self._fee_pct,
                 slippage_pct=self._slippage_pct,
                 funding_rate_8h=self._funding_rate_per_8h,
+                execution_delay_candles=execution_delay,
             )
+
+            # Record approximate trade close candle for capacity tracking
+            open_positions.append(i + self._lookahead)
 
             result.total_signals += 1
             if won:

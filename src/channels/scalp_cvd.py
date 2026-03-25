@@ -17,6 +17,9 @@ from config import CHANNEL_SCALP_CVD
 from src.channels.base import BaseChannel, Signal, build_channel_signal
 from src.filters import check_rsi
 from src.smc import Direction
+from src.utils import get_logger
+
+log = get_logger("scalp_cvd")
 
 # Price must be within this percentage of recent 20-bar high/low to be
 # considered "at support/resistance".  Used as fallback when ATR is unavailable.
@@ -26,8 +29,13 @@ _SR_PROXIMITY_PCT: float = 0.8  # was 0.5; 0.5% is too tight for many valid setu
 # Divergences older than this many candles are considered stale and skipped.
 _CVD_MAX_AGE_CANDLES: int = 10
 # Divergences weaker than this magnitude are considered noise and skipped.
-# NOTE: Activate once SMCDetector populates 'cvd_divergence_strength' in smc_data.
 _CVD_MIN_STRENGTH: float = 0.3
+
+# When True, signals are rejected (fail-closed) if cvd_divergence_age or
+# cvd_divergence_strength are missing from smc_data.  Set to False only for
+# backward-compatibility during migration to the new SMCDetector that populates
+# these fields.
+_CVD_REQUIRE_METADATA: bool = True
 
 
 class ScalpCVDChannel(BaseChannel):
@@ -66,15 +74,29 @@ class ScalpCVDChannel(BaseChannel):
             return None
 
         # CVD divergence recency guard: stale divergences are less reliable.
-        # NOTE: Activates automatically once SMCDetector populates this field.
+        # Fail-closed when _CVD_REQUIRE_METADATA is True and the field is missing.
         cvd_div_age = smc_data.get("cvd_divergence_age")
-        if cvd_div_age is not None and cvd_div_age > _CVD_MAX_AGE_CANDLES:
+        if cvd_div_age is None:
+            if _CVD_REQUIRE_METADATA:
+                log.warning(
+                    "CVD signal rejected: cvd_divergence_age missing from smc_data "
+                    "(set _CVD_REQUIRE_METADATA=False to allow through during migration)"
+                )
+                return None
+        elif cvd_div_age > _CVD_MAX_AGE_CANDLES:
             return None
 
         # CVD divergence magnitude guard: weak divergences are noise.
-        # NOTE: Activates automatically once SMCDetector populates this field.
+        # Fail-closed when _CVD_REQUIRE_METADATA is True and the field is missing.
         cvd_div_strength = smc_data.get("cvd_divergence_strength")
-        if cvd_div_strength is not None and cvd_div_strength < _CVD_MIN_STRENGTH:
+        if cvd_div_strength is None:
+            if _CVD_REQUIRE_METADATA:
+                log.warning(
+                    "CVD signal rejected: cvd_divergence_strength missing from smc_data "
+                    "(set _CVD_REQUIRE_METADATA=False to allow through during migration)"
+                )
+                return None
+        elif cvd_div_strength < _CVD_MIN_STRENGTH:
             return None
 
         closes = list(m5.get("close", []))

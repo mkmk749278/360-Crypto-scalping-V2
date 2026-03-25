@@ -19,6 +19,7 @@ from config import CHANNEL_SCALP_OBI
 from src.channels.base import BaseChannel, Signal, build_channel_signal
 from src.filters import check_rsi
 from src.smc import Direction
+from src.spoof_detect import check_spoof_gate
 from src.utils import get_logger
 
 log = get_logger("scalp_obi")
@@ -38,6 +39,14 @@ _OBI_MAX_STALENESS_SEC: float = 2.0
 # Flag to emit a one-time warning when the order book lacks a timestamp.
 # Using a list so it can be mutated from within functions without `global`.
 _obi_ts_warning_state: list = [False]  # [warned]
+
+# When True, signals are rejected (fail-closed) when the order book lacks a
+# timestamp.  Set to False only for backward-compatibility testing.
+_OBI_REQUIRE_TIMESTAMP: bool = True
+
+# Minimum total USD depth across top-10 bid+ask levels.
+# Books thinner than this threshold produce unreliable OBI readings.
+_MIN_OB_DEPTH_USD: float = 100_000.0
 
 
 def _compute_obi(bids: List, asks: List) -> Optional[float]:
@@ -101,14 +110,17 @@ class ScalpOBIChannel(BaseChannel):
             except (TypeError, ValueError, OSError):
                 pass  # Unrecognised timestamp format — fail open
         else:
-            # No timestamp: emit a one-time warning and continue (fail-open).
-            # The scanner should be updated to include 'fetched_at' in order_book data.
+            # No timestamp: emit a one-time warning.
+            # When _OBI_REQUIRE_TIMESTAMP is True (default), reject the signal
+            # (fail-closed) so stale order book data cannot drive a scalp entry.
             if not _obi_ts_warning_state[0]:
                 log.warning(
                     "OBI order book data missing timestamp; staleness guard inactive. "
                     "Scanner should include 'fetched_at' in order_book data."
                 )
                 _obi_ts_warning_state[0] = True
+            if _OBI_REQUIRE_TIMESTAMP:
+                return None
 
         bids: List = order_book.get("bids", [])
         asks: List = order_book.get("asks", [])
@@ -159,6 +171,19 @@ class ScalpOBIChannel(BaseChannel):
         if direction is None:
             return None
 
+        # Minimum order book depth guard: thin books produce unreliable OBI.
+        bid_usd = sum(float(b[0]) * float(b[1]) for b in bids[:10])
+        ask_usd = sum(float(a[0]) * float(a[1]) for a in asks[:10])
+        if bid_usd + ask_usd < _MIN_OB_DEPTH_USD:
+            return None  # Order book too thin for reliable OBI
+
+        # Spoofing / layering gate: reject if the order book shows manipulation
+        # patterns on the side opposing our trade direction.
+        allowed, spoof_reason = check_spoof_gate(direction.value, order_book, close)
+        if not allowed:
+            log.debug("OBI signal rejected by spoof gate: %s", spoof_reason)
+            return None
+
         # RSI extreme gate: don't chase overbought LONGs or fade oversold SHORTs
         if not check_rsi(ind.get("rsi_last"), overbought=75, oversold=25, direction=direction.value):
             return None
@@ -182,7 +207,7 @@ class ScalpOBIChannel(BaseChannel):
         if direction == Direction.SHORT and sl <= close:
             return None
 
-        return build_channel_signal(
+        sig = build_channel_signal(
             config=self.config,
             symbol=symbol,
             direction=direction,
@@ -196,3 +221,6 @@ class ScalpOBIChannel(BaseChannel):
             atr_val=atr_for_sl,
             setup_class="OBI_ABSORPTION",
         )
+        if sig is not None:
+            sig.analyst_reason = f"OBI={obi:.3f} (threshold ±{_OBI_LONG_THRESHOLD})"
+        return sig

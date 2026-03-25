@@ -20,8 +20,10 @@ from src.regime import MarketRegime
 from src.smc import Direction
 from src.vwap import compute_vwap
 
-# Minimum volume ratio (current / average) required to confirm the bounce
-_MIN_VOLUME_RATIO: float = 1.3
+# Minimum volume ratio (current / average) required to confirm the bounce.
+# Set to 1.5× for institutional-grade bounce confirmation — lower ratios often
+# produce weak mean-reversion setups that fail to reach VWAP center.
+_MIN_VOLUME_RATIO: float = 1.5
 
 # Regimes where VWAP bounce scalps are valid (mean-reversion only)
 _VALID_REGIMES = frozenset({MarketRegime.RANGING, MarketRegime.QUIET})
