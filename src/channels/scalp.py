@@ -81,8 +81,17 @@ class ScalpChannel(BaseChannel):
             return None
         sweep = sweeps[0]
 
+        close = float(m5["close"][-1])
+        atr_val = ind.get("atr_last", close * 0.001)
+
         mom = ind.get("momentum_last")
-        if mom is None or abs(mom) < 0.15:
+        if mom is None:
+            return None
+        # ATR-adaptive momentum threshold: scales with each pair's volatility
+        # BTC (ATR ~0.3%) → threshold ~0.15%, DOGE (ATR ~0.8%) → threshold ~0.30%
+        atr_pct = (atr_val / close) * 100.0 if close > 0 else 0.15
+        momentum_threshold = max(0.10, min(0.30, atr_pct * 0.5))
+        if abs(mom) < momentum_threshold:
             return None
 
         direction = sweep.direction
@@ -103,9 +112,6 @@ class ScalpChannel(BaseChannel):
 
         if not check_ema_alignment(ema_fast, ema_slow, direction.value):
             return None
-
-        close = float(m5["close"][-1])
-        atr_val = ind.get("atr_last", close * 0.001)
 
         sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val * 0.5)
         sl, tp1, tp2, tp3 = self._calc_levels(close, sl_dist, direction)
@@ -139,9 +145,11 @@ class ScalpChannel(BaseChannel):
 
         ind = indicators.get("5m", {})
 
-        # Range fade uses ADX in low-range territory (ADX < 25)
+        # Range fade uses ADX in low-range territory (ADX < 22)
+        # Clean separation from standard path (ADX >= 20): the 20-22 dead zone
+        # reduces the overlap band significantly.
         adx_val = ind.get("adx_last")
-        if adx_val is not None and adx_val > 25:
+        if adx_val is not None and adx_val > 22:
             return None
 
         if not check_spread(spread_pct, self.config.spread_max):
@@ -153,6 +161,14 @@ class ScalpChannel(BaseChannel):
         bb_lower = ind.get("bb_lower_last")
         if bb_upper is None or bb_lower is None:
             return None
+
+        # BB squeeze guard: if BB is expanding rapidly, don't mean-revert
+        # (squeeze breaking out invalidates mean-reversion setups)
+        bb_width_pct = ind.get("bb_width_pct")
+        bb_width_prev_pct = ind.get("bb_width_prev_pct")
+        if bb_width_pct is not None and bb_width_prev_pct is not None:
+            if bb_width_pct > bb_width_prev_pct * 1.1:  # BB expanding > 10%
+                return None
 
         close = float(m5["close"][-1])
         rsi_val = ind.get("rsi_last")

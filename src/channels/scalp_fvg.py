@@ -23,7 +23,7 @@ from src.utils import utcnow
 # Maximum distance from FVG zone boundary (as fraction of zone width) to be
 # considered "retesting" the zone.  0.5 means price must be within 50% of the
 # zone width from the zone boundary.
-_FVG_RETEST_PROXIMITY: float = 0.5
+_FVG_RETEST_PROXIMITY: float = 0.35  # was 0.5; tighter = higher-probability retests
 
 
 class ScalpFVGChannel(BaseChannel):
@@ -108,6 +108,21 @@ class ScalpFVGChannel(BaseChannel):
 
         if direction is None or retest_zone is None:
             return None
+
+        # FVG partial fill check: reject zones that are >60% filled
+        # A heavily-filled FVG has much weaker expected bounce
+        gap_high_z = float(retest_zone.gap_high)
+        gap_low_z = float(retest_zone.gap_low)
+        zone_width_z = gap_high_z - gap_low_z
+        if zone_width_z > 0:
+            if retest_zone.direction == Direction.LONG:
+                # For bullish FVG: how much of the gap has price already filled from above?
+                fill_pct = max(0.0, (gap_high_z - close) / zone_width_z)
+            else:
+                # For bearish FVG: how much has price filled from below?
+                fill_pct = max(0.0, (close - gap_low_z) / zone_width_z)
+            if fill_pct > 0.6:
+                return None  # Zone >60% filled, weak bounce expected
 
         # RSI extreme gate: don't chase overbought LONGs or fade oversold SHORTs
         rsi_last = ind.get("rsi_last")

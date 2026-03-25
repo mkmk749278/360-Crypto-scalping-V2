@@ -380,16 +380,20 @@ def score_order_flow(
         else:
             s -= 3.0
 
-    # Funding rate alignment bonus (0–5): contrarian edge when crowd is wrong
+    # Funding rate alignment: contrarian bonus or crowded-trade penalty
     if funding_rate is not None and signal_direction is not None:
         if abs(funding_rate) >= _EXTREME_FUNDING_RATE:
-            contrarian = (
-                (signal_direction == "LONG" and funding_rate < -_EXTREME_FUNDING_RATE)
-                or (signal_direction == "SHORT" and funding_rate > _EXTREME_FUNDING_RATE)
-            )
+            funding_positive = funding_rate > 0
+            is_long = signal_direction == "LONG"
+            contrarian = (funding_positive and not is_long) or (not funding_positive and is_long)
+            crowded = (funding_positive and is_long) or (not funding_positive and not is_long)
             if contrarian:
+                # Extreme funding in opposite direction = strong contrarian edge
                 funding_bonus = min(abs(funding_rate) / 0.03, 1.0) * 5.0
                 s += funding_bonus
+            elif crowded:
+                # Crowd is piling in the same direction = elevated risk
+                s -= 3.0
 
     return min(max(s, 0.0), 20.0)
 

@@ -23,7 +23,7 @@ from src.utils import utcnow
 
 # Price must be within this percentage of recent 20-bar high/low to be
 # considered "at support/resistance".
-_SR_PROXIMITY_PCT: float = 0.5  # 0.5%
+_SR_PROXIMITY_PCT: float = 0.8  # was 0.5; 0.5% is too tight for many valid setups
 
 
 class ScalpCVDChannel(BaseChannel):
@@ -51,6 +51,12 @@ class ScalpCVDChannel(BaseChannel):
             return None
 
         ind = indicators.get("5m", {})
+
+        # ADX gate: CVD divergence is unreliable in strong trends (ADX > 35)
+        # divergence can persist for 20+ candles without reverting
+        adx_val = ind.get("adx_last")
+        if adx_val is not None and adx_val > 35:
+            return None
 
         # Use CVD divergence from smc_data (already detected by SMCDetector)
         cvd_div = smc_data.get("cvd_divergence")

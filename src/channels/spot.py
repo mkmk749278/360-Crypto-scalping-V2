@@ -136,6 +136,14 @@ class SpotChannel(BaseChannel):
         if rsi_last is not None and rsi_last > 75:
             return None
 
+        # Detect retest pattern: breakout → pullback → reclaim
+        # Previous candle was below resistance, candle before that was above = pullback then reclaim
+        is_retest = (
+            len(closes_list) >= 3
+            and float(closes_list[-2]) < recent_high
+            and float(closes_list[-3]) >= recent_high * 0.998
+        )
+
         sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val * 1.5)
         sl = close - sl_dist
         tp1 = close + sl_dist * self.config.tp_ratios[0]
@@ -145,7 +153,7 @@ class SpotChannel(BaseChannel):
         if sl >= close:
             return None
 
-        return self._build_signal(
+        sig = self._build_signal(
             symbol=symbol,
             direction=Direction.LONG,
             close=close,
@@ -155,6 +163,9 @@ class SpotChannel(BaseChannel):
             tp3=tp3,
             sl_dist=sl_dist,
         )
+        if sig is not None:
+            sig.setup_class = "BREAKOUT_RETEST" if is_retest else "BREAKOUT_INITIAL"
+        return sig
 
     # ------------------------------------------------------------------
     # SHORT signal builder
@@ -210,6 +221,14 @@ class SpotChannel(BaseChannel):
         if rsi_last is not None and rsi_last < 25:
             return None
 
+        # Detect retest pattern for SHORT: breakdown → bounce → reclaim below support
+        # Previous candle was above support (pullback/bounce), candle before was below = retest
+        is_retest = (
+            len(closes_list) >= 3
+            and float(closes_list[-2]) > recent_low
+            and float(closes_list[-3]) <= recent_low * 1.002
+        )
+
         sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val * 1.5)
         sl = close + sl_dist          # SL above entry for SHORT
         tp1 = close - sl_dist * self.config.tp_ratios[0]
@@ -219,7 +238,7 @@ class SpotChannel(BaseChannel):
         if sl <= close or tp1 >= close:
             return None
 
-        return self._build_signal(
+        sig = self._build_signal(
             symbol=symbol,
             direction=Direction.SHORT,
             close=close,
@@ -230,6 +249,9 @@ class SpotChannel(BaseChannel):
             sl_dist=sl_dist,
             confidence_boost=_SHORT_CONFIDENCE_BOOST,
         )
+        if sig is not None:
+            sig.setup_class = "BREAKOUT_RETEST" if is_retest else "BREAKOUT_INITIAL"
+        return sig
 
     # ------------------------------------------------------------------
     # Shared signal factory

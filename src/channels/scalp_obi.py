@@ -30,20 +30,18 @@ _SR_PROXIMITY_PCT: float = 0.5  # 0.5%
 
 
 def _compute_obi(bids: List, asks: List) -> Optional[float]:
-    """Compute Order Book Imbalance = (bid_qty - ask_qty) / (bid_qty + ask_qty).
+    """Compute depth-weighted Order Book Imbalance.
 
-    Parameters
-    ----------
-    bids, asks:
-        List of [price, qty] pairs (top-N levels).
+    Uses exponential depth weighting: level 1 = weight 1.0, deeper levels
+    decay toward 0.  This reflects the reality that near-touch imbalance
+    is far more predictive than deep-book imbalance.
 
-    Returns
-    -------
-    OBI float in range [-1, 1], or None when data is insufficient.
+    Returns OBI float in range [-1, 1], or None when data is insufficient.
     """
     try:
-        bid_qty = sum(float(b[1]) for b in bids[:10])
-        ask_qty = sum(float(a[1]) for a in asks[:10])
+        weights = [1.0 / (1.0 + 0.25 * i) for i in range(10)]
+        bid_qty = sum(float(b[1]) * w for b, w in zip(bids[:10], weights))
+        ask_qty = sum(float(a[1]) * w for a, w in zip(asks[:10], weights))
         total = bid_qty + ask_qty
         if total <= 0:
             return None

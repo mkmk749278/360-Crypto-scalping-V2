@@ -88,7 +88,7 @@ class TestScalpChannel:
         assert sig.setup_class == "RANGE_FADE"
 
     def test_range_fade_no_signal_when_adx_high(self):
-        """RANGE_FADE path: ADX > 25 means trending → no range fade signal."""
+        """RANGE_FADE path: ADX > 22 means trending → no range fade signal."""
         ch = ScalpChannel()
         candles_data = _make_candles(60, base=100)
         candles_data["close"][-1] = 97.0

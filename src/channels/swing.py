@@ -88,6 +88,21 @@ class SwingChannel(BaseChannel):
             if close_h1 < bb_upper * 0.98:
                 return None  # Too far from upper band — no BB rejection setup
 
+        # Daily S/R confluence check (soft boost, not a hard reject)
+        d1 = candles.get("1d")
+        daily_confluence = False
+        if d1 is not None and len(d1.get("close", [])) >= 20:
+            d1_highs = [float(h) for h in list(d1.get("high", d1["close"]))[-20:]]
+            d1_lows = [float(low_val) for low_val in list(d1.get("low", d1["close"]))[-20:]]
+            if direction == Direction.LONG:
+                nearest_daily_support = min(d1_lows[-10:])
+                if close_h1 <= nearest_daily_support * 1.03:  # within 3% of daily support
+                    daily_confluence = True
+            elif direction == Direction.SHORT:
+                nearest_daily_resistance = max(d1_highs[-10:])
+                if close_h1 >= nearest_daily_resistance * 0.97:  # within 3% of daily resistance
+                    daily_confluence = True
+
         close = close_h1
         atr_val = ind_h1.get("atr_last", close * 0.003)
 
@@ -134,5 +149,12 @@ class SwingChannel(BaseChannel):
         sig.original_tp1 = round(tp1, 8)
         sig.original_tp2 = round(tp2, 8)
         sig.original_tp3 = round(tp3, 8)
+
+        # Mark signal quality tier based on daily confluence
+        if daily_confluence:
+            sig.setup_class = "SWING_D1_CONFLUENCE"
+            sig.quality_tier = "A+"
+        else:
+            sig.setup_class = "SWING_STANDARD"
 
         return sig
