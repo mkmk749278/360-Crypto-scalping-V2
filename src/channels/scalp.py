@@ -21,6 +21,7 @@ from src.filters import (
     check_rsi_regime,
     check_ema_alignment_adaptive,
 )
+from src.mtf import mtf_gate_scalp_standard, mtf_gate_scalp_range_fade
 from src.smc import Direction
 
 # WHALE_MOMENTUM thresholds (absorbed from former TapeChannel)
@@ -189,6 +190,12 @@ class ScalpChannel(BaseChannel):
         if not macd_ok:
             return None  # Hard reject in strict mode
 
+        # MTF gate — 1h EMA/RSI must support the 5m signal direction (PR_06)
+        indicators_1h = indicators.get("1h", {})
+        mtf_ok, mtf_reason, mtf_adj = mtf_gate_scalp_standard(indicators_1h, direction.value, regime)
+        if not mtf_ok:
+            return None
+
         sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val * 0.5)
         sl, tp1, tp2, tp3 = self._calc_levels(close, sl_dist, direction)
 
@@ -222,6 +229,11 @@ class ScalpChannel(BaseChannel):
                 sig.soft_gate_flags += ",MACD_WEAK"
             else:
                 sig.soft_gate_flags = "MACD_WEAK"
+
+        # Apply MTF soft penalty if applicable
+        if mtf_adj != 0.0:
+            sig.confidence += mtf_adj
+            sig.soft_gate_flags = (sig.soft_gate_flags + f",MTF:{mtf_reason}").lstrip(",")
 
         return sig
 
@@ -311,6 +323,12 @@ class ScalpChannel(BaseChannel):
             ind_macd_last, ind_macd_prev, direction.value, regime=regime, strict=True
         )
         if not macd_ok:
+            return None
+
+        # MTF gate — 15m RSI must confirm mean-reversion direction (PR_06)
+        indicators_15m = indicators.get("15m", {})
+        mtf_ok, mtf_reason, _ = mtf_gate_scalp_range_fade(indicators_15m, direction.value)
+        if not mtf_ok:
             return None
 
         sig = build_channel_signal(

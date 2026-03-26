@@ -12,6 +12,7 @@ from typing import Dict, Optional
 from config import CHANNEL_SWING
 from src.channels.base import BaseChannel, Signal, build_channel_signal
 from src.filters import check_adx_regime, check_macd_confirmation, check_rsi_regime, check_spread_adaptive, check_volume
+from src.mtf import mtf_gate_swing
 from src.smc import Direction
 
 # Percentile position within the Bollinger Band range for rejection gate.
@@ -194,6 +195,13 @@ class SwingChannel(BaseChannel):
         )
         if sig is None:
             return None
+
+        # MTF gate — 4h EMA + ADX must support the 1h signal direction (PR_06)
+        mtf_ok, mtf_reason, mtf_adj = mtf_gate_swing(ind_h4, direction.value)
+        if not mtf_ok:
+            return None
+        if mtf_adj != 0.0:
+            sig.confidence += mtf_adj
 
         # Apply MACD soft penalty if applicable
         if macd_adj != 0.0:

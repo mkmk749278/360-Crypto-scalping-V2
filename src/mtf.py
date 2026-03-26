@@ -211,6 +211,142 @@ def compute_mtf_confluence(
     )
 
 
+# ---------------------------------------------------------------------------
+# Channel-specific gate functions (PR_06)
+# ---------------------------------------------------------------------------
+
+
+def check_mtf_ema_alignment(
+    higher_tf_indicators: dict,
+    direction: str,
+    strict: bool = True,
+) -> tuple[bool, str, float]:
+    """Check that EMA alignment on a higher timeframe supports the trade direction.
+
+    Parameters
+    ----------
+    higher_tf_indicators:
+        Indicator dict for the confirmation timeframe (e.g. 1h for a 5m scalp).
+    direction:
+        "LONG" or "SHORT".
+    strict:
+        When True, return (False, ...) on failure; else apply -10 pts penalty.
+    """
+    ema_fast = higher_tf_indicators.get("ema9_last")
+    ema_slow = higher_tf_indicators.get("ema21_last")
+    ema200 = higher_tf_indicators.get("ema200_last")
+
+    if ema_fast is None or ema_slow is None:
+        return True, "mtf_ema_no_data", 0.0   # Fail open on missing data
+
+    aligned = (ema_fast > ema_slow) if direction == "LONG" else (ema_fast < ema_slow)
+
+    # If EMA200 available, add extra confirmation weight
+    if ema200 is not None:
+        price_above_ema200 = ema_fast > ema200
+        if direction == "LONG" and not price_above_ema200:
+            aligned = False
+        if direction == "SHORT" and price_above_ema200:
+            aligned = False
+
+    if aligned:
+        return True, "mtf_ema_aligned", 0.0
+    if strict:
+        return False, "mtf_ema_opposed", 0.0
+    return True, "mtf_ema_soft_fail", -10.0
+
+
+def check_mtf_rsi(
+    higher_tf_indicators: dict,
+    direction: str,
+    overbought: float = 70.0,
+    oversold: float = 30.0,
+) -> tuple[bool, str, float]:
+    """Check RSI on higher timeframe is not in an extreme zone opposing the signal."""
+    rsi_val = higher_tf_indicators.get("rsi_last")
+    if rsi_val is None:
+        return True, "mtf_rsi_no_data", 0.0
+    if direction == "LONG" and rsi_val >= overbought:
+        return False, f"mtf_rsi_overbought_{rsi_val:.1f}", 0.0
+    if direction == "SHORT" and rsi_val <= oversold:
+        return False, f"mtf_rsi_oversold_{rsi_val:.1f}", 0.0
+    return True, "mtf_rsi_ok", 0.0
+
+
+def check_mtf_adx(
+    higher_tf_indicators: dict,
+    min_adx: float = 20.0,
+    max_adx: float = 65.0,
+) -> tuple[bool, str, float]:
+    """Check ADX on higher timeframe is within [min_adx, max_adx]."""
+    adx_val = higher_tf_indicators.get("adx_last")
+    if adx_val is None:
+        return True, "mtf_adx_no_data", 0.0
+    if adx_val < min_adx:
+        return False, f"mtf_adx_weak_{adx_val:.1f}", 0.0
+    if adx_val > max_adx:
+        return False, f"mtf_adx_extreme_{adx_val:.1f}", 0.0
+    return True, "mtf_adx_ok", 0.0
+
+
+def mtf_gate_scalp_standard(
+    indicators_1h: dict,
+    direction: str,
+    regime: str = "",
+) -> tuple[bool, str, float]:
+    """MTF gate for the SCALP standard path (5m signal → 1h confirmation).
+
+    Strict in TRENDING/VOLATILE; soft penalty in RANGING/QUIET.
+    Passes if EMA alignment OR RSI non-extreme on 1h.
+    """
+    strict = regime.upper() in ("TRENDING_UP", "TRENDING_DOWN", "VOLATILE")
+    ema_ok, ema_reason, ema_adj = check_mtf_ema_alignment(indicators_1h, direction, strict=False)
+    rsi_ok, rsi_reason, _ = check_mtf_rsi(indicators_1h, direction)
+
+    # ema_adj < 0 indicates genuine misalignment (soft-fail path in check_mtf_ema_alignment);
+    # ema_adj == 0 means either aligned or no-data (both treated as "ok" for this gate).
+    ema_actually_ok = ema_adj == 0.0
+
+    if ema_actually_ok and rsi_ok:
+        return True, f"{ema_reason}+{rsi_reason}", 0.0
+    if not ema_actually_ok and not rsi_ok:
+        if strict:
+            return False, f"{ema_reason}+{rsi_reason}", 0.0
+        return True, "mtf_both_soft_fail", -10.0
+    # One passes — partial confirmation
+    return True, f"mtf_partial_{ema_reason}_{rsi_reason}", -5.0
+
+
+def mtf_gate_scalp_range_fade(
+    indicators_15m: dict,
+    direction: str,
+) -> tuple[bool, str, float]:
+    """MTF gate for RANGE_FADE path (5m signal → 15m RSI confirmation)."""
+    rsi_val = indicators_15m.get("rsi_last")
+    if rsi_val is None:
+        return True, "mtf_15m_rsi_no_data", 0.0
+    if direction == "LONG" and rsi_val > 45.0:
+        return False, f"mtf_15m_rsi_not_oversold_{rsi_val:.1f}", 0.0
+    if direction == "SHORT" and rsi_val < 55.0:
+        return False, f"mtf_15m_rsi_not_overbought_{rsi_val:.1f}", 0.0
+    return True, "mtf_15m_rsi_ok", 0.0
+
+
+def mtf_gate_swing(
+    indicators_4h: dict,
+    direction: str,
+) -> tuple[bool, str, float]:
+    """MTF gate for SWING (1h signal → 4h EMA + ADX confirmation)."""
+    ema_ok, ema_reason, ema_adj = check_mtf_ema_alignment(indicators_4h, direction, strict=True)
+    adx_ok, adx_reason, _ = check_mtf_adx(indicators_4h, min_adx=18.0, max_adx=70.0)
+    if ema_ok and adx_ok:
+        return True, f"{ema_reason}+{adx_reason}", 0.0
+    if not ema_ok:
+        return False, ema_reason, 0.0
+    # EMA ok but ADX fails — soft penalty
+    return True, adx_reason, -5.0
+
+
 def check_mtf_gate(
     signal_direction: str,
     timeframes: Dict[str, Dict[str, float]],

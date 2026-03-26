@@ -177,7 +177,7 @@ class TestSwingChannel:
             midpoint=2322.5, confirm_close=2330,
         )
         indicators = {
-            "4h": _make_indicators(adx_val=25, ema200=2200),
+            "4h": _make_indicators(adx_val=25, ema9=2320, ema21=2290, ema200=2200),
             "1h": _make_indicators(adx_val=25, ema200=2200, bb_lower=2290),
         }
         smc_data = {"sweeps": [sweep], "mss": mss}
