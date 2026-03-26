@@ -258,6 +258,9 @@ def check_ema_alignment_regime(
 ) -> bool:
     """Regime-aware EMA alignment check.
 
+    # DEPRECATED: Use check_ema_alignment_adaptive() for ATR-normalised, pair-tier-aware
+    # EMA alignment checks. This function is retained for backward compatibility.
+
     In RANGING and QUIET regimes, EMA alignment is relaxed (always passes)
     because mean-reversion setups don't require trend alignment.
     In VOLATILE regime, requires moderate alignment (gap > 0.05% of slow EMA).
@@ -283,3 +286,70 @@ def check_ema_alignment_regime(
 
     # STRICT: standard binary check
     return check_ema_alignment(ema_fast, ema_slow, direction)
+
+
+def check_ema_alignment_adaptive(
+    ema_fast: float | None,
+    ema_slow: float | None,
+    direction: str,
+    atr_val: float = 0.0,
+    close: float = 0.0,
+    regime: str = "",
+    pair_tier: str = "MIDCAP",
+) -> bool:
+    """Return True when EMAs are meaningfully aligned with direction.
+
+    Uses an ATR-normalised buffer zone to prevent signals near EMA crossover
+    points where fast ≈ slow. The buffer adapts to pair volatility and regime.
+
+    Parameters
+    ----------
+    ema_fast, ema_slow:
+        Current fast and slow EMA values.
+    direction:
+        ``"LONG"`` or ``"SHORT"``.
+    atr_val:
+        Current ATR value (absolute, not percentage).
+    close:
+        Current close price.
+    regime:
+        Market regime string.
+    pair_tier:
+        Pair classification tier: ``"MAJOR"``, ``"MIDCAP"``, or ``"ALTCOIN"``.
+    """
+    if ema_fast is None or ema_slow is None:
+        # In RELAXED regimes (RANGING, QUIET), missing EMAs are acceptable
+        regime_upper = regime.upper() if regime else ""
+        if regime_upper in ("RANGING", "QUIET"):
+            return True
+        return False
+
+    if ema_slow == 0:
+        return False
+
+    # In RANGING/QUIET regimes, EMA alignment is not required (mean-reversion)
+    regime_upper = regime.upper() if regime else ""
+    if regime_upper in ("RANGING", "QUIET"):
+        return True
+
+    atr_pct = (atr_val / close * 100.0) if close > 0 and atr_val > 0 else 0.3
+
+    # Tier-specific minimum buffer floors
+    min_buffer = {"MAJOR": 0.10, "MIDCAP": 0.20, "ALTCOIN": 0.30}.get(pair_tier, 0.20)
+
+    # Regime multipliers for the buffer
+    regime_mult = {
+        "TRENDING_UP": 0.8, "TRENDING_DOWN": 0.8,  # tighter buffer — trend is clear
+        "RANGING": 1.2, "QUIET": 1.2,               # wider buffer — avoid whipsaw
+        "VOLATILE": 1.5,                             # widest buffer — EMA crossovers are noisy
+    }.get(regime_upper, 1.0)
+
+    buffer_pct = max(min_buffer, atr_pct * regime_mult * 0.5)
+    buffer_abs = close * buffer_pct / 100.0 if close > 0 else atr_val * 0.5
+
+    ema_diff = ema_fast - ema_slow
+    if direction == "LONG":
+        return ema_diff >= buffer_abs   # fast must be meaningfully above slow
+    if direction == "SHORT":
+        return ema_diff <= -buffer_abs  # fast must be meaningfully below slow
+    return False

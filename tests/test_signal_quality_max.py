@@ -129,7 +129,8 @@ class TestATRAdaptiveMomentumThreshold:
         ch = ScalpChannel()
         candles = {"5m": _make_candles(60)}
         # ATR=5.0 on close=100 → atr_pct=5% → 0.5*5=2.5, clamped to 0.30
-        ind = _make_indicators(adx_val=30, atr_val=5.0, mom=0.31, ema9=101, ema21=100)
+        # EMA gap must exceed adaptive buffer (atr_pct=5% → buffer_abs≈2.5) so ema9=104
+        ind = _make_indicators(adx_val=30, atr_val=5.0, mom=0.31, ema9=104, ema21=100)
         sig = ch._evaluate_standard("BTCUSDT", candles, {"5m": ind}, self._sweep_smc(), 0.01, 10_000_000)
         # threshold=0.30, mom=0.31 → should pass
         assert sig is not None

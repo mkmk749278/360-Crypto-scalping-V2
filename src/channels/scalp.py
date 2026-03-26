@@ -18,7 +18,7 @@ from src.channels.base import BaseChannel, Signal, build_channel_signal
 from src.filters import (
     check_adx,
     check_rsi_regime,
-    check_ema_alignment_regime,
+    check_ema_alignment_adaptive,
 )
 from src.smc import Direction
 
@@ -170,7 +170,12 @@ class ScalpChannel(BaseChannel):
         if direction == Direction.SHORT and mom > 0:
             return None
 
-        if not check_ema_alignment_regime(ema_fast, ema_slow, direction.value, regime=regime):
+        pair_tier = profile.tier if profile else "MIDCAP"
+        if not check_ema_alignment_adaptive(
+            ema_fast, ema_slow, direction.value,
+            atr_val=atr_val, close=close,
+            regime=regime, pair_tier=pair_tier,
+        ):
             return None
 
         sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val * 0.5)

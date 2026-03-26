@@ -19,8 +19,8 @@ from src.smc import Direction
 # For SHORT: price must be in the top BB_REJECTION_THRESHOLD fraction (near upper band).
 _BB_REJECTION_THRESHOLD: float = 0.15
 
-# EMA200 buffer zone: signals within ±0.5% of EMA200 are ambiguous (price is
-# too close to the long-term trend boundary to determine bias cleanly).
+# EMA200 buffer zone fallback (used only when ATR data is unavailable).
+# The evaluate() method computes a dynamic buffer scaled by ATR and regime.
 _EMA200_BUFFER_PCT: float = 0.5
 
 # Minimum MSS candle body size (as % of close) to avoid noise signals.
@@ -91,11 +91,30 @@ class SwingChannel(BaseChannel):
         if not check_rsi_regime(ind_h1.get("rsi_last"), direction=direction.value, regime=regime):
             return None
 
-        # Validate EMA200 bias — with a buffer zone to suppress ambiguous signals.
-        # Signals within ±_EMA200_BUFFER_PCT of EMA200 are rejected because price
-        # is too close to the long-term trend boundary to determine bias cleanly.
+        # Validate EMA200 bias — with a dynamic buffer zone scaled by ATR and regime.
+        # Signals within the buffer are rejected because price is too close to the
+        # long-term trend boundary to determine bias cleanly.
+        atr_val = ind_h1.get("atr_last", close_h1 * 0.003)
+        atr_pct = (atr_val / close_h1 * 100.0) if close_h1 > 0 and atr_val > 0 else 0.3
+        profile = smc_data.get("pair_profile")
+        pair_tier = profile.tier if profile else "MIDCAP"
+        # EMA200 floor buffers are wider than fast/slow EMA alignment buffers
+        # (filters.py uses 0.1/0.2/0.3%) because EMA200 is a long-term trend
+        # boundary — signals near it carry greater directional ambiguity.
+        tier_floors = {"MAJOR": 0.3, "MIDCAP": 0.5, "ALTCOIN": 0.7}
+        regime_mults = {
+            "TRENDING_UP": 0.8, "TRENDING_DOWN": 0.8,
+            "RANGING": 1.2, "QUIET": 1.2,
+            "VOLATILE": 1.5,
+        }
+        regime_mult = regime_mults.get(regime.upper() if regime else "", 1.0)
+        # EMA200 uses a 0.4 scaling factor (vs 0.5 in check_ema_alignment_adaptive)
+        # because EMA200 distance is a longer-term filter that should be less
+        # sensitive to short-term ATR spikes.
+        ema200_buffer_pct = max(tier_floors.get(pair_tier, 0.5), atr_pct * regime_mult * 0.4)
+
         ema200_distance_pct = abs(close_h1 - ema200) / ema200 * 100.0
-        if ema200_distance_pct < _EMA200_BUFFER_PCT:
+        if ema200_distance_pct < ema200_buffer_pct:
             return None  # Too close to EMA200 — ambiguous bias
         if direction == Direction.LONG and close_h1 < ema200:
             return None
