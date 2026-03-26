@@ -15,7 +15,11 @@ from typing import Any, Dict, List, Optional
 
 from config import CHANNEL_SCALP
 from src.channels.base import BaseChannel, Signal, build_channel_signal
-from src.filters import check_adx, check_ema_alignment, check_rsi
+from src.filters import (
+    check_adx,
+    check_rsi_regime,
+    check_ema_alignment_regime,
+)
 from src.smc import Direction
 
 # WHALE_MOMENTUM thresholds (absorbed from former TapeChannel)
@@ -116,7 +120,7 @@ class ScalpChannel(BaseChannel):
         direction = sweep.direction
 
         # RSI extreme gate: don't chase overbought LONGs or fade oversold SHORTs
-        if not check_rsi(ind.get("rsi_last"), overbought=75, oversold=25, direction=direction.value):
+        if not check_rsi_regime(ind.get("rsi_last"), direction=direction.value, regime=regime):
             return None
 
         # Momentum must agree with sweep direction
@@ -125,7 +129,7 @@ class ScalpChannel(BaseChannel):
         if direction == Direction.SHORT and mom > 0:
             return None
 
-        if not check_ema_alignment(ema_fast, ema_slow, direction.value):
+        if not check_ema_alignment_regime(ema_fast, ema_slow, direction.value, regime=regime):
             return None
 
         sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val * 0.5)
@@ -173,11 +177,16 @@ class ScalpChannel(BaseChannel):
 
         ind = indicators.get("5m", {})
 
-        # Range fade uses ADX in low-range territory (ADX < 22)
-        # Clean separation from standard path (ADX >= 20): the 20-22 dead zone
-        # reduces the overlap band significantly.
+        # Range fade uses ADX in low-range territory
+        # Ceiling adapts to regime: more permissive when ranging/quiet is confirmed,
+        # stricter when trending (range-fade in trends is higher risk).
         adx_val = ind.get("adx_last")
-        if adx_val is not None and adx_val > 22:
+        adx_ceiling = 22.0  # default
+        if regime in ("RANGING", "QUIET"):
+            adx_ceiling = 25.0  # More permissive in confirmed ranging regime
+        elif regime in ("TRENDING_UP", "TRENDING_DOWN"):
+            adx_ceiling = 18.0  # Stricter — shouldn't be doing range-fade in trends
+        if adx_val is not None and adx_val > adx_ceiling:
             return None
 
         if not self._pass_basic_filters(spread_pct, volume_24h_usd):
@@ -210,10 +219,14 @@ class ScalpChannel(BaseChannel):
         # For mean-reversion LONGs we want oversold RSI; for SHORTs, overbought.
         # Reject setups where RSI has already recovered past the mean-reversion
         # entry window (i.e. the edge has been lost).
+        # Thresholds adapt to regime: QUIET regime uses wider window (60/40)
+        # since RSI ranges are tighter and moves are more significant.
         if rsi_val is not None:
-            if direction == Direction.LONG and rsi_val > 55:
+            rsi_long_max = 60.0 if regime == "QUIET" else 55.0
+            rsi_short_min = 40.0 if regime == "QUIET" else 45.0
+            if direction == Direction.LONG and rsi_val > rsi_long_max:
                 return None  # Not oversold enough for mean-reversion LONG
-            if direction == Direction.SHORT and rsi_val < 45:
+            if direction == Direction.SHORT and rsi_val < rsi_short_min:
                 return None  # Not overbought enough for mean-reversion SHORT
 
         atr_val = ind.get("atr_last", close * 0.002)
@@ -288,7 +301,7 @@ class ScalpChannel(BaseChannel):
             return None
 
         # RSI extreme gate: don't chase overbought LONGs or fade oversold SHORTs
-        if not check_rsi(indicators.get("1m", {}).get("rsi_last"), overbought=75, oversold=25, direction=direction.value):
+        if not check_rsi_regime(indicators.get("1m", {}).get("rsi_last"), direction=direction.value, regime=regime):
             return None
 
         # Order book imbalance check

@@ -11,7 +11,7 @@ from typing import Dict, Optional
 
 from config import CHANNEL_SWING
 from src.channels.base import BaseChannel, Signal, build_channel_signal
-from src.filters import check_adx, check_rsi
+from src.filters import check_adx, check_rsi_regime
 from src.smc import Direction
 
 # Percentile position within the Bollinger Band range for rejection gate.
@@ -86,7 +86,7 @@ class SwingChannel(BaseChannel):
                 return None  # Sweep candle body too small — likely indecision, not a genuine MSS
 
         # RSI extreme gate: don't chase overbought LONGs or fade oversold SHORTs
-        if not check_rsi(ind_h1.get("rsi_last"), overbought=75, oversold=25, direction=direction.value):
+        if not check_rsi_regime(ind_h1.get("rsi_last"), direction=direction.value, regime=regime):
             return None
 
         # Validate EMA200 bias — with a buffer zone to suppress ambiguous signals.
