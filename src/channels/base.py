@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from config import ChannelConfig
+from config import DYNAMIC_SL_TP_ENABLED, ChannelConfig
 from src.channels.signal_params import lookup_signal_params
 from src.dca import compute_dca_zone
 from src.filters import check_spread, check_volume
@@ -187,6 +187,75 @@ class BaseChannel:
         raise NotImplementedError
 
 
+def compute_dynamic_sl_tp_ratios(
+    base_tp_ratios: list,
+    base_sl_mult: float,
+    atr_percentile: float,
+    regime: str,
+    pair_tier: str = "MIDCAP",
+) -> tuple:
+    """Return (sl_multiplier, tp_ratios) adjusted for volatility, regime, and pair tier.
+
+    Parameters
+    ----------
+    base_tp_ratios:
+        Default TP ratios from channel config (e.g. [0.5, 1.0, 1.5]).
+    base_sl_mult:
+        Default SL multiplier (1.0 = no scaling).
+    atr_percentile:
+        Rolling ATR percentile 0–100 (from RegimeContext).
+    regime:
+        Current market regime string.
+    pair_tier:
+        "MAJOR", "MIDCAP", or "ALTCOIN".
+
+    Returns
+    -------
+    (sl_multiplier, tp_ratios)
+        sl_multiplier: float to multiply the ATR-based SL distance.
+        tp_ratios: list of adjusted TP ratios.
+    """
+    # --- Volatility-percentile SL adjustment ---
+    if atr_percentile >= 80:
+        vol_sl_adj = 1.3    # Widen SL in high-vol environment
+        vol_tp_adj = 1.25   # Wider TP targets too
+    elif atr_percentile <= 20:
+        vol_sl_adj = 0.8    # Tighter SL in low-vol
+        vol_tp_adj = 0.75
+    else:
+        vol_sl_adj = 1.0
+        vol_tp_adj = 1.0
+
+    # --- Regime SL/TP adjustments ---
+    regime_upper = regime.upper() if regime else ""
+    regime_sl = {
+        "TRENDING_UP": 1.0, "TRENDING_DOWN": 1.0,
+        "RANGING": 0.9,      "QUIET": 0.85,
+        "VOLATILE": 1.4,
+    }.get(regime_upper, 1.0)
+
+    # TP scaling: in trending regimes, boost TP3 (the runner target) by 20%
+    regime_tp = [1.0] * len(base_tp_ratios)
+    if regime_upper in ("TRENDING_UP", "TRENDING_DOWN"):
+        if len(regime_tp) >= 3:
+            regime_tp[-1] = 1.2   # Boost only the runner TP
+    elif regime_upper in ("RANGING", "QUIET"):
+        regime_tp = [0.9] * len(base_tp_ratios)  # Compress all TPs
+    elif regime_upper == "VOLATILE":
+        regime_tp = [1.1] * len(base_tp_ratios)
+
+    # --- Pair-tier SL widening ---
+    tier_sl = {"MAJOR": 0.95, "MIDCAP": 1.0, "ALTCOIN": 1.20}.get(pair_tier, 1.0)
+
+    # Combine all adjustments
+    final_sl_mult = base_sl_mult * vol_sl_adj * regime_sl * tier_sl
+    final_tp = [
+        r * vol_tp_adj * regime_tp[i]
+        for i, r in enumerate(base_tp_ratios)
+    ]
+    return final_sl_mult, final_tp
+
+
 def build_channel_signal(
     config: ChannelConfig,
     symbol: str,
@@ -203,6 +272,8 @@ def build_channel_signal(
     setup_class: str = "",
     bb_width_pct: Optional[float] = None,
     regime: str = "",
+    atr_percentile: float = 50.0,
+    pair_tier: str = "MIDCAP",
 ) -> Optional[Signal]:
     """Shared signal construction for all scalp-family channels.
 
@@ -213,17 +284,9 @@ def build_channel_signal(
     Parameters
     ----------
     bb_width_pct:
-        Optional Bollinger Band width as a percentage of mid price.  When
-        provided, TP ratios are stretched (high-vol) or compressed (low-vol)
-        to adapt to the current volatility regime:
-
-        * ``bb_width_pct > _HIGH_VOL_BB_WIDTH`` (>5 %): multiply each TP
-          ratio by ``_VOL_STRETCH_FACTOR`` (1.3×) — wider targets because
-          price moves further in high-vol environments.
-        * ``bb_width_pct < _LOW_VOL_BB_WIDTH`` (<1.5 %): multiply each TP
-          ratio by ``_VOL_COMPRESS_FACTOR`` (0.7×) — closer targets because
-          TP2/TP3 are rarely reached in tight ranges.
-        * Otherwise: use base ratios as-is.
+        Optional Bollinger Band width as a percentage of mid price.  Used only
+        when ``DYNAMIC_SL_TP_ENABLED`` is ``False`` (legacy path) to stretch or
+        compress TP ratios based on volatility regime.
     setup_class:
         Setup class string (e.g. "RANGE_FADE", "WHALE_MOMENTUM").  Used to
         set ``sig.setup_class`` and, together with ``regime``, to look up
@@ -232,6 +295,13 @@ def build_channel_signal(
         Market regime string (e.g. "TRENDING_UP", "RANGING", "VOLATILE").
         When provided alongside ``setup_class``, enables per-context signal
         parameter overrides via :func:`lookup_signal_params`.
+    atr_percentile:
+        Rolling ATR percentile 0–100 (from RegimeContext).  Used by the
+        dynamic SL/TP computation path when ``DYNAMIC_SL_TP_ENABLED`` is
+        ``True``.
+    pair_tier:
+        Pair classification tier: "MAJOR", "MIDCAP", or "ALTCOIN".  ALTCOIN
+        pairs receive a wider SL multiplier to account for manipulation wicks.
     """
     if direction == Direction.LONG and sl >= close:
         return None
@@ -242,8 +312,29 @@ def build_channel_signal(
     # the lookup returns _DEFAULT which replicates the previous behaviour.
     params = lookup_signal_params(config.name, setup_class, regime)
 
-    # Apply SL multiplier before computing TP levels.
-    sl_dist = sl_dist * params.sl_multiplier
+    # Determine base TP ratios: use per-context override when available,
+    # otherwise fall back to channel config.
+    base_ratios = list(params.tp_ratios) if params.tp_ratios is not None else list(config.tp_ratios)
+
+    if DYNAMIC_SL_TP_ENABLED:
+        # Dynamic path: ATR-percentile + regime + pair-tier drive SL/TP adjustment.
+        final_sl_mult, adj_ratios = compute_dynamic_sl_tp_ratios(
+            base_ratios, params.sl_multiplier, atr_percentile, regime, pair_tier
+        )
+        sl_dist = sl_dist * final_sl_mult
+    else:
+        # Legacy path: apply static multiplier and bb_width adjustment.
+        sl_dist = sl_dist * params.sl_multiplier
+        if bb_width_pct is not None:
+            if bb_width_pct > _HIGH_VOL_BB_WIDTH:
+                adj_ratios = [r * params.vol_stretch_factor for r in base_ratios]
+            elif bb_width_pct < _LOW_VOL_BB_WIDTH:
+                adj_ratios = [r * params.vol_compress_factor for r in base_ratios]
+            else:
+                adj_ratios = list(base_ratios)
+        else:
+            adj_ratios = list(base_ratios)
+
     if direction == Direction.LONG:
         sl = close - sl_dist
     else:
@@ -255,36 +346,15 @@ def build_channel_signal(
     if direction == Direction.SHORT and sl <= close:
         return None
 
-    # Determine base TP ratios: use per-context override when available,
-    # otherwise fall back to channel config.
-    base_ratios = list(params.tp_ratios) if params.tp_ratios is not None else list(config.tp_ratios)
-
-    # Volatility-adaptive TP ratios: only recompute when bb_width_pct is provided.
-    if bb_width_pct is not None:
-        if bb_width_pct > _HIGH_VOL_BB_WIDTH:
-            adj_ratios = [r * params.vol_stretch_factor for r in base_ratios]
-        elif bb_width_pct < _LOW_VOL_BB_WIDTH:
-            adj_ratios = [r * params.vol_compress_factor for r in base_ratios]
-        else:
-            adj_ratios = base_ratios
-        if direction == Direction.LONG:
-            tp1 = close + sl_dist * adj_ratios[0]
-            tp2 = close + sl_dist * adj_ratios[1]
-            tp3 = close + sl_dist * adj_ratios[2] if len(adj_ratios) > 2 else tp3
-        else:
-            tp1 = close - sl_dist * adj_ratios[0]
-            tp2 = close - sl_dist * adj_ratios[1]
-            tp3 = close - sl_dist * adj_ratios[2] if len(adj_ratios) > 2 else tp3
-    elif params.tp_ratios is not None:
-        # No bb_width_pct but we have a param override — apply base_ratios directly.
-        if direction == Direction.LONG:
-            tp1 = close + sl_dist * base_ratios[0]
-            tp2 = close + sl_dist * base_ratios[1]
-            tp3 = close + sl_dist * base_ratios[2] if len(base_ratios) > 2 else tp3
-        else:
-            tp1 = close - sl_dist * base_ratios[0]
-            tp2 = close - sl_dist * base_ratios[1]
-            tp3 = close - sl_dist * base_ratios[2] if len(base_ratios) > 2 else tp3
+    # Compute TP levels from adj_ratios.
+    if direction == Direction.LONG:
+        tp1 = close + sl_dist * adj_ratios[0]
+        tp2 = close + sl_dist * adj_ratios[1]
+        tp3 = close + sl_dist * adj_ratios[2] if len(adj_ratios) > 2 else tp3
+    else:
+        tp1 = close - sl_dist * adj_ratios[0]
+        tp2 = close - sl_dist * adj_ratios[1]
+        tp3 = close - sl_dist * adj_ratios[2] if len(adj_ratios) > 2 else tp3
 
     sig = Signal(
         channel=config.name,

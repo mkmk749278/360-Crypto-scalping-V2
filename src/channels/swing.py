@@ -108,6 +108,7 @@ class SwingChannel(BaseChannel):
         atr_pct = (atr_val / close_h1 * 100.0) if close_h1 > 0 and atr_val > 0 else 0.3
         profile = smc_data.get("pair_profile")
         pair_tier = profile.tier if profile else "MIDCAP"
+        regime_ctx = smc_data.get("regime_context")
         # EMA200 floor buffers are wider than fast/slow EMA alignment buffers
         # (filters.py uses 0.1/0.2/0.3%) because EMA200 is a long-term trend
         # boundary — signals near it carry greater directional ambiguity.
@@ -192,6 +193,8 @@ class SwingChannel(BaseChannel):
             id_prefix="SWING",
             atr_val=atr_val,
             regime=regime,
+            atr_percentile=regime_ctx.atr_percentile if regime_ctx else 50.0,
+            pair_tier=pair_tier,
         )
         if sig is None:
             return None

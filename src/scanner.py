@@ -831,6 +831,9 @@ class Scanner:
         regime_context = self.regime_detector.build_regime_context(
             regime_result, regime_candles, regime_ind, vwap=vwap_val,
         )
+        # Attach regime context so channel evaluators can access atr_percentile
+        # via smc_data.get("regime_context") without any signature changes.
+        smc_data["regime_context"] = regime_context
         return ScanContext(
             candles=candles,
             indicators=indicators,

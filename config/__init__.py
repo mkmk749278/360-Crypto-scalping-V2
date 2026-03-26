@@ -118,6 +118,12 @@ CORNIX_FORMAT_ENABLED: bool = os.getenv("CORNIX_FORMAT_ENABLED", "false").lower(
     "true", "1", "yes"
 )
 
+# Dynamic SL/TP based on ATR percentile, market regime, and pair tier (PR_07).
+# Set to "false" to revert to the static signal_params.py behaviour for safety.
+DYNAMIC_SL_TP_ENABLED: bool = os.getenv("DYNAMIC_SL_TP_ENABLED", "true").lower() in (
+    "true", "1", "yes"
+)
+
 # ---------------------------------------------------------------------------
 # Pair management
 # ---------------------------------------------------------------------------

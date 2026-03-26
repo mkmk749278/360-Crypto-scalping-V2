@@ -204,6 +204,7 @@ class ScalpChannel(BaseChannel):
         if direction == Direction.SHORT and sl <= close:
             return None
 
+        _regime_ctx = smc_data.get("regime_context")
         sig = build_channel_signal(
             config=self.config,
             symbol=symbol,
@@ -218,6 +219,8 @@ class ScalpChannel(BaseChannel):
             atr_val=atr_val,
             setup_class="LIQUIDITY_SWEEP_REVERSAL",
             regime=regime,
+            atr_percentile=_regime_ctx.atr_percentile if _regime_ctx else 50.0,
+            pair_tier=profile.tier if profile else "MIDCAP",
         )
         if sig is None:
             return None
@@ -331,6 +334,7 @@ class ScalpChannel(BaseChannel):
         if not mtf_ok:
             return None
 
+        _regime_ctx = smc_data.get("regime_context")
         sig = build_channel_signal(
             config=self.config,
             symbol=symbol,
@@ -345,6 +349,8 @@ class ScalpChannel(BaseChannel):
             atr_val=atr_val,
             setup_class="RANGE_FADE",
             regime=regime,
+            atr_percentile=_regime_ctx.atr_percentile if _regime_ctx else 50.0,
+            pair_tier=profile.tier if profile else "MIDCAP",
         )
         return sig
 
@@ -420,6 +426,8 @@ class ScalpChannel(BaseChannel):
         sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val)
         sl, tp1, tp2, tp3 = self._calc_levels(close, sl_dist, direction)
 
+        _regime_ctx = smc_data.get("regime_context")
+        _pair_profile = smc_data.get("pair_profile")
         sig = build_channel_signal(
             config=self.config,
             symbol=symbol,
@@ -434,6 +442,8 @@ class ScalpChannel(BaseChannel):
             atr_val=atr_val,
             setup_class="WHALE_MOMENTUM",
             regime=regime,
+            atr_percentile=_regime_ctx.atr_percentile if _regime_ctx else 50.0,
+            pair_tier=_pair_profile.tier if _pair_profile else "MIDCAP",
         )
         return sig
 

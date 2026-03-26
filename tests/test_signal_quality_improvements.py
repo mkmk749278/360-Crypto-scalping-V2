@@ -801,22 +801,26 @@ class TestVolatilityAdaptiveTP:
         )
 
     def test_high_vol_stretches_tp_targets(self):
-        """BB width > 5% stretches TP targets by 1.3×."""
+        """BB width > 5% stretches TP targets by 1.3× (legacy path)."""
         from src.channels.base import build_channel_signal, _HIGH_VOL_BB_WIDTH
+        from unittest.mock import patch
         args = self._make_base_signal_args(direction_long=True)
-        sig_base = build_channel_signal(**args)
-        sig_highvol = build_channel_signal(**args, bb_width_pct=_HIGH_VOL_BB_WIDTH + 1.0)
+        with patch("src.channels.base.DYNAMIC_SL_TP_ENABLED", False):
+            sig_base = build_channel_signal(**args)
+            sig_highvol = build_channel_signal(**args, bb_width_pct=_HIGH_VOL_BB_WIDTH + 1.0)
         assert sig_base is not None and sig_highvol is not None
         # TP1 should be further from entry in high-vol
         entry = sig_base.entry
         assert (sig_highvol.tp1 - entry) > (sig_base.tp1 - entry)
 
     def test_low_vol_compresses_tp_targets(self):
-        """BB width < 1.5% compresses TP targets by 0.7×."""
+        """BB width < 1.5% compresses TP targets by 0.7× (legacy path)."""
         from src.channels.base import build_channel_signal, _LOW_VOL_BB_WIDTH
+        from unittest.mock import patch
         args = self._make_base_signal_args(direction_long=True)
-        sig_base = build_channel_signal(**args)
-        sig_lowvol = build_channel_signal(**args, bb_width_pct=_LOW_VOL_BB_WIDTH - 0.5)
+        with patch("src.channels.base.DYNAMIC_SL_TP_ENABLED", False):
+            sig_base = build_channel_signal(**args)
+            sig_lowvol = build_channel_signal(**args, bb_width_pct=_LOW_VOL_BB_WIDTH - 0.5)
         assert sig_base is not None and sig_lowvol is not None
         entry = sig_base.entry
         assert (sig_lowvol.tp1 - entry) < (sig_base.tp1 - entry)

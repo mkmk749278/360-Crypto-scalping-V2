@@ -148,6 +148,8 @@ class ScalpVWAPChannel(BaseChannel):
 
         atr_val = ind.get("atr_last", close * 0.002)
 
+        _regime_ctx = smc_data.get("regime_context")
+        _pair_profile = smc_data.get("pair_profile")
         sig = build_channel_signal(
             config=self.config,
             symbol=symbol,
@@ -163,6 +165,8 @@ class ScalpVWAPChannel(BaseChannel):
             vwap_price=vwap_mid,
             setup_class="VWAP_BOUNCE",
             regime=regime,
+            atr_percentile=_regime_ctx.atr_percentile if _regime_ctx else 50.0,
+            pair_tier=_pair_profile.tier if _pair_profile else "MIDCAP",
         )
 
         return sig

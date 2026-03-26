@@ -23,6 +23,8 @@ class SpotChannel(BaseChannel):
     def __init__(self) -> None:
         super().__init__(CHANNEL_SPOT)
         self._current_regime = ""
+        self._current_atr_percentile = 50.0
+        self._current_pair_tier = "MIDCAP"
 
     def evaluate(
         self,
@@ -35,6 +37,10 @@ class SpotChannel(BaseChannel):
         regime: str = "",
     ) -> Optional[Signal]:
         self._current_regime = regime
+        regime_ctx = smc_data.get("regime_context")
+        self._current_atr_percentile = regime_ctx.atr_percentile if regime_ctx else 50.0
+        pair_profile = smc_data.get("pair_profile")
+        self._current_pair_tier = pair_profile.tier if pair_profile else "MIDCAP"
         h4 = candles.get("4h")
         if h4 is None or len(h4.get("close", [])) < 50:
             return None
@@ -202,6 +208,8 @@ class SpotChannel(BaseChannel):
             setup_class=setup_class,
             bb_width_pct=bb_width,
             regime=self._current_regime,
+            atr_percentile=self._current_atr_percentile,
+            pair_tier=self._current_pair_tier,
         )
         # Spot-specific: use DCA zone as entry zone for LONGs (accumulation zone)
         if sig is not None and sig.dca_zone_lower > 0:
@@ -299,6 +307,8 @@ class SpotChannel(BaseChannel):
             setup_class=setup_class,
             bb_width_pct=bb_width,
             regime=self._current_regime,
+            atr_percentile=self._current_atr_percentile,
+            pair_tier=self._current_pair_tier,
         )
         if sig is not None:
             sig.confidence += _SHORT_CONFIDENCE_BOOST

@@ -212,14 +212,16 @@ class TestBuildChannelSignalRegimeAware:
         assert whale_sl_dist > default_sl_dist
 
     def test_tp_ratio_override(self):
-        """RANGE_FADE RANGING has custom tp_ratios → TP1 reflects them."""
+        """RANGE_FADE RANGING has custom tp_ratios → TP1 reflects them (legacy path)."""
+        from unittest.mock import patch
         close = 100.0
         sl_dist = 0.5
 
-        sig = _simple_signal(
-            close=close, sl_dist=sl_dist, direction=Direction.LONG,
-            setup_class="RANGE_FADE", regime="RANGING",
-        )
+        with patch("src.channels.base.DYNAMIC_SL_TP_ENABLED", False):
+            sig = _simple_signal(
+                close=close, sl_dist=sl_dist, direction=Direction.LONG,
+                setup_class="RANGE_FADE", regime="RANGING",
+            )
         assert sig is not None
         # RANGE_FADE RANGING: tp_ratios=(0.5, 0.8, 1.2), sl_multiplier=0.8
         effective_sl_dist = sl_dist * 0.8

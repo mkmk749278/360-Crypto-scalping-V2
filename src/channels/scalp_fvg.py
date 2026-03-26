@@ -181,6 +181,8 @@ class ScalpFVGChannel(BaseChannel):
         if direction == Direction.SHORT and sl <= close:
             return None
 
+        _regime_ctx = smc_data.get("regime_context")
+        _pair_profile = smc_data.get("pair_profile")
         sig = build_channel_signal(
             config=self.config,
             symbol=symbol,
@@ -195,6 +197,8 @@ class ScalpFVGChannel(BaseChannel):
             atr_val=atr_val,
             setup_class="FVG_RETEST",
             regime=regime,
+            atr_percentile=_regime_ctx.atr_percentile if _regime_ctx else 50.0,
+            pair_tier=_pair_profile.tier if _pair_profile else "MIDCAP",
         )
 
         if sig is not None:
