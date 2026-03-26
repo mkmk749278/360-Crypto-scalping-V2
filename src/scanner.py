@@ -54,6 +54,8 @@ from src.signal_quality import (
     PairQualityAssessment,
     RiskAssessment,
     SetupAssessment,
+    SignalScoringEngine,
+    ScoringInput,
     assess_pair_quality,
     build_risk_plan,
     classify_market_state,
@@ -77,6 +79,9 @@ from src.ai_engine import get_ai_insight
 from src.chart_patterns import detect_patterns, pattern_confidence_bonus, detect_all_patterns
 
 log = get_logger("scanner")
+
+# Composite signal scoring engine — instantiated once at module level.
+_scoring_engine = SignalScoringEngine()
 
 # Order book spread cache TTL and per-cycle fetch cap
 _SPREAD_CACHE_TTL: float = 30.0
@@ -1677,6 +1682,70 @@ class Scanner:
         sig.confidence = self._clamp_confidence(sig.confidence)
         # Classify signal into quality tier based on final confidence.
         sig.signal_tier = classify_signal_tier(sig.confidence)
+        # ── PR_09: Composite Signal Scoring Engine ────────────────────────
+        # Overwrites sig.confidence and sig.signal_tier with the structured
+        # 0-100 composite score.  Merges new dimension breakdown into the
+        # existing component_scores so that downstream format checks still
+        # see the "market"/"execution"/"risk" keys set earlier.
+        try:
+            _primary_tf = self._get_primary_timeframe(chan_name)
+            _primary_ind = ctx.indicators.get(_primary_tf, {})
+            _primary_cd = self._resolve_candles(ctx.candles, _primary_tf)
+            _closes_arr = _primary_cd.get("close", [])
+            _vol_arr = _primary_cd.get("volume", [])
+            if _closes_arr and _vol_arr:
+                _usd_vols = [c * v for c, v in zip(_closes_arr[-20:], _vol_arr[-20:])]
+                _volume_last_usd = float(_usd_vols[-1]) if _usd_vols else 0.0
+                _volume_avg_usd = float(np.mean(_usd_vols)) if _usd_vols else 0.0
+            else:
+                _volume_last_usd = 0.0
+                _volume_avg_usd = 0.0
+            _atr_pct = 50.0
+            if ctx.regime_context is not None:
+                try:
+                    _atr_pct = float(ctx.regime_context.atr_percentile)
+                except (TypeError, ValueError):
+                    pass
+            _scoring_inp = ScoringInput(
+                sweeps=ctx.smc_result.sweeps,
+                mss=ctx.smc_result.mss,
+                fvg_zones=ctx.smc_result.fvg,
+                regime=_regime_key,
+                setup_class=sig.setup_class,
+                atr_percentile=_atr_pct,
+                volume_last_usd=_volume_last_usd,
+                volume_avg_usd=_volume_avg_usd,
+                macd_histogram_last=_primary_ind.get("macd_histogram_last"),
+                macd_histogram_prev=_primary_ind.get("macd_histogram_prev"),
+                rsi_last=_primary_ind.get("rsi_last"),
+                ema_fast=_primary_ind.get("ema9_last"),
+                ema_slow=_primary_ind.get("ema21_last"),
+                adx_last=_primary_ind.get("adx_last"),
+                direction=sig.direction.value,
+                chart_patterns=ctx.smc_data.get("chart_patterns", []),
+                mtf_score=getattr(sig, "mtf_score", 0.0),
+            )
+            _score_result = _scoring_engine.score(_scoring_inp)
+            # Merge new dimension scores into component_scores (preserves existing keys)
+            sig.component_scores.update(_score_result)
+            sig.confidence = _score_result["total"]
+            if _score_result["total"] >= 80:
+                sig.signal_tier = "A+"
+            elif _score_result["total"] >= 65:
+                sig.signal_tier = "B"
+            elif _score_result["total"] >= 50:
+                sig.signal_tier = "WATCHLIST"
+            else:
+                return None, cross_verified
+            log.debug(
+                "PR09 score {} {} → {:.1f} (tier={}) smc={} regime={} vol={} ind={} pat={} mtf={}",
+                symbol, chan_name, _score_result["total"], sig.signal_tier,
+                _score_result["smc"], _score_result["regime"], _score_result["volume"],
+                _score_result["indicators"], _score_result["patterns"], _score_result["mtf"],
+            )
+        except Exception as _score_exc:
+            log.debug("PR09 scoring engine error for {} {} (fail open): {}", symbol, chan_name, _score_exc)
+
         min_conf = self.confidence_overrides.get(chan_name, chan.config.min_confidence)
         # WATCHLIST tier: signals with confidence 50-64 are kept as WATCHLIST
         # instead of being discarded.  Only the SCALP channel family generates

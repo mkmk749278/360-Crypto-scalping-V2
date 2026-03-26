@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
 
 from src.signal_quality import (
     MarketState,
     QualityTier,
     SetupClass,
+    SignalScoringEngine,
+    ScoringInput,
     assess_pair_quality,
     build_risk_plan,
     classify_market_state,
@@ -519,3 +524,207 @@ class TestSLCap:
         if sig.entry != 0:  # entry is always non-zero in practice
             sl_pct = abs(sig.entry - risk.stop_loss) / sig.entry
             assert sl_pct <= 0.015 + 1e-9
+
+
+# ---------------------------------------------------------------------------
+# PR_09 — Composite Signal Scoring Engine tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def engine():
+    return SignalScoringEngine()
+
+
+class TestScoringDimensions:
+    """Test each scoring dimension independently."""
+
+    def test_smc_no_data(self, engine):
+        inp = ScoringInput()
+        result = engine.score(inp)
+        assert result["smc"] == 0.0
+
+    def test_smc_full_confluence(self, engine):
+        sweep = MagicMock()
+        sweep.index = -1
+        inp = ScoringInput(sweeps=[sweep], mss=MagicMock(), fvg_zones=[MagicMock()])
+        result = engine.score(inp)
+        assert result["smc"] == 25.0
+
+    def test_smc_sweep_only(self, engine):
+        sweep = MagicMock()
+        sweep.index = -1
+        inp = ScoringInput(sweeps=[sweep])
+        result = engine.score(inp)
+        assert result["smc"] == 15.0  # 10 base + 5 recency
+
+    def test_smc_old_sweep(self, engine):
+        sweep = MagicMock()
+        sweep.index = -5
+        inp = ScoringInput(sweeps=[sweep])
+        result = engine.score(inp)
+        assert result["smc"] == 10.0  # 10 base, no recency bonus
+
+    def test_regime_no_data(self, engine):
+        inp = ScoringInput(regime="")
+        result = engine.score(inp)
+        assert result["regime"] == 10.0
+
+    def test_regime_strong_alignment(self, engine):
+        inp = ScoringInput(regime="TRENDING_UP", setup_class="LIQUIDITY_SWEEP_REVERSAL")
+        result = engine.score(inp)
+        assert result["regime"] == 18.0
+
+    def test_regime_weak_alignment(self, engine):
+        inp = ScoringInput(regime="TRENDING_UP", setup_class="RANGE_FADE")
+        result = engine.score(inp)
+        assert result["regime"] == 8.0
+
+    def test_regime_volatile_atr_bonus(self, engine):
+        inp = ScoringInput(regime="VOLATILE", setup_class="WHALE_MOMENTUM", atr_percentile=80)
+        result = engine.score(inp)
+        assert result["regime"] == 20.0  # 18 + 2 bonus
+
+    def test_volume_neutral(self, engine):
+        inp = ScoringInput(volume_last_usd=0, volume_avg_usd=0)
+        result = engine.score(inp)
+        assert result["volume"] == 7.5
+
+    def test_volume_high_ratio(self, engine):
+        inp = ScoringInput(volume_last_usd=3_000_000, volume_avg_usd=1_000_000)
+        result = engine.score(inp)
+        assert result["volume"] == 15.0
+
+    def test_volume_below_average(self, engine):
+        inp = ScoringInput(volume_last_usd=500_000, volume_avg_usd=1_000_000)
+        result = engine.score(inp)
+        assert result["volume"] == 3.0
+
+    def test_indicators_all_aligned_long(self, engine):
+        inp = ScoringInput(
+            macd_histogram_last=0.5, macd_histogram_prev=0.3,
+            rsi_last=42.0, ema_fast=101.0, ema_slow=100.0,
+            direction="LONG"
+        )
+        result = engine.score(inp)
+        assert result["indicators"] == 20.0  # 7 + 7 + 6
+
+    def test_indicators_all_aligned_short(self, engine):
+        inp = ScoringInput(
+            macd_histogram_last=-0.5, macd_histogram_prev=-0.3,
+            rsi_last=58.0, ema_fast=99.0, ema_slow=100.0,
+            direction="SHORT"
+        )
+        result = engine.score(inp)
+        assert result["indicators"] == 20.0
+
+    def test_indicators_misaligned(self, engine):
+        inp = ScoringInput(
+            macd_histogram_last=-0.5, macd_histogram_prev=-0.3,
+            rsi_last=72.0, ema_fast=99.0, ema_slow=100.0,
+            direction="LONG"
+        )
+        result = engine.score(inp)
+        assert result["indicators"] < 10.0
+
+    def test_patterns_neutral_no_patterns(self, engine):
+        inp = ScoringInput(chart_patterns=[])
+        result = engine.score(inp)
+        assert result["patterns"] == 5.0
+
+    def test_patterns_none(self, engine):
+        inp = ScoringInput(chart_patterns=None)
+        result = engine.score(inp)
+        assert result["patterns"] == 5.0
+
+    def test_mtf_full(self, engine):
+        inp = ScoringInput(mtf_score=1.0)
+        result = engine.score(inp)
+        assert result["mtf"] == 10.0
+
+    def test_mtf_zero(self, engine):
+        inp = ScoringInput(mtf_score=0.0)
+        result = engine.score(inp)
+        assert result["mtf"] == 0.0
+
+    def test_mtf_partial(self, engine):
+        inp = ScoringInput(mtf_score=0.5)
+        result = engine.score(inp)
+        assert result["mtf"] == 5.0
+
+
+class TestEndToEnd:
+    """Test full scoring pipeline and tier gating."""
+
+    def test_scoring_high_smc_and_volume(self, engine):
+        sweep = MagicMock()
+        sweep.index = -1
+        inp = ScoringInput(
+            sweeps=[sweep], mss=MagicMock(), regime="TRENDING_UP",
+            setup_class="LIQUIDITY_SWEEP_REVERSAL",
+            volume_last_usd=3_000_000, volume_avg_usd=1_000_000,
+            macd_histogram_last=0.5, macd_histogram_prev=0.3,
+            rsi_last=42.0, ema_fast=101.0, ema_slow=100.0,
+            direction="LONG", mtf_score=1.0
+        )
+        result = engine.score(inp)
+        assert result["total"] >= 80
+
+    def test_scoring_filters_low_quality(self, engine):
+        inp = ScoringInput(
+            regime="RANGING", setup_class="LIQUIDITY_SWEEP_REVERSAL",
+            volume_last_usd=500_000, volume_avg_usd=2_000_000,
+            rsi_last=68.0, ema_fast=100.0, ema_slow=101.0,
+            direction="LONG", mtf_score=0.0
+        )
+        result = engine.score(inp)
+        assert result["total"] < 50
+
+    def test_total_never_exceeds_100(self, engine):
+        sweep = MagicMock()
+        sweep.index = -1
+        inp = ScoringInput(
+            sweeps=[sweep], mss=MagicMock(), fvg_zones=[MagicMock()],
+            regime="TRENDING_UP", setup_class="LIQUIDITY_SWEEP_REVERSAL",
+            atr_percentile=90,
+            volume_last_usd=5_000_000, volume_avg_usd=1_000_000,
+            macd_histogram_last=1.0, macd_histogram_prev=0.5,
+            rsi_last=35.0, ema_fast=105.0, ema_slow=100.0,
+            direction="LONG", mtf_score=1.0
+        )
+        result = engine.score(inp)
+        assert result["total"] <= 100.0
+
+    def test_score_returns_all_dimensions(self, engine):
+        inp = ScoringInput()
+        result = engine.score(inp)
+        assert set(result.keys()) == {"smc", "regime", "volume", "indicators", "patterns", "mtf", "total"}
+
+    def test_tier_a_plus(self, engine):
+        """Verify a well-confirmed signal scores ≥ 80 (A+ tier)."""
+        sweep = MagicMock()
+        sweep.index = -1
+        inp = ScoringInput(
+            sweeps=[sweep], mss=MagicMock(), fvg_zones=[MagicMock()],
+            regime="TRENDING_UP", setup_class="LIQUIDITY_SWEEP_REVERSAL",
+            volume_last_usd=3_000_000, volume_avg_usd=1_000_000,
+            macd_histogram_last=0.5, macd_histogram_prev=0.3,
+            rsi_last=42.0, ema_fast=101.0, ema_slow=100.0,
+            direction="LONG", mtf_score=1.0
+        )
+        result = engine.score(inp)
+        assert result["total"] >= 80
+
+    def test_tier_b(self, engine):
+        """B tier: reasonable signal without full confluence."""
+        sweep = MagicMock()
+        sweep.index = -1
+        inp = ScoringInput(
+            sweeps=[sweep], regime="TRENDING_UP",
+            setup_class="LIQUIDITY_SWEEP_REVERSAL",
+            volume_last_usd=1_500_000, volume_avg_usd=1_000_000,
+            rsi_last=48.0, ema_fast=101.0, ema_slow=100.0,
+            direction="LONG", mtf_score=0.5
+        )
+        result = engine.score(inp)
+        assert 50 <= result["total"] < 80

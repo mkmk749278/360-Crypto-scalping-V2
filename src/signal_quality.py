@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -655,3 +655,195 @@ def score_signal_components(
     elif total >= 74.0:
         tier = QualityTier.B
     return ComponentScore(components=components, total=total, quality_tier=tier)
+
+
+# ---------------------------------------------------------------------------
+# PR_09 — Composite Signal Scoring Engine
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ScoringInput:
+    """All data needed to score a signal."""
+    # SMC
+    sweeps: Optional[List] = None            # List of LiquiditySweep objects
+    mss: Optional[Any] = None               # MSSSignal or None
+    fvg_zones: Optional[List] = None        # List of FVGZone objects
+    # Regime
+    regime: str = ""
+    setup_class: str = ""
+    atr_percentile: float = 50.0
+    # Volume
+    volume_last_usd: float = 0.0            # Last candle USD volume
+    volume_avg_usd: float = 0.0             # 20-period average USD volume
+    # Indicators
+    macd_histogram_last: Optional[float] = None
+    macd_histogram_prev: Optional[float] = None
+    rsi_last: Optional[float] = None
+    ema_fast: Optional[float] = None
+    ema_slow: Optional[float] = None
+    adx_last: Optional[float] = None
+    direction: str = "LONG"
+    # Pattern + MTF
+    chart_patterns: Optional[List] = None   # List of PatternResult objects
+    mtf_score: float = 0.0                  # 0.0–1.0 from MTF gate
+
+
+class SignalScoringEngine:
+    """Scores a candidate signal across six dimensions.
+
+    Produces a deterministic, auditable 0–100 score composed of:
+    - SMC confluence (max 25 pts)
+    - Regime alignment (max 20 pts)
+    - Volume confirmation (max 15 pts)
+    - Indicator confluence (max 20 pts)
+    - Candlestick patterns (max 10 pts)
+    - MTF confirmation (max 10 pts)
+    """
+
+    # Setup classes that strongly align with each regime
+    _REGIME_SETUP_AFFINITY: Dict[str, List[str]] = {
+        "TRENDING_UP": ["LIQUIDITY_SWEEP_REVERSAL", "BREAKOUT_INITIAL", "BREAKOUT_RETEST",
+                        "THREE_WHITE_SOLDIERS", "WHALE_MOMENTUM"],
+        "TRENDING_DOWN": ["LIQUIDITY_SWEEP_REVERSAL", "BREAKOUT_INITIAL", "BREAKOUT_RETEST",
+                          "THREE_BLACK_CROWS", "WHALE_MOMENTUM"],
+        "RANGING": ["RANGE_FADE", "SWING_STANDARD"],
+        "QUIET": ["RANGE_FADE"],
+        "VOLATILE": ["WHALE_MOMENTUM", "LIQUIDITY_SWEEP_REVERSAL"],
+    }
+
+    def score(self, inp: ScoringInput) -> Dict[str, float]:
+        """Return a dict with per-dimension scores and a 'total' key.
+
+        All scores are in [0, max_for_dimension].
+        """
+        smc = self._score_smc(inp)
+        regime = self._score_regime(inp)
+        volume = self._score_volume(inp)
+        indicators = self._score_indicators(inp)
+        patterns = self._score_patterns(inp)
+        mtf = self._score_mtf(inp)
+        total = smc + regime + volume + indicators + patterns + mtf
+        return {
+            "smc": round(smc, 2),
+            "regime": round(regime, 2),
+            "volume": round(volume, 2),
+            "indicators": round(indicators, 2),
+            "patterns": round(patterns, 2),
+            "mtf": round(mtf, 2),
+            "total": round(min(100.0, total), 2),
+        }
+
+    # ------------------------------------------------------------------
+    def _score_smc(self, inp: ScoringInput) -> float:
+        """SMC confluence score, max 25 pts."""
+        score = 0.0
+        sweeps = inp.sweeps or []
+        if sweeps:
+            score += 10.0   # Base for any sweep
+            # Quality bonus: if sweep is recent (index >= -3, i.e. within the last 3 candles) add 5 pts
+            if sweeps[0].index >= -3:
+                score += 5.0
+        if inp.mss is not None:
+            score += 8.0    # MSS confirmation adds weight
+        fvg = inp.fvg_zones or []
+        if fvg:
+            score += 2.0    # FVG presence (minor confluence)
+        return min(25.0, score)
+
+    # ------------------------------------------------------------------
+    def _score_regime(self, inp: ScoringInput) -> float:
+        """Regime alignment score, max 20 pts."""
+        if not inp.regime:
+            return 10.0   # Neutral when no regime data
+        affinity = self._REGIME_SETUP_AFFINITY.get(inp.regime.upper(), [])
+        if inp.setup_class in affinity:
+            base = 18.0   # Strong alignment
+        elif affinity:
+            base = 8.0    # Regime known but setup not optimal
+        else:
+            base = 10.0   # Unknown regime
+        # Bonus for high ATR percentile in VOLATILE regime (energy behind the move)
+        if inp.regime.upper() == "VOLATILE" and inp.atr_percentile >= 75:
+            base = min(20.0, base + 2.0)
+        return min(20.0, base)
+
+    # ------------------------------------------------------------------
+    def _score_volume(self, inp: ScoringInput) -> float:
+        """Volume confirmation score, max 15 pts."""
+        if inp.volume_avg_usd <= 0 or inp.volume_last_usd <= 0:
+            return 7.5    # Neutral
+        ratio = inp.volume_last_usd / inp.volume_avg_usd
+        if ratio >= 3.0:
+            return 15.0
+        if ratio >= 2.0:
+            return 12.0
+        if ratio >= 1.5:
+            return 9.0
+        if ratio >= 1.0:
+            return 6.0
+        return 3.0   # Below-average volume
+
+    # ------------------------------------------------------------------
+    def _score_indicators(self, inp: ScoringInput) -> float:
+        """Indicator confluence score, max 20 pts."""
+        score = 0.0
+
+        # MACD (max 7 pts)
+        if inp.macd_histogram_last is not None and inp.macd_histogram_prev is not None:
+            rising = inp.macd_histogram_last > inp.macd_histogram_prev
+            positive = inp.macd_histogram_last > 0
+            if inp.direction == "LONG":
+                if rising and positive:
+                    score += 7.0
+                elif rising or positive:
+                    score += 4.0
+            else:
+                falling = not rising
+                negative = inp.macd_histogram_last < 0
+                if falling and negative:
+                    score += 7.0
+                elif falling or negative:
+                    score += 4.0
+
+        # RSI (max 7 pts)
+        if inp.rsi_last is not None:
+            if inp.direction == "LONG":
+                if inp.rsi_last <= 45:
+                    score += 7.0    # Oversold or neutral — good for LONG
+                elif inp.rsi_last <= 60:
+                    score += 4.0
+                else:
+                    score += 1.0    # Overbought — risky
+            else:
+                if inp.rsi_last >= 55:
+                    score += 7.0
+                elif inp.rsi_last >= 40:
+                    score += 4.0
+                else:
+                    score += 1.0
+
+        # EMA alignment (max 6 pts)
+        if inp.ema_fast is not None and inp.ema_slow is not None:
+            aligned = (inp.ema_fast > inp.ema_slow if inp.direction == "LONG"
+                       else inp.ema_fast < inp.ema_slow)
+            score += 6.0 if aligned else 1.0
+
+        return min(20.0, score)
+
+    # ------------------------------------------------------------------
+    def _score_patterns(self, inp: ScoringInput) -> float:
+        """Candlestick pattern score, max 10 pts."""
+        patterns = inp.chart_patterns or []
+        if not patterns:
+            return 5.0   # Neutral (no patterns detected either way)
+        aligned = [p for p in patterns
+                   if getattr(p, "direction", "") == inp.direction or
+                      getattr(p, "direction", "") == "NEUTRAL"]
+        bonus = sum(getattr(p, "confidence_bonus", 0.0) for p in aligned)
+        return max(0.0, min(10.0, 5.0 + bonus * 0.5))
+
+    # ------------------------------------------------------------------
+    def _score_mtf(self, inp: ScoringInput) -> float:
+        """MTF confirmation score, max 10 pts."""
+        return round(inp.mtf_score * 10.0, 2)
