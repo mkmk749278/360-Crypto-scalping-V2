@@ -18,6 +18,7 @@ from src.channels.swing import SwingChannel
 from src.channels.spot import SpotChannel
 from src.detector import SMCDetector
 from src.indicators import adx, atr, bollinger_bands, ema, momentum, rsi
+from src.regime import detect_regime_from_arrays
 from src.utils import get_logger
 
 log = get_logger("backtester")
@@ -30,6 +31,64 @@ _AI_BEARISH_THRESHOLD = -0.2
 # execution_delay_candles assignment.  Scalp channels target M1/M5 candles
 # where 0.5–3 s of live-trading latency corresponds to ~1 candle of slippage.
 _SCALP_CHANNEL_NAMES = ("360_SCALP",)
+
+
+@dataclass
+class BacktestConfig:
+    """Parameter set for a single backtest run.
+
+    Allows sweeping across different threshold combinations per pair.
+    """
+
+    channel_name: str = "360_SCALP"
+    atr_sl_mult: float = 1.0
+    tp_ratios: tuple = (0.5, 1.0, 1.5)
+    min_adx: float = 20.0
+    momentum_threshold_mult: float = 1.0
+    slippage_pct: float = 0.02
+    fee_pct: float = 0.04
+    max_hold_candles: int = 50
+    regime_filter: str = ""
+    pair: str = ""
+
+
+@dataclass
+class RegimeTaggedResult:
+    """Backtest result for a single signal with its regime context."""
+
+    signal_id: str
+    pair: str
+    regime: str
+    setup_class: str
+    outcome: str
+    pnl_pct: float
+    hold_candles: int
+    entry_price: float
+    sl_price: float
+    tp1_price: float
+    hit_tp: int
+    atr_at_entry: float
+    atr_percentile: float
+
+
+@dataclass
+class WalkForwardReport:
+    """Walk-forward validation summary."""
+
+    n_folds: int
+    fold_results: list
+    avg_in_sample_winrate: float
+    avg_out_sample_winrate: float
+    overfit_score: float
+
+    def summary(self) -> str:
+        return (
+            f"Walk-Forward: {self.n_folds} folds | "
+            f"IS WR: {self.avg_in_sample_winrate:.1%} | "
+            f"OOS WR: {self.avg_out_sample_winrate:.1%} | "
+            f"Overfit: {self.overfit_score:.2f}"
+            + (" ⚠️ OVERFITTING DETECTED" if self.overfit_score > 0.15 else " ✅ OK")
+        )
 
 
 @dataclass
@@ -380,24 +439,36 @@ class Backtester:
 
     def run(
         self,
-        candles_by_tf: Dict[str, Dict],
+        candles_by_tf: Dict,
         symbol: str = "BTCUSDT",
         channel_name: Optional[str] = None,
         spread_pct: float = 0.01,
         volume_24h_usd: float = 10_000_000.0,
         simulated_ai_score: float = 0.0,
+        config: Optional[BacktestConfig] = None,
+        tag_regimes: bool = False,
     ) -> List[BacktestResult]:
         """Run backtest across all (or one) channel(s).
+
+        When ``config`` or ``tag_regimes`` is provided, the method runs in
+        *flat-data mode*: ``candles_by_tf`` is treated as a plain OHLCV dict
+        (keys ``"close"``, ``"high"``, ``"low"``, ``"open"``, ``"volume"``),
+        and a single-element list is returned.
+
+        Without those parameters the method behaves as before: it expects a
+        multi-timeframe dict (keys are timeframe strings such as ``"5m"``) and
+        returns a ``List[BacktestResult]``, one per channel.
 
         Parameters
         ----------
         candles_by_tf:
-            Dict mapping timeframe → OHLCV dict with numpy arrays.
-            E.g. ``{"5m": {"high": ..., "low": ..., "close": ..., ...}}``.
+            Either a multi-TF dict (``{"5m": {...}, "1h": {...}}``) for the
+            standard path, or a flat OHLCV dict when ``config``/``tag_regimes``
+            is supplied.
         symbol:
             Symbol name (used for SMC detection).
         channel_name:
-            If provided, only backtest this specific channel.
+            If provided, only backtest this specific channel (standard path).
         spread_pct:
             Simulated spread percentage.
         volume_24h_usd:
@@ -412,11 +483,21 @@ class Backtester:
             neutral mid-point — not zero.  To simulate pessimistic conditions
             (e.g. bearish news sentiment that would lower confidence in live
             trading), pass a negative value such as ``-0.5``.
+        config:
+            :class:`BacktestConfig` for the flat-data mode.  Activates
+            per-pair / per-config sweep path.
+        tag_regimes:
+            When ``True``, attach regime labels to every recorded signal detail.
+            Activates the flat-data mode.
 
         Returns
         -------
-        List of :class:`BacktestResult`, one per channel tested.
+        ``List[BacktestResult]``, one per channel (standard path) or a
+        single-element list (flat-data mode).
         """
+        if config is not None or tag_regimes:
+            return [self._run_with_flat_data(candles_by_tf, config=config, tag_regimes=tag_regimes)]
+
         channels = self._channels
         if channel_name:
             channels = [c for c in channels if c.config.name == channel_name]
@@ -432,6 +513,128 @@ class Backtester:
 
         return results
 
+    def _run_with_flat_data(
+        self,
+        historical_data: Dict,
+        config: Optional[BacktestConfig] = None,
+        tag_regimes: bool = False,
+    ) -> BacktestResult:
+        """Run backtest on a flat OHLCV dict for a single channel.
+
+        The flat dict must have ``"close"``, ``"high"``, ``"low"`` and
+        optionally ``"open"``/``"volume"`` keys.  The same data is reused for
+        every timeframe required by the selected channel so that the existing
+        channel evaluation logic can operate normally.
+        """
+        cfg = config or BacktestConfig()
+        # Select channel by name from the configured list; fall back to first.
+        channel = next(
+            (c for c in self._channels if c.config.name == cfg.channel_name),
+            self._channels[0],
+        )
+        # Wrap flat data so every required timeframe is present.
+        candles_by_tf = {tf: historical_data for tf in channel.config.timeframes}
+        symbol = cfg.pair or "UNKNOWN"
+        return self._backtest_channel(
+            channel, candles_by_tf, symbol, 0.01, 10_000_000.0, 0.0,
+            tag_regimes=tag_regimes,
+        )
+
+    def run_per_pair_sweep(
+        self,
+        data_by_pair: Dict[str, Dict],
+        configs: List[BacktestConfig],
+    ) -> Dict[str, List[BacktestResult]]:
+        """Run each config against each pair and return a nested results dict.
+
+        Parameters
+        ----------
+        data_by_pair:
+            Mapping of symbol → flat OHLCV dict.
+        configs:
+            List of :class:`BacktestConfig` instances to test for each pair.
+
+        Returns
+        -------
+        Dict mapping symbol → list of :class:`BacktestResult` (one per config).
+        """
+        results: Dict[str, List[BacktestResult]] = {}
+        for pair, historical_data in data_by_pair.items():
+            results[pair] = []
+            for cfg in configs:
+                cfg.pair = pair
+                result = self._run_with_flat_data(historical_data, config=cfg, tag_regimes=True)
+                result.channel = f"{result.channel}[{pair}]"
+                results[pair].append(result)
+        return results
+
+    def walk_forward_validate(
+        self,
+        historical_data: Dict,
+        n_folds: int = 5,
+        train_pct: float = 0.7,
+        config: Optional[BacktestConfig] = None,
+    ) -> WalkForwardReport:
+        """Rolling walk-forward validation to detect overfitting.
+
+        Splits ``historical_data`` into ``n_folds`` consecutive windows.  Each
+        window is further split into an in-sample (train) and out-of-sample
+        (test) segment.  The average win rates across folds are compared to
+        compute an overfitting score.
+
+        Parameters
+        ----------
+        historical_data:
+            Flat OHLCV dict.
+        n_folds:
+            Number of rolling folds.
+        train_pct:
+            Fraction of each fold used as the in-sample period (0 < train_pct < 1).
+        config:
+            Optional :class:`BacktestConfig` for channel / parameter selection.
+
+        Returns
+        -------
+        :class:`WalkForwardReport`
+        """
+        close_arr = np.asarray(historical_data.get("close", []), dtype=float)
+        n = len(close_arr)
+        fold_size = n // n_folds
+        fold_results = []
+
+        for fold_i in range(n_folds):
+            start = fold_i * fold_size
+            end = min(start + fold_size, n)
+            fold_data = {
+                k: v[start:end]
+                for k, v in historical_data.items()
+                if isinstance(v, (list, np.ndarray))
+            }
+            split = int(len(fold_data.get("close", [])) * train_pct)
+            in_data = {k: v[:split] for k, v in fold_data.items()}
+            out_data = {k: v[split:] for k, v in fold_data.items()}
+            in_result = self._run_with_flat_data(in_data, config=config)
+            out_result = self._run_with_flat_data(out_data, config=config)
+            # Normalise win_rate (0–100 pct) to 0.0–1.0 fraction for the report.
+            fold_results.append((in_result.win_rate / 100.0, out_result.win_rate / 100.0))
+
+        avg_in = float(np.mean([f[0] for f in fold_results]))
+        avg_out = float(np.mean([f[1] for f in fold_results]))
+        # Overfitting score: positive means IS > OOS (typical overfitting signal).
+        # Guard against division by very small in-sample rates to avoid noisy values.
+        if avg_in >= 0.01:
+            overfit = (avg_in - avg_out) / avg_in
+        else:
+            overfit = 0.0
+
+        return WalkForwardReport(
+            n_folds=n_folds,
+            fold_results=fold_results,
+            avg_in_sample_winrate=avg_in,
+            avg_out_sample_winrate=avg_out,
+            overfit_score=overfit,
+        )
+
     def _backtest_channel(
         self,
         channel,
@@ -440,6 +643,7 @@ class Backtester:
         spread_pct: float,
         volume_24h_usd: float,
         simulated_ai_score: float = 0.0,
+        tag_regimes: bool = False,
     ) -> BacktestResult:
         """Run a single channel backtest across all candle windows."""
         result = BacktestResult(channel=channel.config.name, slippage_pct=self._slippage_pct)
@@ -457,6 +661,13 @@ class Backtester:
 
         primary_candles = candles_by_tf[primary_tf]
         total_candles = len(primary_candles.get("close", []))
+
+        # Pre-extract full arrays for regime detection (avoids repeated conversion)
+        if tag_regimes:
+            close_arr = np.asarray(primary_candles.get("close", []), dtype=float)
+            high_arr = np.asarray(primary_candles.get("high", []), dtype=float)
+            low_arr = np.asarray(primary_candles.get("low", []), dtype=float)
+            vol_arr = np.asarray(primary_candles.get("volume", []), dtype=float)
 
         # Automatically apply 1-candle execution delay for SCALP channels to
         # simulate 0.5–3 s live-trading latency between signal detection and fill.
@@ -516,6 +727,16 @@ class Backtester:
             if sig is None:
                 continue
 
+            # Detect market regime at signal bar when requested
+            regime_at_entry = ""
+            if tag_regimes:
+                try:
+                    regime_at_entry = detect_regime_from_arrays(
+                        close_arr, high_arr, low_arr, vol_arr, i
+                    )
+                except Exception as exc:
+                    log.debug("Regime detection error at candle %d: %s", i, exc)
+
             # Simulate against future candles
             future: Dict[str, np.ndarray] = {}
             for k, v in primary_candles.items():
@@ -548,6 +769,8 @@ class Backtester:
                 "won": won,
                 "pnl_pct": round(pnl, 4),
                 "tp_level": tp_level,
+                "regime": regime_at_entry,
+                "setup_class": getattr(sig, "setup_class", ""),
             })
 
         # Aggregate statistics

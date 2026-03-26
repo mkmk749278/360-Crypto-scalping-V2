@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from src.utils import get_logger
+from src.indicators import adx as _compute_adx, atr as _compute_atr, ema as _compute_ema
 
 log = get_logger("regime")
 
@@ -412,3 +413,67 @@ class MarketRegimeDetector:
                 return MarketRegime.TRENDING_DOWN
 
         return MarketRegime.RANGING
+
+
+# ---------------------------------------------------------------------------
+# Vectorised regime detection for historical array replay
+# ---------------------------------------------------------------------------
+
+
+def detect_regime_from_arrays(
+    closes: "np.ndarray",
+    highs: "np.ndarray",
+    lows: "np.ndarray",
+    volumes: "np.ndarray",
+    idx: int,
+    lookback: int = 14,
+) -> str:
+    """Detect market regime at a specific bar index in a historical array.
+
+    Parameters
+    ----------
+    closes, highs, lows, volumes:
+        Full historical arrays (length >= idx + 1).
+    idx:
+        Bar index for which to detect the regime.
+    lookback:
+        ATR/ADX computation lookback.
+
+    Returns
+    -------
+    str: regime label ("TRENDING_UP", "TRENDING_DOWN", "RANGING", "VOLATILE", "QUIET")
+    """
+    start = max(0, idx - lookback * 3)
+    end = idx + 1
+    c = np.asarray(closes[start:end], dtype=float)
+    h = np.asarray(highs[start:end], dtype=float)
+    lo = np.asarray(lows[start:end], dtype=float)
+
+    # Require at least 2 × lookback bars so indicator warm-up periods are
+    # satisfied before returning a meaningful regime label.
+    if len(c) < lookback * 2:
+        return MarketRegime.RANGING.value
+
+    adx_series = _compute_adx(h, lo, c, period=lookback)
+    atr_series = _compute_atr(h, lo, c, period=lookback)
+    ema9 = _compute_ema(c, 9)
+    ema21 = _compute_ema(c, 21)
+
+    adx_val = float(adx_series[-1]) if not np.isnan(adx_series[-1]) else 0.0
+    atr_val = float(atr_series[-1]) if not np.isnan(atr_series[-1]) else 0.0
+    price = float(c[-1])
+    atr_pct = (atr_val / price * 100) if price > 0 else 0.5
+
+    if adx_val >= _ADX_TRENDING_MIN:
+        ema9_last = float(ema9[-1]) if not np.isnan(ema9[-1]) else float(c[-1])
+        ema21_last = float(ema21[-1]) if not np.isnan(ema21[-1]) else float(c[-1])
+        return (
+            MarketRegime.TRENDING_UP.value
+            if ema9_last > ema21_last
+            else MarketRegime.TRENDING_DOWN.value
+        )
+    if atr_pct >= 1.5:
+        return MarketRegime.VOLATILE.value
+    if atr_pct <= 0.3:
+        return MarketRegime.QUIET.value
+    return MarketRegime.RANGING.value

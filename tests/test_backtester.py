@@ -5,7 +5,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from src.backtester import Backtester, BacktestResult, _compute_indicators, _simulate_trade
+from src.backtester import (
+    Backtester,
+    BacktestConfig,
+    BacktestResult,
+    WalkForwardReport,
+    _compute_indicators,
+    _simulate_trade,
+)
 from src.channels.scalp import ScalpChannel
 from src.channels.spot import SpotChannel
 
@@ -378,3 +385,109 @@ class TestRealisticDefaults:
         bt = Backtester(fee_pct=0.0, slippage_pct=0.0)
         assert bt._fee_pct == 0.0
         assert bt._slippage_pct == 0.0
+
+
+# ---------------------------------------------------------------------------
+# PR_11: Per-pair sweep, regime tagging, walk-forward validation
+# ---------------------------------------------------------------------------
+
+
+class TestRegimeTagging:
+    def test_regime_tagging_populates_regime_field(self):
+        """Every signal_detail must contain a 'regime' key when tag_regimes=True."""
+        bt = Backtester()
+        n = 200
+        hist = {
+            "close": np.linspace(100, 110, n).tolist(),
+            "open": np.linspace(99, 109, n).tolist(),
+            "high": np.linspace(101, 111, n).tolist(),
+            "low": np.linspace(98, 108, n).tolist(),
+            "volume": [1e6] * n,
+        }
+        results = bt.run(hist, tag_regimes=True)
+        assert isinstance(results, list)
+        assert len(results) == 1
+        result = results[0]
+        assert isinstance(result, BacktestResult)
+        for detail in result.signal_details:
+            assert "regime" in detail
+
+    def test_regime_field_present_even_without_signals(self):
+        """run() with tag_regimes must not raise even when no signals are emitted."""
+        bt = Backtester()
+        n = 60  # very short – likely no signals
+        hist = {
+            "close": [100.0] * n,
+            "open": [99.9] * n,
+            "high": [100.1] * n,
+            "low": [99.8] * n,
+            "volume": [1e6] * n,
+        }
+        results = bt.run(hist, tag_regimes=True)
+        assert isinstance(results, list)
+        assert len(results) == 1
+        assert isinstance(results[0], BacktestResult)
+
+
+class TestWalkForwardValidation:
+    def _make_hist(self, n: int = 500) -> dict:
+        rng = np.random.default_rng(0)
+        close = 100 + np.cumsum(rng.normal(0, 0.5, n))
+        return {
+            "close": close.tolist(),
+            "open": (close - 0.1).tolist(),
+            "high": (close + 0.3).tolist(),
+            "low": (close - 0.3).tolist(),
+            "volume": [1e6] * n,
+        }
+
+    def test_walk_forward_returns_report(self):
+        bt = Backtester()
+        report = bt.walk_forward_validate(self._make_hist(), n_folds=3)
+        assert isinstance(report, WalkForwardReport)
+        assert report.n_folds == 3
+        assert 0.0 <= report.avg_in_sample_winrate <= 1.0
+        assert 0.0 <= report.avg_out_sample_winrate <= 1.0
+
+    def test_walk_forward_fold_count_matches(self):
+        bt = Backtester()
+        report = bt.walk_forward_validate(self._make_hist(), n_folds=4)
+        assert len(report.fold_results) == 4
+
+    def test_walk_forward_summary_string(self):
+        bt = Backtester()
+        report = bt.walk_forward_validate(self._make_hist(), n_folds=2)
+        s = report.summary()
+        assert "Walk-Forward" in s
+        assert "IS WR" in s
+        assert "OOS WR" in s
+
+
+class TestPerPairSweep:
+    def _make_pair_data(self, n: int = 200) -> dict:
+        rng = np.random.default_rng(1)
+        close = 100 + np.cumsum(rng.normal(0, 0.3, n))
+        return {
+            "close": close.tolist(),
+            "open": (close - 0.1).tolist(),
+            "high": (close + 0.2).tolist(),
+            "low": (close - 0.2).tolist(),
+            "volume": [1e6] * n,
+        }
+
+    def test_per_pair_sweep_returns_results_per_pair(self):
+        bt = Backtester()
+        data_by_pair = {sym: self._make_pair_data() for sym in ["BTCUSDT", "ETHUSDT"]}
+        configs = [BacktestConfig(atr_sl_mult=1.0), BacktestConfig(atr_sl_mult=1.5)]
+        results = bt.run_per_pair_sweep(data_by_pair, configs)
+        assert "BTCUSDT" in results
+        assert "ETHUSDT" in results
+        assert len(results["BTCUSDT"]) == 2
+        assert len(results["ETHUSDT"]) == 2
+
+    def test_per_pair_sweep_channel_label_includes_pair(self):
+        bt = Backtester()
+        data_by_pair = {"SOLUSDT": self._make_pair_data()}
+        configs = [BacktestConfig()]
+        results = bt.run_per_pair_sweep(data_by_pair, configs)
+        assert "SOLUSDT" in results["SOLUSDT"][0].channel
