@@ -169,16 +169,7 @@ class SwingChannel(BaseChannel):
         atr_val = ind_h1.get("atr_last", close * 0.003)
 
         sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val)
-        if direction == Direction.LONG:
-            sl = close - sl_dist
-            tp1 = close + sl_dist * self.config.tp_ratios[0]
-            tp2 = close + sl_dist * self.config.tp_ratios[1]
-            tp3 = close + sl_dist * self.config.tp_ratios[2]
-        else:
-            sl = close + sl_dist
-            tp1 = close - sl_dist * self.config.tp_ratios[0]
-            tp2 = close - sl_dist * self.config.tp_ratios[1]
-            tp3 = close - sl_dist * self.config.tp_ratios[2]
+        sl = close - sl_dist if direction == Direction.LONG else close + sl_dist
 
         sig = build_channel_signal(
             config=self.config,
@@ -186,9 +177,9 @@ class SwingChannel(BaseChannel):
             direction=direction,
             close=close,
             sl=sl,
-            tp1=tp1,
-            tp2=tp2,
-            tp3=tp3,
+            tp1=0.0,
+            tp2=0.0,
+            tp3=0.0,
             sl_dist=sl_dist,
             id_prefix="SWING",
             atr_val=atr_val,

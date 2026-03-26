@@ -265,3 +265,29 @@ class TestSpotChannel:
         sig = ch.evaluate("BTCUSDT", candles, indicators, smc_data, 0.01, 5_000_000)
         assert sig is None
 
+
+# ---------------------------------------------------------------------------
+# PR_10 refactor verification tests
+# ---------------------------------------------------------------------------
+
+def test_volume_expansion_returns_false_when_below_threshold():
+    from src.filters import check_volume_expansion
+    volumes = [1000.0] * 10 + [800.0]   # Last candle is below average
+    closes  = [100.0] * 11
+    assert not check_volume_expansion(volumes, closes, lookback=9, multiplier=1.8)
+
+
+def test_volume_expansion_returns_true_when_above():
+    from src.filters import check_volume_expansion
+    volumes = [1000.0] * 10 + [2500.0]  # Last candle is 2.5× average
+    closes  = [100.0] * 11
+    assert check_volume_expansion(volumes, closes, lookback=9, multiplier=1.8)
+
+
+def test_scalp_channel_no_calc_levels_method():
+    """After refactor, ScalpChannel should not have _calc_levels."""
+    from src.channels.scalp import ScalpChannel
+    ch = ScalpChannel()
+    assert not hasattr(ch, "_calc_levels"), \
+        "_calc_levels should be removed; TP is computed by build_channel_signal()"
+

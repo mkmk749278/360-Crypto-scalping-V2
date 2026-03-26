@@ -29,6 +29,17 @@ _LOW_VOL_BB_WIDTH: float = 1.5  # percent
 _VOL_STRETCH_FACTOR: float = 1.3   # High-vol: stretch TP targets
 _VOL_COMPRESS_FACTOR: float = 0.7  # Low-vol: compress TP targets
 
+# Fallback TP3 ratio used when adj_ratios has fewer than 3 elements.
+_DEFAULT_TP3_RATIO: float = 2.0
+
+
+def _default_trailing_desc(trailing_atr_mult: float) -> str:
+    """Return a standardised trailing stop description string."""
+    return (
+        f"Stage 1: {trailing_atr_mult}×ATR | "
+        f"Post-TP1: 1×ATR (BE) | Post-TP2: 0.5×ATR (tight)"
+    )
+
 
 @dataclass
 class TrailingStopState:
@@ -378,14 +389,15 @@ def build_channel_signal(
         return None
 
     # Compute TP levels from adj_ratios.
+    # tp1/tp2/tp3 arguments are deprecated; TP is always computed from sl_dist here.
     if direction == Direction.LONG:
         tp1 = close + sl_dist * adj_ratios[0]
         tp2 = close + sl_dist * adj_ratios[1]
-        tp3 = close + sl_dist * adj_ratios[2] if len(adj_ratios) > 2 else tp3
+        tp3 = close + sl_dist * adj_ratios[2] if len(adj_ratios) > 2 else close + sl_dist * _DEFAULT_TP3_RATIO
     else:
         tp1 = close - sl_dist * adj_ratios[0]
         tp2 = close - sl_dist * adj_ratios[1]
-        tp3 = close - sl_dist * adj_ratios[2] if len(adj_ratios) > 2 else tp3
+        tp3 = close - sl_dist * adj_ratios[2] if len(adj_ratios) > 2 else close - sl_dist * _DEFAULT_TP3_RATIO
 
     sig = Signal(
         channel=config.name,
@@ -397,7 +409,7 @@ def build_channel_signal(
         tp2=round(tp2, 8),
         tp3=round(tp3, 8),
         trailing_active=True,
-        trailing_desc=f"{config.trailing_atr_mult}×ATR",
+        trailing_desc=_default_trailing_desc(config.trailing_atr_mult),
         confidence=0.0,
         ai_sentiment_label="",
         ai_sentiment_summary="",

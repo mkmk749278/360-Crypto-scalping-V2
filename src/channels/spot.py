@@ -12,7 +12,7 @@ from typing import Dict, Optional
 
 from config import CHANNEL_SPOT
 from src.channels.base import BaseChannel, Signal, build_channel_signal
-from src.filters import check_adx_regime, check_rsi_regime, check_spread_adaptive, check_volume
+from src.filters import check_adx_regime, check_rsi_regime, check_spread_adaptive, check_volume, check_volume_expansion
 from src.smc import Direction
 
 # Short signals require a higher minimum confidence to guard against false shorts.
@@ -162,9 +162,7 @@ class SpotChannel(BaseChannel):
         # Volume expansion — threshold scales with regime via _volume_expansion_mult().
         if len(volumes) < 10 or len(closes_list) < 10:
             return None
-        usd_volumes = [float(v) * float(c) for v, c in zip(volumes[-10:], closes_list[-10:])]
-        avg_usd_vol = sum(usd_volumes[:-1]) / 9
-        if usd_volumes[-1] < avg_usd_vol * self._volume_expansion_mult():
+        if not check_volume_expansion(volumes, closes_list, lookback=9, multiplier=self._volume_expansion_mult()):
             return None
 
         # SMC: bearish structure contradicts LONG
@@ -261,9 +259,7 @@ class SpotChannel(BaseChannel):
         # Volume expansion on the down-move — regime-adjusted multiplier.
         if len(volumes) < 10 or len(closes_list) < 10:
             return None
-        usd_volumes = [float(v) * float(c) for v, c in zip(volumes[-10:], closes_list[-10:])]
-        avg_usd_vol = sum(usd_volumes[:-1]) / 9
-        if usd_volumes[-1] < avg_usd_vol * self._volume_expansion_mult():
+        if not check_volume_expansion(volumes, closes_list, lookback=9, multiplier=self._volume_expansion_mult()):
             return None
 
         # SMC: bullish structure contradicts SHORT

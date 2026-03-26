@@ -405,3 +405,36 @@ def check_macd_confirmation(
 
     # Soft penalty in permissive (TRENDING/VOLATILE) mode
     return True, -5.0
+
+
+def check_volume_expansion(
+    volumes,
+    closes,
+    lookback: int = 9,
+    multiplier: float = 1.8,
+) -> bool:
+    """Return True when the most recent candle's USD volume exceeds the lookback average.
+
+    Parameters
+    ----------
+    volumes:
+        Raw volume (unit quantity, not USD) for the last N+1 candles.
+    closes:
+        Close prices for the last N+1 candles. Used to convert volume to USD.
+    lookback:
+        Number of prior candles to use for the average (excluding the last one).
+    multiplier:
+        Required ratio of last candle USD volume to average (e.g. 1.8× = 80% above avg).
+    """
+    import numpy as np
+    v = np.asarray(volumes, dtype=float)
+    c = np.asarray(closes, dtype=float)
+    n = len(v)
+    if n < lookback + 1:
+        return False
+    usd_vol = v * c
+    avg_usd = float(np.mean(usd_vol[-(lookback + 1):-1]))
+    last_usd = float(usd_vol[-1])
+    if avg_usd <= 0:
+        return False
+    return last_usd >= avg_usd * multiplier

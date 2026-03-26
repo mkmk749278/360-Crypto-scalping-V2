@@ -20,6 +20,8 @@ from src.filters import (
     check_macd_confirmation,
     check_rsi_regime,
     check_ema_alignment_adaptive,
+    check_spread_adaptive,
+    check_volume,
 )
 from src.mtf import mtf_gate_scalp_standard, mtf_gate_scalp_range_fade
 from src.smc import Direction
@@ -33,6 +35,13 @@ _WHALE_OBI_MIN: float = 1.5
 class ScalpChannel(BaseChannel):
     def __init__(self) -> None:
         super().__init__(CHANNEL_SCALP)
+
+    def _pass_basic_filters(self, spread_pct: float, volume_24h_usd: float, regime: str = "") -> bool:
+        """Return True if basic spread/volume filters pass (regime-adaptive spread check)."""
+        return (
+            check_spread_adaptive(spread_pct, self.config.spread_max, regime=regime)
+            and check_volume(volume_24h_usd, self.config.min_volume)
+        )
 
     def _select_indicator_weights(self, regime: str) -> dict:
         """Return indicator weight multipliers for the current regime.
@@ -122,7 +131,7 @@ class ScalpChannel(BaseChannel):
         ind = indicators.get("5m", {})
         if not check_adx(ind.get("adx_last"), self.config.adx_min):
             return None
-        if not self._pass_basic_filters(spread_pct, volume_24h_usd):
+        if not self._pass_basic_filters(spread_pct, volume_24h_usd, regime=regime):
             return None
 
         ema_fast = ind.get("ema9_last")
@@ -197,7 +206,7 @@ class ScalpChannel(BaseChannel):
             return None
 
         sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val * 0.5)
-        sl, tp1, tp2, tp3 = self._calc_levels(close, sl_dist, direction)
+        sl = close - sl_dist if direction == Direction.LONG else close + sl_dist
 
         if direction == Direction.LONG and sl >= close:
             return None
@@ -211,9 +220,9 @@ class ScalpChannel(BaseChannel):
             direction=direction,
             close=close,
             sl=sl,
-            tp1=tp1,
-            tp2=tp2,
-            tp3=tp3,
+            tp1=0.0,
+            tp2=0.0,
+            tp3=0.0,
             sl_dist=sl_dist,
             id_prefix="SCALP",
             atr_val=atr_val,
@@ -277,7 +286,7 @@ class ScalpChannel(BaseChannel):
         if adx_val is not None and adx_val > adx_ceiling:
             return None
 
-        if not self._pass_basic_filters(spread_pct, volume_24h_usd):
+        if not self._pass_basic_filters(spread_pct, volume_24h_usd, regime=regime):
             return None
 
         bb_upper = ind.get("bb_upper_last")
@@ -321,7 +330,7 @@ class ScalpChannel(BaseChannel):
 
         atr_val = ind.get("atr_last", close * 0.002)
         sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val * 0.8)
-        sl, tp1, tp2, tp3 = self._calc_levels(close, sl_dist, direction)
+        sl = close - sl_dist if direction == Direction.LONG else close + sl_dist
 
         # MACD confirmation gate — always strict for range-fade (PR_04)
         ind_macd_last = ind.get("macd_histogram_last")
@@ -345,9 +354,9 @@ class ScalpChannel(BaseChannel):
             direction=direction,
             close=close,
             sl=sl,
-            tp1=tp1,
-            tp2=tp2,
-            tp3=tp3,
+            tp1=0.0,
+            tp2=0.0,
+            tp3=0.0,
             sl_dist=sl_dist,
             id_prefix="RANGE-FADE",
             atr_val=atr_val,
@@ -382,7 +391,7 @@ class ScalpChannel(BaseChannel):
         if whale is None and not delta_spike:
             return None
 
-        if not self._pass_basic_filters(spread_pct, volume_24h_usd):
+        if not self._pass_basic_filters(spread_pct, volume_24h_usd, regime=regime):
             return None
 
         m1 = candles.get("1m")
@@ -432,7 +441,7 @@ class ScalpChannel(BaseChannel):
 
         atr_val = indicators.get("1m", {}).get("atr_last", close * 0.002)
         sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val)
-        sl, tp1, tp2, tp3 = self._calc_levels(close, sl_dist, direction)
+        sl = close - sl_dist if direction == Direction.LONG else close + sl_dist
 
         _regime_ctx = smc_data.get("regime_context")
         _pair_profile = smc_data.get("pair_profile")
@@ -442,9 +451,9 @@ class ScalpChannel(BaseChannel):
             direction=direction,
             close=close,
             sl=sl,
-            tp1=tp1,
-            tp2=tp2,
-            tp3=tp3,
+            tp1=0.0,
+            tp2=0.0,
+            tp3=0.0,
             sl_dist=sl_dist,
             id_prefix="WHALE",
             atr_val=atr_val,
@@ -458,25 +467,6 @@ class ScalpChannel(BaseChannel):
             sig.trailing_stage = 0
             sig.partial_close_pct = 0.0
         return sig
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _calc_levels(
-        self, close: float, sl_dist: float, direction: Direction
-    ):
-        if direction == Direction.LONG:
-            sl = close - sl_dist
-            tp1 = close + sl_dist * self.config.tp_ratios[0]
-            tp2 = close + sl_dist * self.config.tp_ratios[1]
-            tp3 = close + sl_dist * self.config.tp_ratios[2]
-        else:
-            sl = close + sl_dist
-            tp1 = close - sl_dist * self.config.tp_ratios[0]
-            tp2 = close - sl_dist * self.config.tp_ratios[1]
-            tp3 = close - sl_dist * self.config.tp_ratios[2]
-        return sl, tp1, tp2, tp3
 
     # ------------------------------------------------------------------
     # Kill zone integration (P2-13)
