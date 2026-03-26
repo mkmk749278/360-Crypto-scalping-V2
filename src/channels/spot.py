@@ -12,7 +12,7 @@ from typing import Dict, Optional
 
 from config import CHANNEL_SPOT
 from src.channels.base import BaseChannel, Signal, build_channel_signal
-from src.filters import check_adx, check_spread, check_volume
+from src.filters import check_adx_regime, check_rsi_regime, check_spread_adaptive, check_volume
 from src.smc import Direction
 
 # Short signals require a higher minimum confidence to guard against false shorts.
@@ -42,9 +42,9 @@ class SpotChannel(BaseChannel):
         ind_h4 = indicators.get("4h", {})
 
         # --- Basic filters ---
-        if not check_adx(ind_h4.get("adx_last"), self.config.adx_min):
+        if not check_adx_regime(ind_h4.get("adx_last"), regime=regime, max_adx=100.0):
             return None
-        if not check_spread(spread_pct, self.config.spread_max):
+        if not check_spread_adaptive(spread_pct, self.config.spread_max, regime=regime):
             return None
         if not check_volume(volume_24h_usd, self.config.min_volume):
             return None
@@ -135,7 +135,7 @@ class SpotChannel(BaseChannel):
             return None
 
         # RSI overbought gate
-        if rsi_last is not None and rsi_last > 75:
+        if not check_rsi_regime(rsi_last, direction="LONG", regime=self._current_regime):
             return None
 
         # Detect retest pattern: breakout → pullback → reclaim
@@ -231,7 +231,7 @@ class SpotChannel(BaseChannel):
             return None
 
         # RSI oversold gate: don't short into an already oversold market
-        if rsi_last is not None and rsi_last < 25:
+        if not check_rsi_regime(rsi_last, direction="SHORT", regime=self._current_regime):
             return None
 
         # Detect retest pattern for SHORT: breakdown → bounce → reclaim below support

@@ -201,6 +201,55 @@ def check_adx_regime(
     return check_adx(adx_val, min_adx, max_adx)
 
 
+def check_spread_adaptive(
+    spread_pct: float,
+    max_spread: float,
+    regime: str = "",
+    atr_pct: float = 0.0,
+) -> bool:
+    """Regime-aware spread filter that adjusts tolerance for volatility.
+
+    In VOLATILE regimes or when ATR is high, spreads naturally widen —
+    the filter relaxes max_spread by up to 50%.
+    In QUIET regimes, spreads should be tighter — the filter tightens
+    max_spread by 30%.
+
+    Parameters
+    ----------
+    spread_pct:
+        Current bid-ask spread as a percentage of mid-price.
+    max_spread:
+        Base maximum acceptable spread percentage (from channel config).
+    regime:
+        Market regime string. Accepted: "VOLATILE", "QUIET", "TRENDING_UP",
+        "TRENDING_DOWN", "RANGING".
+    atr_pct:
+        ATR as a percentage of price (optional, for fine-grained scaling).
+    """
+    if not regime:
+        return spread_pct <= max_spread
+
+    if regime == "VOLATILE":
+        # Allow up to 50% wider spreads in volatile conditions
+        adjusted = max_spread * 1.5
+    elif regime == "QUIET":
+        # Tighten by 30% — small moves mean spread eats more of the edge
+        adjusted = max_spread * 0.7
+    elif regime in ("TRENDING_UP", "TRENDING_DOWN"):
+        # Slight relaxation — trending markets have slightly wider spreads
+        adjusted = max_spread * 1.2
+    else:
+        # RANGING or unknown — use base
+        adjusted = max_spread
+
+    # Additional ATR-based scaling: if ATR% is very high, allow proportionally wider spread
+    if atr_pct > 1.0:
+        atr_bonus = min(atr_pct / 5.0, 0.5)  # Cap at +50% additional relaxation
+        adjusted *= (1.0 + atr_bonus)
+
+    return spread_pct <= adjusted
+
+
 def check_ema_alignment_regime(
     ema_fast: float | None,
     ema_slow: float | None,

@@ -11,7 +11,7 @@ from typing import Dict, Optional
 
 from config import CHANNEL_SWING
 from src.channels.base import BaseChannel, Signal, build_channel_signal
-from src.filters import check_adx, check_rsi_regime
+from src.filters import check_adx_regime, check_rsi_regime, check_spread_adaptive, check_volume
 from src.smc import Direction
 
 # Percentile position within the Bollinger Band range for rejection gate.
@@ -52,9 +52,11 @@ class SwingChannel(BaseChannel):
         # --- Filters ---
         ind_h4 = indicators.get("4h", {})
         ind_h1 = indicators.get("1h", {})
-        if not check_adx(ind_h4.get("adx_last"), self.config.adx_min, self.config.adx_max):
+        if not check_adx_regime(ind_h4.get("adx_last"), regime=regime, setup_class="", max_adx=self.config.adx_max):
             return None
-        if not self._pass_basic_filters(spread_pct, volume_24h_usd):
+        if not check_spread_adaptive(spread_pct, self.config.spread_max, regime=regime):
+            return None
+        if not check_volume(volume_24h_usd, self.config.min_volume):
             return None
 
         # EMA200 filter
