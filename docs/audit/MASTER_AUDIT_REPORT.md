@@ -16,7 +16,10 @@
 6. [Backtesting Gaps](#6-backtesting-gaps)
 7. [Duplicate Code Identification](#7-duplicate-code-identification)
 8. [Modular Design Recommendations](#8-modular-design-recommendations)
-9. [Sequential PR Implementation Plan](#9-sequential-pr-implementation-plan)
+9. [Sequential PR Implementation Plan (Phase 1)](#9-sequential-pr-implementation-plan)
+10. [Phase 1 Implementation Status](#10-phase-1-implementation-status)
+11. [Phase 2 — Next-Phase Optimization Roadmap](#11-phase-2--next-phase-optimization-roadmap)
+12. [Phase 2 Sequential PR Implementation Plan (PR_13–PR_29)](#12-phase-2-sequential-pr-implementation-plan-pr_13pr_29)
 
 ---
 
@@ -329,26 +332,264 @@ Add regime tag, setup_class, and pair columns to `BacktestResult` so downstream 
 
 ---
 
-## 9. Sequential PR Implementation Plan
+## 9. Sequential PR Implementation Plan (Phase 1)
 
 The following 12 PRs are ordered so that each builds on the previous without circular dependencies. Earlier PRs establish foundational infrastructure (regime detection, per-pair config) that later PRs consume.
 
-| PR | Title | Primary Dependency |
-|----|-------|--------------------|
-| PR_01 | Market Regime Detector Enhancement | None |
-| PR_02 | Per-Pair Config Profiles | PR_01 |
-| PR_03 | Adaptive EMA Thresholds | PR_02 |
-| PR_04 | MACD Confirmation Layer | PR_01 |
-| PR_05 | Candlestick Pattern Engine | None |
-| PR_06 | Multi-Timeframe Confirmation | PR_01, PR_02 |
-| PR_07 | Dynamic SL/TP ATR+Regime | PR_01, PR_02 |
-| PR_08 | Trailing Stop Upgrade | PR_07 |
-| PR_09 | Signal Scoring Engine | PR_04, PR_05, PR_06 |
-| PR_10 | Duplicate Code Refactor | PR_01–PR_06 |
-| PR_11 | Backtester Per-Pair + Regime | PR_01, PR_02, PR_07 |
-| PR_12 | AI Statistical Filter | PR_09, PR_11 |
+| PR | Title | Primary Dependency | GitHub PR | Status |
+|----|-------|--------------------|-----------|--------|
+| PR_01 | Market Regime Detector Enhancement | None | [#127](https://github.com/kishore446/360-Crypto-scalping-V2/pull/127) | ✅ Merged |
+| PR_02 | Per-Pair Config Profiles | PR_01 | [#128](https://github.com/kishore446/360-Crypto-scalping-V2/pull/128) | ✅ Merged |
+| PR_03 | Adaptive EMA Thresholds | PR_02 | [#129](https://github.com/kishore446/360-Crypto-scalping-V2/pull/129) | ✅ Merged |
+| PR_04 | MACD Confirmation Layer | PR_01 | [#130](https://github.com/kishore446/360-Crypto-scalping-V2/pull/130) | ✅ Merged |
+| PR_05 | Candlestick Pattern Engine | None | [#131](https://github.com/kishore446/360-Crypto-scalping-V2/pull/131) | ✅ Merged |
+| PR_06 | Multi-Timeframe Confirmation | PR_01, PR_02 | [#132](https://github.com/kishore446/360-Crypto-scalping-V2/pull/132) | ✅ Merged |
+| PR_07 | Dynamic SL/TP ATR+Regime | PR_01, PR_02 | [#133](https://github.com/kishore446/360-Crypto-scalping-V2/pull/133) | ✅ Merged |
+| PR_08 | Trailing Stop Upgrade | PR_07 | [#134](https://github.com/kishore446/360-Crypto-scalping-V2/pull/134) | ✅ Merged |
+| PR_09 | Signal Scoring Engine | PR_04, PR_05, PR_06 | [#135](https://github.com/kishore446/360-Crypto-scalping-V2/pull/135) | ✅ Merged |
+| PR_10 | Duplicate Code Refactor | PR_01–PR_06 | [#136](https://github.com/kishore446/360-Crypto-scalping-V2/pull/136) | ✅ Merged |
+| PR_11 | Backtester Per-Pair + Regime | PR_01, PR_02, PR_07 | [#137](https://github.com/kishore446/360-Crypto-scalping-V2/pull/137) | ✅ Merged |
+| PR_12 | AI Statistical Filter | PR_09, PR_11 | [#138](https://github.com/kishore446/360-Crypto-scalping-V2/pull/138) | ✅ Merged |
 
 See individual PR documents (`PR_01_*.md` through `PR_12_*.md`) for full implementation steps, expected impact, and file-level change specifications.
+
+---
+
+## 10. Phase 1 Implementation Status
+
+All 12 Phase 1 PRs have been implemented and merged as of 2026-03-26. The table below summarises the final status of each PR with its corresponding GitHub pull request.
+
+| PR | Title | GitHub PR | Merged Date | Status |
+|----|-------|-----------|-------------|--------|
+| PR_01 | Market Regime Detector Enhancement | [#127](https://github.com/kishore446/360-Crypto-scalping-V2/pull/127) | 2026-03-26 | ✅ Merged |
+| PR_02 | Per-Pair Config Profiles | [#128](https://github.com/kishore446/360-Crypto-scalping-V2/pull/128) | 2026-03-26 | ✅ Merged |
+| PR_03 | Adaptive EMA Thresholds | [#129](https://github.com/kishore446/360-Crypto-scalping-V2/pull/129) | 2026-03-26 | ✅ Merged |
+| PR_04 | MACD Confirmation Layer | [#130](https://github.com/kishore446/360-Crypto-scalping-V2/pull/130) | 2026-03-26 | ✅ Merged |
+| PR_05 | Candlestick Pattern Engine | [#131](https://github.com/kishore446/360-Crypto-scalping-V2/pull/131) | 2026-03-26 | ✅ Merged |
+| PR_06 | Multi-Timeframe Confirmation | [#132](https://github.com/kishore446/360-Crypto-scalping-V2/pull/132) | 2026-03-26 | ✅ Merged |
+| PR_07 | Dynamic SL/TP ATR+Regime | [#133](https://github.com/kishore446/360-Crypto-scalping-V2/pull/133) | 2026-03-26 | ✅ Merged |
+| PR_08 | Trailing Stop Upgrade | [#134](https://github.com/kishore446/360-Crypto-scalping-V2/pull/134) | 2026-03-26 | ✅ Merged |
+| PR_09 | Signal Scoring Engine | [#135](https://github.com/kishore446/360-Crypto-scalping-V2/pull/135) | 2026-03-26 | ✅ Merged |
+| PR_10 | Duplicate Code Refactor | [#136](https://github.com/kishore446/360-Crypto-scalping-V2/pull/136) | 2026-03-26 | ✅ Merged |
+| PR_11 | Backtester Per-Pair + Regime | [#137](https://github.com/kishore446/360-Crypto-scalping-V2/pull/137) | 2026-03-26 | ✅ Merged |
+| PR_12 | AI Statistical Filter | [#138](https://github.com/kishore446/360-Crypto-scalping-V2/pull/138) | 2026-03-26 | ✅ Merged |
+
+---
+
+## 11. Phase 2 — Next-Phase Optimization Roadmap
+
+With Phase 1 complete the system has per-pair adaptive logic, multi-indicator confirmation, dynamic SL/TP, a composite scoring engine, and statistical filtering. Phase 2 addresses the next tier of improvements: order-flow intelligence, portfolio-level risk controls, automated KPI monitoring, more realistic backtesting, and structural maintainability.
+
+### 11.1 Advanced Signal Generation
+
+#### Order Flow Microstructure Signals
+- **Liquidation cascade detector** — monitor open interest drops combined with funding rate spikes as a leading indicator of forced liquidations; score +5 when detected.
+- **Funding rate divergence** — price trending up while funding rate turns negative indicates over-leveraged longs being washed out; use as a bearish scoring modifier (−5) or vice versa.
+- **Delta divergence enhancement** — extend the existing CVD divergence logic to detect multi-bar divergences (price higher highs, CVD lower highs) as a stronger conviction signal.
+
+#### AI-Driven Adaptive Signal Weighting
+- **Online learning layer** — replace static weight tables in `signal_params.py` with an EWMA-based logistic regression that auto-adjusts per (channel, pair, regime) after every closed trade.
+- **GPT signal pre-screener** — optional: route candidate signals through a macro context summary before emission to filter news-driven reversals.
+- **Feature importance tracking** — track which indicators (MACD, RSI, SMC, candlestick) have been historically predictive per pair × regime combination.
+
+#### Cross-Channel Confluence Scoring
+- PRs #118 and #119 attempted cross-channel confluence detection but were closed without merge. PR_17 will implement this correctly.
+- When two or more channels fire on the same pair and direction within a 5-minute window, apply a +15 point score boost and emit a dedicated confluence alert.
+
+#### Session-Adaptive Thresholds
+- **Asian session** (+5 to minimum score threshold): lower volatility, raise bar.
+- **London open** (−5): high liquidity, trust signals more.
+- **NY open** (−3): strong directionality, moderate trust.
+- **Weekend** (+10): thin markets, require higher conviction.
+
+#### Market Microstructure Timing
+- **Kill zone enhancement** — hard-gate (suppress) signals generated outside London/NY sessions for SCALP channel during VOLATILE regime.
+- **Volatility forecast gate** — use realised volatility forecast (GARCH-lite or rolling 15-min ATR) to suppress signals when predicted volatility exceeds 3σ of historical norm.
+
+### 11.2 Portfolio & Risk Management
+
+#### Signal-Score-Based Position Sizing
+- Wire composite score (0–100) from PR_09/PR_135 into `risk.py::_position_size()`.
+- Tiered scaling: Score 80–100 → 100% of base position; Score 65–79 → 75%; Score 50–64 → 50%.
+- Low-conviction signals are still emitted but with smaller capital allocation rather than being suppressed outright.
+
+#### Correlation-Aware Exposure Limits
+- Extend `correlation.py` with a rolling 24-hour Pearson correlation matrix across all active pairs.
+- Cap total BTC-beta exposure at 0.85 (prevent the entire portfolio from behaving like levered BTC).
+- Add per-sector caps: max 40% portfolio allocation to any single sector (DeFi, Layer-1, Meme, etc.).
+
+#### Portfolio-Level Drawdown Protection
+- Yellow at −3% daily portfolio drawdown → reduce all new position sizes by 50%.
+- Red at −5% → halt new signal emission for 4 hours.
+- Black at −8% → halt all trading for 24 hours and notify admin via Telegram.
+
+#### Volatility-Regime Stop-Loss Adaptation
+- After 2× ATR expansion from entry (intraday), tighten trailing stop to 0.5× ATR.
+- On volatility expansion exit: if realised volatility doubles in under 15 minutes, close position at market.
+
+#### Kelly Criterion Sizing
+- Optional overlay for paper portfolio and backtester: compute fractional Kelly (`f* = (p × (b+1) − 1) / b`) using rolling win rate and average win/loss ratio per (channel, pair, regime).
+- Apply half-Kelly in live sizing; full-Kelly for backtest benchmarking only.
+
+### 11.3 Performance, Monitoring & KPIs
+
+#### KPI Dashboard (`/dashboard` Telegram command)
+Metrics per channel and aggregate:
+- Win Rate (7-day rolling)
+- Profit Factor
+- Sharpe Ratio
+- Max Drawdown
+- Signal Frequency (signals/hour)
+- False Positive Rate
+- Avg Score: Winners vs Losers
+- Avg Trade Duration
+
+#### Automated Anomaly Detection Service
+Background service running every 15 minutes checking:
+- Signal frequency drop >50% vs 7-day average → alert.
+- Win rate collapse: rolling 20-trade win rate < 30% → alert + optional auto-pause.
+- Score drift: composite score mean deviates >15 pts from 30-day baseline → alert.
+- Channel silence: any channel emits zero signals for >2 hours during active market hours → alert.
+
+#### Regime Performance Attribution
+- Tag every trade record with the `RegimeContext.label` at entry time.
+- Weekly auto-generated report showing P&L breakdown by regime (`TRENDING_UP`, `TRENDING_DOWN`, `RANGE_NARROW`, `RANGE_WIDE`, `VOLATILE_EXPANSION`) per channel.
+
+#### Signal Score Calibration Report
+- Monthly report: compare predicted composite score (at signal emission) vs actual trade outcome.
+- Detect score inflation — if high-score signals (>80) win at the same rate as medium-score signals (60–79), the scoring model needs recalibration.
+
+### 11.4 Backtesting & Simulation Enhancements
+
+#### Realistic Slippage & Fee Model
+- Volume-dependent slippage: `slippage_pct = base_slippage + (position_size / avg_volume_1m) × impact_coefficient`.
+- Major pairs (BTC, ETH): base = 0.01%, impact coefficient = 0.5.
+- Altcoins: base = 0.05%, impact coefficient = 2.0.
+- Maker/taker fee differentiation: maker = 0.02%, taker = 0.04%.
+- Configurable latency injection (50ms–500ms) to simulate execution delay.
+
+#### Scenario-Based Stress Testing
+- Flash crash simulator: apply a −15% shock over 5 candles to every open position and compute portfolio recovery.
+- Liquidity drought: widen spreads 5× for 30-minute windows; measure how many signals survive filters.
+- Correlation breakdown: inject a period where all pair correlations temporarily converge to 0.95.
+
+#### Monte Carlo Confidence Intervals
+- After every standard backtest, run 1 000 randomised simulations:
+  1. Randomly reorder trade outcomes (sequence-of-returns risk).
+  2. Vary each entry/exit by ±1 ATR.
+  3. Randomly drop 10% of signals (execution failure simulation).
+- Report P5/P50/P95 confidence intervals for final equity, max drawdown, and Sharpe ratio.
+
+#### Forward-Testing Framework / Paper Trading Bridge
+- `PaperTradingValidator` records every live signal and its actual outcome.
+- Compares rolling paper-trading performance with backtest-predicted performance.
+- Alerts when divergence exceeds 2σ over a 30-trade window.
+
+#### Walk-Forward Optimization Automation
+- Weekly cron job: re-run walk-forward optimisation on the most recent 90 days of data.
+- If out-of-sample Sharpe ratio > 0.5, auto-push updated parameters to config.
+- Archive previous parameter set with timestamp for rollback.
+
+### 11.5 Codebase & Maintainability
+
+#### Scanner Decomposition
+Split the 90KB `scanner.py` monolith into a `src/scanner/` subpackage:
+- `src/scanner/data_fetcher.py` — kline and order-book data retrieval.
+- `src/scanner/indicator_compute.py` — per-pair indicator calculation.
+- `src/scanner/signal_dispatch.py` — signal creation and routing handoff.
+- `src/scanner/orchestrator.py` — main scan loop and pair iteration.
+- `scanner.py` becomes a thin entry-point wrapper. No single file exceeds 25KB.
+
+#### Config Modularization
+Split the 36KB `config/__init__.py` into domain-specific modules:
+- `config/pairs.py` — MAJOR/MIDCAP/ALTCOIN tier definitions.
+- `config/regime.py` — regime parameter tables.
+- `config/channels.py` — channel-specific settings.
+- `config/risk.py` — risk thresholds and circuit breaker levels.
+- `config/base.py` — common settings and environment variable loading.
+- Re-export everything from `config/__init__.py` for full backward compatibility.
+
+#### Pydantic Model Validation
+- Replace `SimpleNamespace` and ad-hoc `dataclass` usage with Pydantic models for `Signal`, `RegimeContext`, and `RiskAssessment`.
+- Add field validators: score clamped 0–100, all numeric fields have min/max constraints.
+- Validation failures log a warning and fall back to defaults rather than raising.
+
+#### Architecture Documentation
+- Create `docs/architecture.md` with signal flow diagram (Mermaid).
+- Add module-level docstrings to all major source files.
+- Annotate magic numbers with `# WHY:` comments explaining their derivation.
+
+---
+
+## 12. Phase 2 Sequential PR Implementation Plan (PR_13–PR_29)
+
+The 17 Phase 2 PRs are grouped into five sub-phases to allow parallel development tracks where dependencies permit.
+
+### Phase 2A — Risk & Reliability (PR_13–PR_16)
+
+| PR | Title | Modules Affected | Priority | Dependency |
+|----|-------|-----------------|----------|------------|
+| PR_13 | Portfolio-Level Drawdown Circuit Breaker | `circuit_breaker.py`, `signal_router.py`, `config/` | P0 | PR_12 |
+| PR_14 | Scanner Decomposition (Part 1: Data Fetching & Indicators) | `scanner.py` → `src/scanner/*.py` | P0 | None |
+| PR_15 | Correlation-Aware Exposure Filter | `correlation.py`, `risk.py`, `signal_router.py` | P1 | PR_13 |
+| PR_16 | Signal-Score-Weighted Position Sizing | `risk.py`, `scanner.py`, `signal_quality.py` | P1 | PR_09 (Phase 1) |
+
+### Phase 2B — Signal Intelligence (PR_17–PR_20)
+
+| PR | Title | Modules Affected | Priority | Dependency |
+|----|-------|-----------------|----------|------------|
+| PR_17 | Cross-Channel Confluence Engine | New: `src/confluence.py`, modify `signal_router.py` | P1 | PR_14 |
+| PR_18 | Funding Rate Divergence Module | New: `src/funding_rate.py`, modify `signal_quality.py`, `config/` | P1 | PR_01, PR_02 (Phase 1) |
+| PR_19 | Online Indicator Weight Learning | `signal_params.py`, `stat_filter.py`, `signal_quality.py` | P2 | PR_12 (Phase 1) |
+| PR_20 | Session-Adaptive Threshold Engine | `kill_zone.py`, `signal_quality.py`, `config/` | P2 | PR_02 (Phase 1) |
+
+### Phase 2C — Backtesting Maturity (PR_21–PR_23)
+
+| PR | Title | Modules Affected | Priority | Dependency |
+|----|-------|-----------------|----------|------------|
+| PR_21 | Realistic Slippage & Fee Model | `backtester.py`, `config/` | P0 | PR_11 (Phase 1) |
+| PR_22 | Monte Carlo Equity Simulation | `backtester.py`, new: `src/monte_carlo.py` | P1 | PR_21 |
+| PR_23 | Paper Trading Reconciliation | New: `src/reconciliation.py`, modify `paper_portfolio.py` | P2 | PR_21 |
+
+### Phase 2D — Monitoring & Observability (PR_24–PR_26)
+
+| PR | Title | Modules Affected | Priority | Dependency |
+|----|-------|-----------------|----------|------------|
+| PR_24 | KPI Dashboard Command | `performance_tracker.py`, new: `src/commands/dashboard.py` | P1 | PR_13 |
+| PR_25 | Automated Anomaly Detection Service | New: `src/anomaly_monitor.py`, modify `main.py` | P1 | PR_24 |
+| PR_26 | Regime Performance Attribution Reports | `performance_tracker.py`, `trade_observer.py` | P2 | PR_11 (Phase 1) |
+
+### Phase 2E — Codebase Health (PR_27–PR_29)
+
+| PR | Title | Modules Affected | Priority | Dependency |
+|----|-------|-----------------|----------|------------|
+| PR_27 | Scanner Decomposition (Part 2: Signal Dispatch & Orchestration) | `scanner.py` → `src/scanner/*.py` | P0 | PR_14 |
+| PR_28 | Config Modularization | `config/` | P1 | PR_27 |
+| PR_29 | Pydantic Model Validation + Architecture Docs | Multiple source files, `docs/` | P2 | PR_28 |
+
+### Recommended Implementation Schedule
+
+```
+Week 1:  PR_13 (Drawdown Breaker) → PR_14 (Scanner Split P1) → PR_21 (Slippage Model)
+Week 2:  PR_15 (Correlation Filter) → PR_16 (Score-Weighted Sizing) → PR_24 (Dashboard)
+Week 3:  PR_17 (Confluence) → PR_18 (Funding Rate) → PR_25 (Anomaly Monitor)
+Week 4:  PR_27 (Scanner Split P2) → PR_28 (Config Split) → PR_22 (Monte Carlo)
+Week 5:  PR_19 (Online Learning) → PR_20 (Session Thresholds) → PR_26 (Regime Attribution)
+Week 6:  PR_23 (Reconciliation) → PR_29 (Pydantic + Docs) → Integration Testing
+```
+
+### Expected Cumulative Impact
+
+| Metric | Current (Post Phase 1) | Target (Post Phase 2) |
+|--------|----------------------|-----------------------|
+| Signal Win Rate | ~45–55% | 55–65% |
+| False Positive Rate | ~35–40% | 20–25% |
+| Max Drawdown | Unbounded | Capped at −8% |
+| Backtest-to-Live Gap | ~15–20% | <5% |
+| Time to Diagnose Issues | Hours (manual) | Minutes (automated) |
+| Scanner File Complexity | 90KB monolith | 4 files, max 22KB each |
+
+See individual PR documents (`PR_13_*.md` through `PR_29_*.md`) for full implementation steps, expected impact, and file-level change specifications.
 
 ---
 
