@@ -11,7 +11,7 @@ from typing import Dict, Optional
 
 from config import CHANNEL_SWING
 from src.channels.base import BaseChannel, Signal, build_channel_signal
-from src.filters import check_adx_regime, check_rsi_regime, check_spread_adaptive, check_volume
+from src.filters import check_adx_regime, check_macd_confirmation, check_rsi_regime, check_spread_adaptive, check_volume
 from src.smc import Direction
 
 # Percentile position within the Bollinger Band range for rejection gate.
@@ -89,6 +89,15 @@ class SwingChannel(BaseChannel):
 
         # RSI extreme gate: don't chase overbought LONGs or fade oversold SHORTs
         if not check_rsi_regime(ind_h1.get("rsi_last"), direction=direction.value, regime=regime):
+            return None
+
+        # MACD confirmation gate — soft penalty for swing (longer TF is smoother) (PR_04)
+        ind_h1_macd_last = ind_h1.get("macd_histogram_last")
+        ind_h1_macd_prev = ind_h1.get("macd_histogram_prev")
+        macd_ok, macd_adj = check_macd_confirmation(
+            ind_h1_macd_last, ind_h1_macd_prev, direction.value, regime=regime, strict=False
+        )
+        if not macd_ok:
             return None
 
         # Validate EMA200 bias — with a dynamic buffer zone scaled by ATR and regime.
@@ -185,6 +194,14 @@ class SwingChannel(BaseChannel):
         )
         if sig is None:
             return None
+
+        # Apply MACD soft penalty if applicable
+        if macd_adj != 0.0:
+            sig.confidence += macd_adj
+            if sig.soft_gate_flags:
+                sig.soft_gate_flags += ",MACD_WEAK"
+            else:
+                sig.soft_gate_flags = "MACD_WEAK"
 
         sig.risk_label = "Medium"
 

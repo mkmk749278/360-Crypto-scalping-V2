@@ -353,3 +353,55 @@ def check_ema_alignment_adaptive(
     if direction == "SHORT":
         return ema_diff <= -buffer_abs  # fast must be meaningfully below slow
     return False
+
+
+def check_macd_confirmation(
+    histogram_last: float | None,
+    histogram_prev: float | None,
+    direction: str,
+    regime: str = "",
+    strict: bool = False,
+) -> tuple[bool, float]:
+    """Check MACD histogram confirms trade direction.
+
+    Returns (passes: bool, confidence_adjustment: float).
+    A negative confidence_adjustment is a soft penalty when the check
+    fails in a non-strict regime.
+
+    Parameters
+    ----------
+    histogram_last:
+        Most recent MACD histogram value. None → pass (no data).
+    histogram_prev:
+        Previous MACD histogram value. None → pass (no data).
+    direction:
+        "LONG" or "SHORT".
+    regime:
+        Current market regime string.
+    strict:
+        When True, return (False, 0.0) on failure instead of applying
+        a soft penalty. Used for RANGING/QUIET regimes.
+    """
+    if histogram_last is None or histogram_prev is None:
+        return True, 0.0   # Missing data → fail open
+
+    rising = histogram_last > histogram_prev
+    positive = histogram_last > 0.0
+    falling = histogram_last < histogram_prev
+    negative = histogram_last < 0.0
+
+    if direction == "LONG":
+        confirmed = rising or positive
+    elif direction == "SHORT":
+        confirmed = falling or negative
+    else:
+        return True, 0.0
+
+    if confirmed:
+        return True, 0.0   # Clean confirmation — no penalty
+
+    if strict:
+        return False, 0.0  # Hard reject in strict (RANGING/QUIET) mode
+
+    # Soft penalty in permissive (TRENDING/VOLATILE) mode
+    return True, -5.0

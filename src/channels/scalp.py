@@ -17,6 +17,7 @@ from config import CHANNEL_SCALP
 from src.channels.base import BaseChannel, Signal, build_channel_signal
 from src.filters import (
     check_adx,
+    check_macd_confirmation,
     check_rsi_regime,
     check_ema_alignment_adaptive,
 )
@@ -178,6 +179,16 @@ class ScalpChannel(BaseChannel):
         ):
             return None
 
+        # MACD confirmation gate (PR_04)
+        ind_macd_last = ind.get("macd_histogram_last")
+        ind_macd_prev = ind.get("macd_histogram_prev")
+        strict_macd = regime.upper() in ("RANGING", "QUIET") if regime else False
+        macd_ok, macd_adj = check_macd_confirmation(
+            ind_macd_last, ind_macd_prev, direction.value, regime=regime, strict=strict_macd
+        )
+        if not macd_ok:
+            return None  # Hard reject in strict mode
+
         sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val * 0.5)
         sl, tp1, tp2, tp3 = self._calc_levels(close, sl_dist, direction)
 
@@ -186,7 +197,7 @@ class ScalpChannel(BaseChannel):
         if direction == Direction.SHORT and sl <= close:
             return None
 
-        return build_channel_signal(
+        sig = build_channel_signal(
             config=self.config,
             symbol=symbol,
             direction=direction,
@@ -201,6 +212,18 @@ class ScalpChannel(BaseChannel):
             setup_class="LIQUIDITY_SWEEP_REVERSAL",
             regime=regime,
         )
+        if sig is None:
+            return None
+
+        # Apply MACD soft penalty if applicable
+        if macd_adj != 0.0:
+            sig.confidence += macd_adj
+            if sig.soft_gate_flags:
+                sig.soft_gate_flags += ",MACD_WEAK"
+            else:
+                sig.soft_gate_flags = "MACD_WEAK"
+
+        return sig
 
     # ------------------------------------------------------------------
     # RANGE_FADE path (absorbed from former RangeChannel)
@@ -280,6 +303,15 @@ class ScalpChannel(BaseChannel):
         atr_val = ind.get("atr_last", close * 0.002)
         sl_dist = max(close * self.config.sl_pct_range[0] / 100, atr_val * 0.8)
         sl, tp1, tp2, tp3 = self._calc_levels(close, sl_dist, direction)
+
+        # MACD confirmation gate — always strict for range-fade (PR_04)
+        ind_macd_last = ind.get("macd_histogram_last")
+        ind_macd_prev = ind.get("macd_histogram_prev")
+        macd_ok, _ = check_macd_confirmation(
+            ind_macd_last, ind_macd_prev, direction.value, regime=regime, strict=True
+        )
+        if not macd_ok:
+            return None
 
         sig = build_channel_signal(
             config=self.config,
