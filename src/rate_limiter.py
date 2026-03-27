@@ -169,8 +169,7 @@ class RateLimiter:
         """Wait until *weight* units can be consumed without exceeding budget.
 
         If the remaining budget is insufficient, the coroutine suspends until
-        the current window resets, then records the weight and returns.  All
-        callers share the same lock so requests are serialised when pausing.
+        the current window resets, then records the weight and returns.
 
         When the remaining budget is below ``_BURST_PROTECTION_THRESHOLD``
         (15% of the budget) a proportional micro-sleep is injected to smooth
@@ -178,45 +177,47 @@ class RateLimiter:
         the hard Binance 42 s lockout that occurs when the engine consumes
         the last few hundred weight units in rapid succession.
 
+        The required sleep duration is calculated and state is updated inside
+        the lock; ``asyncio.sleep()`` is then called *outside* the lock so
+        that other coroutines waiting to acquire the lock are not blocked
+        while this coroutine is sleeping.
+
         Parameters
         ----------
         weight:
             Estimated Binance request weight of the upcoming API call.
         """
+        sleep_s = 0.0
         async with self._lock:
             self._maybe_reset()
             if self._used + weight > self._budget:
                 elapsed = time.monotonic() - self._window_start
-                wait_s = max(0.0, self._window_s - elapsed)
+                sleep_s = max(0.0, self._window_s - elapsed)
                 log.warning(
                     "Rate limiter budget exhausted "
                     "(used=%d, budget=%d, weight=%d) – pausing %.1fs",
-                    self._used, self._budget, weight, wait_s,
+                    self._used, self._budget, weight, sleep_s,
                 )
-                await asyncio.sleep(wait_s)
                 self._reset()
             else:
                 # Proactive burst protection: add a micro-sleep proportional
                 # to how close the budget already is to exhaustion *before*
                 # this request is consumed.  Checking the pre-consume remaining
                 # avoids false triggers on the first call in a fresh window.
-                # The lock is held during the sleep so all concurrent callers
-                # are serialised, naturally throttling the per-second request
-                # rate when the budget is nearly gone.
                 remaining_before = self._budget - self._used
                 frac_remaining = remaining_before / self._budget
                 if frac_remaining < _BURST_PROTECTION_THRESHOLD:
                     # Linear scale: 0 → 0 s at threshold, full cap at 0 remaining
-                    sleep_s = _BURST_PROTECTION_MAX_SLEEP_S * (
+                    burst_sleep = _BURST_PROTECTION_MAX_SLEEP_S * (
                         1.0 - frac_remaining / _BURST_PROTECTION_THRESHOLD
                     )
-                    if sleep_s > _BURST_PROTECTION_MIN_SLEEP_S:
+                    if burst_sleep > _BURST_PROTECTION_MIN_SLEEP_S:
                         log.debug(
                             "Burst protection: %.0f%% budget remaining — sleeping %.2fs",
                             frac_remaining * 100,
-                            sleep_s,
+                            burst_sleep,
                         )
-                        await asyncio.sleep(sleep_s)
+                        sleep_s = burst_sleep
             self._used += weight
             pct = self._used / self._budget * 100
             if pct >= _WARN_THRESHOLD * 100:
@@ -224,6 +225,10 @@ class RateLimiter:
                     "Binance API weight usage at %.0f%% (%d/%d)",
                     pct, self._used, self._budget,
                 )
+        # Sleep outside the lock so other coroutines are not blocked while
+        # this task is waiting for the window to reset or burst protection.
+        if sleep_s > 0.0:
+            await asyncio.sleep(sleep_s)
 
     def update_from_header(self, raw_value: Optional[str]) -> None:
         """Sync the local weight counter from ``X-MBX-USED-WEIGHT-1m`` header.

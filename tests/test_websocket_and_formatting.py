@@ -904,9 +904,9 @@ class TestPingPongHeartbeatMonitor:
         assert WS_PING_TIMEOUT_MS > 0
 
     def test_ws_ping_timeout_ms_is_2000(self):
-        """WS_PING_TIMEOUT_MS default must be 2000 ms."""
+        """WS_PING_TIMEOUT_MS default must be 5000 ms."""
         from config import WS_PING_TIMEOUT_MS
-        assert WS_PING_TIMEOUT_MS == 2000
+        assert WS_PING_TIMEOUT_MS == 5000
 
     def test_ws_connection_has_last_ping_time_field(self):
         """WSConnection must expose last_ping_time for latency tracking."""

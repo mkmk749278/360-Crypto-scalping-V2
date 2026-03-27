@@ -81,6 +81,11 @@ class BinanceClient:
         # for 75 s per symbol (5 retries × 15 s timeout each).
         self._depth_consecutive_timeouts: int = 0
         self._depth_circuit_open_until: float = 0.0
+        # Semaphore to cap the number of simultaneous in-flight HTTP requests.
+        # Without this, hundreds of coroutines can bypass the rate limiter and
+        # send requests before the first response header arrives to call
+        # update_from_header(), leading to in-flight race conditions.
+        self._inflight_sem: asyncio.Semaphore = asyncio.Semaphore(10)
 
     # ------------------------------------------------------------------
     # Weight tracking
@@ -169,42 +174,43 @@ class BinanceClient:
 
         for attempt in range(max_retries):
             try:
-                async with session.get(
-                    url, params=params, timeout=aiohttp.ClientTimeout(total=timeout)
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        # Sync used-weight from the authoritative server header
-                        # so our local estimate stays accurate across parallel
-                        # requests.  Prefer the 1-minute window header which
-                        # Binance always returns on Spot and Futures REST calls.
-                        raw_weight = resp.headers.get(
-                            "x-mbx-used-weight-1m",
-                            resp.headers.get("x-mbx-used-weight"),
-                        )
-                        self._rate_limiter.update_from_header(raw_weight)
-                        if raw_weight is not None:
-                            try:
-                                self._used_weight = int(raw_weight)
-                            except ValueError:
-                                pass
-                        if BinanceClient.on_api_call is not None:
-                            BinanceClient.on_api_call()
-                        # Reset depth circuit breaker on first successful call.
-                        if is_depth and self._depth_consecutive_timeouts > 0:
-                            self._depth_consecutive_timeouts = 0
-                        return data
-                    if resp.status in (429, 418):
-                        retry_after = int(resp.headers.get("Retry-After", 5))
-                        wait = max(retry_after, _BACKOFF_BASE ** attempt)
-                        log.warning(
-                            "Binance %s – rate limited (%s). Waiting %.1fs (attempt %d/%d)",
-                            path, resp.status, wait, attempt + 1, max_retries,
-                        )
-                        await asyncio.sleep(wait)
-                        continue
-                    log.warning("Binance %s returned HTTP %s", path, resp.status)
-                    return None
+                async with self._inflight_sem:
+                    async with session.get(
+                        url, params=params, timeout=aiohttp.ClientTimeout(total=timeout)
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            # Sync used-weight from the authoritative server header
+                            # so our local estimate stays accurate across parallel
+                            # requests.  Prefer the 1-minute window header which
+                            # Binance always returns on Spot and Futures REST calls.
+                            raw_weight = resp.headers.get(
+                                "x-mbx-used-weight-1m",
+                                resp.headers.get("x-mbx-used-weight"),
+                            )
+                            self._rate_limiter.update_from_header(raw_weight)
+                            if raw_weight is not None:
+                                try:
+                                    self._used_weight = int(raw_weight)
+                                except ValueError:
+                                    pass
+                            if BinanceClient.on_api_call is not None:
+                                BinanceClient.on_api_call()
+                            # Reset depth circuit breaker on first successful call.
+                            if is_depth and self._depth_consecutive_timeouts > 0:
+                                self._depth_consecutive_timeouts = 0
+                            return data
+                        if resp.status in (429, 418):
+                            retry_after = int(resp.headers.get("Retry-After", 5))
+                            wait = max(retry_after, _BACKOFF_BASE ** attempt)
+                            log.warning(
+                                "Binance %s – rate limited (%s). Waiting %.1fs (attempt %d/%d)",
+                                path, resp.status, wait, attempt + 1, max_retries,
+                            )
+                            await asyncio.sleep(wait)
+                            continue
+                        log.warning("Binance %s returned HTTP %s", path, resp.status)
+                        return None
             except asyncio.TimeoutError:
                 wait = _BACKOFF_BASE ** attempt
                 log.warning("Binance %s timeout – retrying in %.1fs", path, wait)
