@@ -21,7 +21,10 @@ Safety targets
   Leaves ~1,000 weight headroom for WebSocket reconnects and ad-hoc calls.
 - Futures: budget 2,000/min out of Binance's 2,400/min Futures cap.
   Leaves ~400 weight headroom for reconnects and ad-hoc requests.
-- Burst protection: auto-pause when remaining weight < ``_PAUSE_THRESHOLD``.
+- Burst protection: proactive micro-sleep when remaining weight falls below
+  ``_BURST_PROTECTION_THRESHOLD`` (15% of budget) to prevent the engine
+  from burning through the last units in a single burst and triggering the
+  hard Binance 429 lockout (observed as ~42 s pause at 100% usage).
 """
 
 from __future__ import annotations
@@ -48,6 +51,22 @@ _DEFAULT_FUTURES_BUDGET: int = 2_000
 
 # Warn when usage reaches this fraction of the budget
 _WARN_THRESHOLD: float = 0.80
+
+# Burst protection: when remaining budget falls below this fraction of the
+# total budget, a proportional micro-sleep is injected *before* consuming
+# the next weight unit.  This smooths out request bursts and prevents the
+# engine from burning through the remaining headroom in a single cycle,
+# which was causing the hard Binance 429 lockout (42 s pause at 100% usage).
+# The threshold of 15% means throttling kicks in at:
+#   Spot:    750 / 5,000  remaining  (Binance hard cap 6,000)
+#   Futures: 300 / 2,000  remaining  (Binance hard cap 2,400)
+_BURST_PROTECTION_THRESHOLD: float = 0.15
+# Maximum micro-sleep (seconds) injected when the budget is almost zero.
+# As remaining approaches 0% the sleep grows linearly toward this cap.
+_BURST_PROTECTION_MAX_SLEEP_S: float = 0.5
+# Minimum micro-sleep to actually issue (avoids an asyncio.sleep(0.001)
+# no-op while still suppressing a log line for trivially small delays).
+_BURST_PROTECTION_MIN_SLEEP_S: float = 0.01
 
 
 class RateLimiter:
@@ -108,6 +127,12 @@ class RateLimiter:
         the current window resets, then records the weight and returns.  All
         callers share the same lock so requests are serialised when pausing.
 
+        When the remaining budget is below ``_BURST_PROTECTION_THRESHOLD``
+        (15% of the budget) a proportional micro-sleep is injected to smooth
+        out request bursts *before* they exhaust the window.  This prevents
+        the hard Binance 42 s lockout that occurs when the engine consumes
+        the last few hundred weight units in rapid succession.
+
         Parameters
         ----------
         weight:
@@ -125,6 +150,28 @@ class RateLimiter:
                 )
                 await asyncio.sleep(wait_s)
                 self._reset()
+            else:
+                # Proactive burst protection: add a micro-sleep proportional
+                # to how close the budget already is to exhaustion *before*
+                # this request is consumed.  Checking the pre-consume remaining
+                # avoids false triggers on the first call in a fresh window.
+                # The lock is held during the sleep so all concurrent callers
+                # are serialised, naturally throttling the per-second request
+                # rate when the budget is nearly gone.
+                remaining_before = self._budget - self._used
+                frac_remaining = remaining_before / self._budget
+                if frac_remaining < _BURST_PROTECTION_THRESHOLD:
+                    # Linear scale: 0 → 0 s at threshold, full cap at 0 remaining
+                    sleep_s = _BURST_PROTECTION_MAX_SLEEP_S * (
+                        1.0 - frac_remaining / _BURST_PROTECTION_THRESHOLD
+                    )
+                    if sleep_s > _BURST_PROTECTION_MIN_SLEEP_S:
+                        log.debug(
+                            "Burst protection: %.0f%% budget remaining — sleeping %.2fs",
+                            frac_remaining * 100,
+                            sleep_s,
+                        )
+                        await asyncio.sleep(sleep_s)
             self._used += weight
             pct = self._used / self._budget * 100
             if pct >= _WARN_THRESHOLD * 100:

@@ -34,11 +34,13 @@ from config import (
     TIER2_SCAN_EVERY_N_CYCLES,
     TIER3_SCAN_INTERVAL_MINUTES,
     WS_DEGRADED_CYCLES_ALERT,
+    WS_DEGRADED_MAX_PAIRS,
+    WS_PARTIAL_HEALTH_THRESHOLD,
 )
 from src.binance import BinanceClient
 from src.channels.base import Signal as _Signal
 from src.smc import Direction
-from src.rate_limiter import rate_limiter
+from src.rate_limiter import rate_limiter, futures_rate_limiter
 from src.confidence import (
     ConfidenceInput,
     compute_confidence,
@@ -107,6 +109,10 @@ _MAX_ORDER_BOOK_FETCHES_PER_CYCLE: int = 50
 # buffer for kline fetches, exchange-info calls, and WebSocket reconnects that
 # may occur concurrently — roughly 8% of the 1 200-weight Binance limit.
 _MIN_WEIGHT_FOR_ORDER_BOOK: int = 100
+# When WS is partially degraded, tighten the order book limits to avoid
+# burning REST budget on depth fetches across hundreds of pairs.
+_MAX_ORDER_BOOK_FETCHES_WS_DEGRADED: int = 10
+_MIN_WEIGHT_FOR_ORDER_BOOK_WS_DEGRADED: int = 400
 
 # ADX threshold below which SCALP signals are suppressed during RANGING regime
 _RANGING_ADX_SUPPRESS_THRESHOLD: float = 15.0
@@ -396,6 +402,11 @@ class Scanner:
         # elapsed_ms exceeded SCAN_LATENCY_ALERT_MS.
         self._consecutive_high_latency_cycles: int = 0
 
+        # Per-cycle WS degradation flag: True when either WS manager is
+        # partially degraded.  Set at the start of each scan cycle and used
+        # by _get_spread_pct to apply tighter REST fetch limits.
+        self._ws_any_degraded_this_cycle: bool = False
+
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
@@ -426,6 +437,14 @@ class Scanner:
             ws_spot_ok = self.ws_spot.is_healthy if self.ws_spot else True
             ws_futures_ok = self.ws_futures.is_healthy if self.ws_futures else True
             ws_both_unhealthy = not ws_spot_ok and not ws_futures_ok
+            # Partial degradation: either manager has below-threshold health.
+            # Used to tighten REST fetch limits for the remainder of the cycle.
+            ws_spot_ratio = self.ws_spot.health_ratio if self.ws_spot else 1.0
+            ws_futures_ratio = self.ws_futures.health_ratio if self.ws_futures else 1.0
+            self._ws_any_degraded_this_cycle = (
+                ws_spot_ratio < WS_PARTIAL_HEALTH_THRESHOLD
+                or ws_futures_ratio < WS_PARTIAL_HEALTH_THRESHOLD
+            )
             if ws_both_unhealthy:
                 self._consecutive_ws_degraded_cycles += 1
                 log.warning(
@@ -490,6 +509,20 @@ class Scanner:
                 # symbols that reach expensive API calls (order book, klines).
                 # This keeps Binance weight consumption ~400/min for 200+ pairs.
                 filtered_pairs = self._prefilter_pairs(pairs_this_cycle)
+
+                # When WS is partially degraded, cap the scan set to top-N
+                # pairs by volume.  This prevents querying REST /depth for
+                # hundreds of pairs that lack live kline updates, which was
+                # the primary cause of the 100% rate-limit exhaustion observed
+                # when the futures WS dropped (WS=300, ok=False).
+                if self._ws_any_degraded_this_cycle and len(filtered_pairs) > WS_DEGRADED_MAX_PAIRS:
+                    filtered_pairs = filtered_pairs[:WS_DEGRADED_MAX_PAIRS]
+                    log.warning(
+                        "WS partially degraded (spot_ratio={:.0%}, futures_ratio={:.0%}) "
+                        "— limiting scan to top {} pairs to protect REST rate limit",
+                        ws_spot_ratio, ws_futures_ratio, WS_DEGRADED_MAX_PAIRS,
+                    )
+
                 sem = self._scan_semaphore
                 tasks = [
                     self._scan_symbol_bounded(sem, sym, info.volume_24h_usd)
@@ -747,15 +780,26 @@ class Scanner:
         cached = self._order_book_cache.get(symbol)
         if cached and now < cached[1]:
             return cached[0]
+        # Apply tighter limits when WS is partially degraded to prevent
+        # burning REST rate-limit budget on depth fetches for all pairs.
+        if self._ws_any_degraded_this_cycle:
+            effective_max_fetches = _MAX_ORDER_BOOK_FETCHES_WS_DEGRADED
+            effective_min_weight = _MIN_WEIGHT_FOR_ORDER_BOOK_WS_DEGRADED
+        else:
+            effective_max_fetches = _MAX_ORDER_BOOK_FETCHES_PER_CYCLE
+            effective_min_weight = _MIN_WEIGHT_FOR_ORDER_BOOK
         # Guard 1: hard per-cycle cap (safety net; rate limiter is primary).
-        if self._order_book_fetches_this_cycle >= _MAX_ORDER_BOOK_FETCHES_PER_CYCLE:
+        if self._order_book_fetches_this_cycle >= effective_max_fetches:
             return spread_pct
-        # Guard 2: rate-limiter budget check — skip fetch when budget is low to
-        # preserve capacity for higher-priority calls (klines, exchange info).
-        if rate_limiter.remaining < _MIN_WEIGHT_FOR_ORDER_BOOK:
+        # Guard 2: rate-limiter budget check — skip fetch when budget is low
+        # to preserve capacity for higher-priority calls (klines, exchange info).
+        # Use the market-appropriate limiter so futures depth checks against the
+        # futures budget rather than the spot budget.
+        active_limiter = futures_rate_limiter if market == "futures" else rate_limiter
+        if active_limiter.remaining < effective_min_weight:
             log.debug(
-                "Skipping order book fetch for %s – rate limiter budget low (%d remaining)",
-                symbol, rate_limiter.remaining,
+                "Skipping order book fetch for %s – %s rate limiter budget low (%d remaining)",
+                symbol, market, active_limiter.remaining,
             )
             return spread_pct
         try:

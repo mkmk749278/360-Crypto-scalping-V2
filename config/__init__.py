@@ -828,13 +828,27 @@ SCAN_LATENCY_REDUCE_MS: float = float(os.getenv("SCAN_LATENCY_REDUCE_MS", "60000
 # an admin alert is sent.
 WS_DEGRADED_CYCLES_ALERT: int = int(os.getenv("WS_DEGRADED_CYCLES_ALERT", "10"))
 
+# Health-ratio threshold below which a single WS manager is considered
+# "partially degraded".  When either WS manager drops below this fraction
+# of healthy connections the scanner applies reduced scan limits to avoid
+# burning Binance API weight on REST depth fetches for all 800 pairs.
+# 0.5 = fewer than half of connections are open/non-stale → degraded mode.
+WS_PARTIAL_HEALTH_THRESHOLD: float = float(
+    os.getenv("WS_PARTIAL_HEALTH_THRESHOLD", "0.5")
+)
+
+# Maximum number of symbols to scan per cycle when WS is partially degraded.
+# Reduces REST API consumption while still providing signals for top pairs.
+WS_DEGRADED_MAX_PAIRS: int = int(os.getenv("WS_DEGRADED_MAX_PAIRS", "50"))
+
 # ---------------------------------------------------------------------------
 # Depth endpoint circuit breaker
 # ---------------------------------------------------------------------------
 # Consecutive timeout count for /fapi/v1/depth or /api/v3/depth that triggers
-# the open-circuit state.
+# the open-circuit state.  Lowered from 10 to 5 so the engine stops hammering
+# a degraded depth endpoint sooner, reducing cumulative timeout latency.
 DEPTH_CIRCUIT_BREAKER_THRESHOLD: int = int(
-    os.getenv("DEPTH_CIRCUIT_BREAKER_THRESHOLD", "10")
+    os.getenv("DEPTH_CIRCUIT_BREAKER_THRESHOLD", "5")
 )
 # How long (seconds) the circuit stays open (depth fetches return None immediately).
 DEPTH_CIRCUIT_BREAKER_COOLDOWN: float = float(
