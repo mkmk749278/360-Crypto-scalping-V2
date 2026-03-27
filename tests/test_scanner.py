@@ -742,7 +742,13 @@ class TestRegimeStabilityTracker:
         assert scanner._is_regime_unstable("ETHUSDT", window_minutes=30, max_flips=2) is False
 
     def test_should_skip_scalp_when_regime_quiet(self):
-        """_should_skip_channel returns True for SCALP when regime is QUIET."""
+        """_should_skip_channel returns False for 360_SCALP when regime is QUIET.
+
+        Since PR-OPT-01, SCALP channels are no longer hard-blocked in QUIET.
+        Instead they receive a higher soft-gate penalty and a minimum confidence
+        gate inside _prepare_signal.  _should_skip_channel must return False so
+        the signal evaluation proceeds to the soft-penalty stage.
+        """
         scanner = _make_scanner()
         ctx = MagicMock()
         ctx.pair_quality.passed = True
@@ -754,10 +760,14 @@ class TestRegimeStabilityTracker:
         ctx.is_ranging = False
         ctx.adx_val = 25.0
         result = scanner._should_skip_channel("ETHUSDT", "360_SCALP", ctx)
-        assert result is True
+        assert result is False
 
-    def test_should_not_skip_swing_when_regime_quiet(self):
-        """QUIET regime is only incompatible with SCALP, not SWING."""
+    def test_should_skip_scalp_vwap_when_regime_quiet(self):
+        """_should_skip_channel returns True for 360_SCALP_VWAP when regime is QUIET.
+
+        VWAP signals are meaningless without sufficient trading volume, so
+        360_SCALP_VWAP remains hard-blocked in QUIET regime.
+        """
         scanner = _make_scanner()
         ctx = MagicMock()
         ctx.pair_quality.passed = True
@@ -768,7 +778,22 @@ class TestRegimeStabilityTracker:
         scanner.router.active_signals = {}
         ctx.is_ranging = False
         ctx.adx_val = 25.0
-        # SWING should not be blocked by QUIET regime (only SCALP is blocked)
+        result = scanner._should_skip_channel("ETHUSDT", "360_SCALP_VWAP", ctx)
+        assert result is True
+
+    def test_should_not_skip_swing_when_regime_quiet(self):
+        """QUIET regime is incompatible with SCALP_VWAP only, not SWING."""
+        scanner = _make_scanner()
+        ctx = MagicMock()
+        ctx.pair_quality.passed = True
+        ctx.market_state = MagicMock()
+        ctx.market_state.__eq__ = lambda self, other: False
+        ctx.regime_result.regime.value = "QUIET"
+        scanner.circuit_breaker = None
+        scanner.router.active_signals = {}
+        ctx.is_ranging = False
+        ctx.adx_val = 25.0
+        # SWING should not be blocked by QUIET regime
         result = scanner._should_skip_channel("ETHUSDT", "360_SWING", ctx)
         assert result is False
 

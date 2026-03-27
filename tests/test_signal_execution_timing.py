@@ -91,8 +91,9 @@ class TestConfigChanges:
         assert MIN_SIGNAL_LIFESPAN_SECONDS["360_SPOT"] >= 600
 
     def test_min_signal_lifespan_gem_unchanged(self):
-        """GEM min lifespan must remain at 1 day (86400 seconds)."""
-        assert MIN_SIGNAL_LIFESPAN_SECONDS["360_GEM"] == 86400
+        """GEM min lifespan has been reduced to 6 hours (21600 seconds) to allow
+        GEM signals on volatile small-cap tokens to be evaluated sooner."""
+        assert MIN_SIGNAL_LIFESPAN_SECONDS["360_GEM"] == 21600
 
     def test_signal_valid_for_minutes_scalp(self):
         """SCALP signals should be valid for 15 minutes."""

@@ -401,6 +401,7 @@ class TestScannerTier2SkipsScalp:
     def _make_scanner(self):
         from src.scanner import Scanner
         from src.signal_quality import MarketState
+        from collections import defaultdict
 
         scanner = Scanner.__new__(Scanner)
         scanner._scan_cycle_count = 0
@@ -409,6 +410,7 @@ class TestScannerTier2SkipsScalp:
         scanner._cooldown_until = {}
         scanner._regime_history = {}
         scanner.circuit_breaker = None
+        scanner._suppression_counters = defaultdict(int)
 
         # Minimal router mock
         scanner.router = MagicMock()

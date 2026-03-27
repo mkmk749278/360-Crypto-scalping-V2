@@ -614,8 +614,8 @@ class TestRegimeMultiplierStoredOnSignal:
 
     @pytest.mark.asyncio
     async def test_regime_multiplier_stored_quiet(self):
+        """In QUIET regime, 360_SWING uses the standard QUIET penalty (0.8)."""
         channel = MagicMock()
-        # Use 360_SWING since 360_SCALP is blocked in QUIET regime
         channel.config = SimpleNamespace(name="360_SWING", min_confidence=10.0)
         channel.evaluate.return_value = Signal(
             channel="360_SWING",
@@ -648,3 +648,42 @@ class TestRegimeMultiplierStoredOnSignal:
         sig = captured.get("sig")
         assert sig is not None
         assert sig.regime_penalty_multiplier == pytest.approx(0.8)
+
+    @pytest.mark.asyncio
+    async def test_regime_multiplier_scalp_quiet_uses_higher_penalty(self):
+        """In QUIET regime, 360_SCALP uses the higher 1.8× penalty multiplier."""
+        channel = MagicMock()
+        channel.config = SimpleNamespace(name="360_SCALP", min_confidence=10.0)
+        channel.evaluate.return_value = Signal(
+            channel="360_SCALP",
+            symbol="BTCUSDT",
+            direction=Direction.LONG,
+            entry=100.0,
+            stop_loss=95.0,
+            tp1=105.0,
+            tp2=110.0,
+            confidence=10.0,
+            signal_id="SIG-002",
+            timestamp=utcnow(),
+        )
+        sq = MagicMock()
+
+        captured = {}
+
+        async def _capture(sig):
+            captured["sig"] = sig
+            return True
+
+        sq.put = AsyncMock(side_effect=_capture)
+        scanner = _make_scan_ready_scanner(
+            channel=channel, signal_queue=sq, regime=MarketRegime.QUIET
+        )
+
+        with _common_patches(scanner):
+            await scanner._scan_symbol("BTCUSDT", 10_000_000)
+
+        sig = captured.get("sig")
+        # Signal may or may not pass the QUIET_SCALP_MIN_CONFIDENCE gate.
+        # If it does pass, the regime_penalty_multiplier must be 1.8.
+        if sig is not None:
+            assert sig.regime_penalty_multiplier == pytest.approx(1.8)

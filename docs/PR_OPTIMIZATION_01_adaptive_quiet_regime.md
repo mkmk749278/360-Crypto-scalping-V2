@@ -2,7 +2,8 @@
 
 **Priority:** P0 — Highest impact, lowest implementation risk  
 **Estimated Signal Recovery:** +15–25% signal frequency during low-volatility periods  
-**Dependencies:** None
+**Dependencies:** None  
+**Status:** ✅ IMPLEMENTED
 
 ---
 

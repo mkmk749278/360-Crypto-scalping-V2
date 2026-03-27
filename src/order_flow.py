@@ -159,7 +159,11 @@ def is_squeeze(
     )
 
 
-def is_oi_invalidated(oi_trend: OITrend, signal_direction: str) -> bool:
+def is_oi_invalidated(
+    oi_trend: OITrend,
+    signal_direction: str,
+    oi_change_pct: float = 0.0,
+) -> bool:
     """Return ``True`` when rising OI contradicts the proposed signal direction.
 
     Rising OI during a bearish sweep (price dipping below a low) signals that
@@ -167,14 +171,25 @@ def is_oi_invalidated(oi_trend: OITrend, signal_direction: str) -> bool:
     fight the incoming trend.  Similarly, rising OI during a bullish sweep
     indicates new longs piling in, which can front-run a reversal downward.
 
+    Small OI moves (below 1%) are treated as market noise and will NOT
+    invalidate the signal.  This prevents spurious rejections on Binance
+    perpetuals where OI fluctuates by sub-1% amounts between every kline.
+
     Parameters
     ----------
     oi_trend:
         Current OI trend classification.
     signal_direction:
         ``"LONG"`` or ``"SHORT"``.
+    oi_change_pct:
+        Fractional OI change magnitude (e.g. ``0.015`` = 1.5%).  When the
+        absolute value is below 0.01 (1%) the change is treated as noise and
+        the signal is not invalidated.
     """
-    return oi_trend == OITrend.RISING
+    if oi_trend != OITrend.RISING:
+        return False
+    # Only invalidate if the OI rise is significant (> 1%)
+    return abs(oi_change_pct) >= 0.01
 
 
 def detect_cvd_divergence(
@@ -281,6 +296,25 @@ class OrderFlowStore:
         """Return the current OI trend for *symbol*."""
         snaps = list(self._oi.get(symbol, []))
         return classify_oi_trend(snaps, lookback)
+
+    def get_oi_change_pct(self, symbol: str, lookback: int = 5) -> float:
+        """Return the fractional OI change over the last *lookback* snapshots.
+
+        Returns ``0.0`` when insufficient data is available.  The value is a
+        fraction (e.g. ``0.015`` = 1.5% increase), consistent with the
+        ``oi_change_pct`` parameter of :func:`is_oi_invalidated`.
+        """
+        snaps = list(self._oi.get(symbol, []))
+        if len(snaps) < 2:
+            return 0.0
+        recent = snaps[-lookback:]
+        if len(recent) < 2:
+            return 0.0
+        first_oi = recent[0].open_interest
+        last_oi = recent[-1].open_interest
+        if first_oi <= 0:
+            return 0.0
+        return (last_oi - first_oi) / first_oi
 
     # ------------------------------------------------------------------
     # Liquidations

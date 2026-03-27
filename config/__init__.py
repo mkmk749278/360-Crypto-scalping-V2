@@ -674,8 +674,28 @@ MIN_SIGNAL_LIFESPAN_SECONDS: Dict[str, int] = {
     "360_SCALP": 180,
     "360_SWING": 300,
     "360_SPOT": 600,
-    "360_GEM": 86400,  # 1 day — macro positions
+    "360_GEM": 21600,  # 6 hours — reduced from 24h; GEM signals on volatile
+                       # small-cap tokens often have shorter valid windows
 }
+
+# ---------------------------------------------------------------------------
+# QUIET regime scalp signal quality gates
+# ---------------------------------------------------------------------------
+
+#: Minimum confidence score for scalp signals to pass in QUIET regime.
+#: Acts as a hard floor — only top-tier signals proceed when the market is
+#: compressed.  Configurable via the QUIET_SCALP_MIN_CONFIDENCE env var.
+QUIET_SCALP_MIN_CONFIDENCE: float = float(
+    os.getenv("QUIET_SCALP_MIN_CONFIDENCE", "72.0")
+)
+
+#: Volume multiplier required for scalp entries in QUIET regime.
+#: Scalp signals in low-volatility markets are only accepted when current
+#: volume is at least this multiple of the rolling average, ensuring signals
+#: fire on genuine micro-breakouts rather than random noise.
+QUIET_SCALP_VOLUME_MULTIPLIER: float = float(
+    os.getenv("QUIET_SCALP_VOLUME_MULTIPLIER", "2.5")
+)
 
 # ---------------------------------------------------------------------------
 # How long a signal setup remains actionable (minutes).  After this window

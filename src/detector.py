@@ -143,15 +143,17 @@ class SMCDetector:
         if order_flow_store is not None and result.sweeps:
             primary_sweep = result.sweeps[0]
             oi_trend = order_flow_store.get_oi_trend(symbol)
+            oi_change_pct = order_flow_store.get_oi_change_pct(symbol)
 
             # Invalidate if OI is rising while we have a sweep signal.
             # Rising OI means new aggressive positions are entering against
-            # the proposed reversal direction.
-            if is_oi_invalidated(oi_trend, primary_sweep.direction.value):
+            # the proposed reversal direction.  Small OI moves (< 1%) are
+            # treated as noise and will not invalidate the signal.
+            if is_oi_invalidated(oi_trend, primary_sweep.direction.value, oi_change_pct):
                 result.oi_invalidated = True
                 log.debug(
-                    "{}: OI RISING during {} sweep – signal invalidated",
-                    symbol, primary_sweep.direction.value,
+                    "{}: OI RISING ({:+.2%}) during {} sweep – signal invalidated",
+                    symbol, oi_change_pct, primary_sweep.direction.value,
                 )
 
             # CVD divergence: check if price/CVD diverge (confirms the sweep)
