@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses as _dc
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -21,6 +22,7 @@ from config import (
     CHANNEL_GEM,
     MAX_CORRELATED_SCALP_SIGNALS,
     MTF_HARD_BLOCK,
+    QUIET_SCALP_MIN_CONFIDENCE,
     SCAN_LATENCY_ALERT_CONSECUTIVE,
     SCAN_LATENCY_ALERT_MS,
     SCAN_LATENCY_REDUCE_MS,
@@ -146,16 +148,22 @@ _MAX_CONCURRENT_SCANS: int = 10
 
 # Regime-channel compatibility matrix.
 # Maps channel name → list of regimes where that channel is blocked.
-# SCALP needs movement: block in QUIET (nothing moves).
+# SCALP channels (except VWAP) are no longer hard-blocked in QUIET — they
+# instead receive a higher soft-gate penalty (_SCALP_QUIET_REGIME_PENALTY)
+# and must meet a minimum confidence threshold (QUIET_SCALP_MIN_CONFIDENCE).
+# VWAP remains blocked in QUIET because VWAP signals are meaningless without
+# sufficient trading volume to anchor the indicator.
 # SWING needs sustained trend: block in VOLATILE (chaotic, stops get swept).
 _REGIME_CHANNEL_INCOMPATIBLE: Dict[str, List[str]] = {
-    "360_SCALP":      ["QUIET"],
-    "360_SCALP_FVG":  ["QUIET"],
-    "360_SCALP_CVD":  ["QUIET"],
-    "360_SCALP_OBI":  ["QUIET"],
+    "360_SCALP_VWAP": ["QUIET"],
     "360_SWING":      ["VOLATILE", "DIRTY_RANGE"],
     "360_SPOT":       ["DIRTY_RANGE"],
 }
+
+# Penalty multiplier applied to scalp-channel soft gates when the regime is
+# QUIET.  Higher than the default QUIET multiplier (0.8) to ensure only
+# top-tier signals — genuine mean-reversion setups — pass through.
+_SCALP_QUIET_REGIME_PENALTY: float = 1.8
 
 # Penalty multiplier applied to soft-gate base penalties depending on live market regime.
 # Trending markets → lenient (clear direction, fewer false signals).
@@ -426,6 +434,10 @@ class Scanner:
         # by _get_spread_pct to apply tighter REST fetch limits.
         self._ws_any_degraded_this_cycle: bool = False
 
+        # Suppression telemetry: counters per suppression reason, accumulated
+        # over each scan cycle and logged as a summary at cycle end.
+        self._suppression_counters: Dict[str, int] = defaultdict(int)
+
         # Data fetcher — delegates kline and order-book retrieval
         self._data_fetcher = DataFetcher(
             data_store=data_store,
@@ -661,6 +673,14 @@ class Scanner:
                 and (self.ws_futures.is_healthy if self.ws_futures else True)
             )
             self.telemetry.set_ws_health(ws_ok, ws_conns)
+
+            # Log suppression telemetry summary for this cycle, then reset.
+            if self._suppression_counters:
+                log.info(
+                    "Scan cycle suppression summary: {}",
+                    dict(self._suppression_counters),
+                )
+                self._suppression_counters.clear()
 
             if not self.force_scan:
                 await asyncio.sleep(1)
@@ -1097,6 +1117,7 @@ class Scanner:
         pair_info = self.pair_mgr.pairs.get(symbol)
         if pair_info is not None and pair_info.tier == PairTier.TIER2 and chan_name == "360_SCALP":
             log.debug("Skipping {} {} – Tier 2 pair excluded from SCALP", symbol, chan_name)
+            self._suppression_counters[f"tier2_scalp_excluded:{chan_name}"] += 1
             return True
         if not ctx.pair_quality.passed:
             log.debug(
@@ -1105,6 +1126,7 @@ class Scanner:
                 chan_name,
                 ctx.pair_quality.reason,
             )
+            self._suppression_counters[f"pair_quality:{ctx.pair_quality.reason}"] += 1
             return True
         if ctx.market_state == MarketState.VOLATILE_UNSUITABLE:
             # Higher-timeframe strategies (SPOT/GEM operate on H4/D1/W1) can
@@ -1115,11 +1137,14 @@ class Scanner:
                     symbol,
                     chan_name,
                 )
+                self._suppression_counters[f"volatile_unsuitable:{chan_name}"] += 1
                 return True
         if chan_name in self.paused_channels:
+            self._suppression_counters[f"paused_channel:{chan_name}"] += 1
             return True
         if self._is_in_cooldown(symbol, chan_name):
             log.debug("Cooldown active: skipping {} {}", symbol, chan_name)
+            self._suppression_counters[f"cooldown:{chan_name}"] += 1
             return True
         # Per-symbol circuit breaker: suppress the symbol across all channels
         # when it has accumulated too many consecutive SL hits.
@@ -1127,12 +1152,14 @@ class Scanner:
             log.debug(
                 "Per-symbol circuit breaker active: skipping {} {}", symbol, chan_name
             )
+            self._suppression_counters[f"circuit_breaker:{chan_name}"] += 1
             return True
         if any(
             s.symbol == symbol and s.channel == chan_name
             for s in self.router.active_signals.values()
         ):
             log.debug("Skipping {} {} – active signal already exists", symbol, chan_name)
+            self._suppression_counters[f"active_signal:{chan_name}"] += 1
             return True
         if (
             chan_name == "360_SCALP"
@@ -1144,6 +1171,7 @@ class Scanner:
                 symbol,
                 ctx.adx_val,
             )
+            self._suppression_counters[f"ranging_low_adx:{chan_name}"] += 1
             return True
         # Regime-channel compatibility matrix
         current_regime = ctx.regime_result.regime.value
@@ -1155,6 +1183,7 @@ class Scanner:
                 symbol,
                 current_regime,
             )
+            self._suppression_counters[f"regime:{current_regime}:{chan_name}"] += 1
             return True
         return False
 
@@ -1534,8 +1563,13 @@ class Scanner:
                 log.debug("MTF gate blocked {} {}: {}", symbol, chan_name, mtf_reason)
                 return None, None
 
-        # Resolve regime penalty multiplier for all soft gates below
-        regime_mult = _REGIME_PENALTY_MULTIPLIER.get(_regime_key, 1.0)
+        # Resolve regime penalty multiplier for all soft gates below.
+        # Scalp channels in QUIET regime use a higher multiplier to ensure
+        # only top-tier mean-reversion setups pass the quality bar.
+        if _regime_key == "QUIET" and chan_name.startswith("360_SCALP"):
+            regime_mult = _SCALP_QUIET_REGIME_PENALTY
+        else:
+            regime_mult = _REGIME_PENALTY_MULTIPLIER.get(_regime_key, 1.0)
 
         # ── Filter 2: VWAP Extension Rejection ─────────────────────────────
         if _gate_profile.get("vwap", True):
@@ -2003,6 +2037,15 @@ class Scanner:
             log.debug("stat_filter error for {} {} (fail open): {}", symbol, chan_name, _sf_exc)
 
         min_conf = self.confidence_overrides.get(chan_name, chan.config.min_confidence)
+        # QUIET regime safety net for scalp channels: only the highest-quality
+        # mean-reversion setups are allowed through when the market is compressed.
+        if _regime_key == "QUIET" and chan_name.startswith("360_SCALP"):
+            if sig.confidence < QUIET_SCALP_MIN_CONFIDENCE:
+                log.info(
+                    "QUIET_SCALP_BLOCK {} {} conf={:.1f} < min={:.1f}",
+                    symbol, chan_name, sig.confidence, QUIET_SCALP_MIN_CONFIDENCE,
+                )
+                return None, cross_verified
         # WATCHLIST tier: signals with confidence 50-64 are kept as WATCHLIST
         # instead of being discarded.  Only the SCALP channel family generates
         # watchlist alerts; SWING and SPOT require higher confidence.

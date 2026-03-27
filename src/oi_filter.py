@@ -57,6 +57,13 @@ OI_CHANGE_THRESHOLD: float = 0.005  # 0.5 %
 #: Binance funding is typically ±0.01 % to ±0.1 %.  Beyond ±0.3 % is extreme.
 FUNDING_EXTREME_THRESHOLD: float = 0.003  # 0.3 % (as a decimal)
 
+#: Minimum OI change magnitude treated as a meaningful signal.  Changes
+#: smaller than this threshold are classified as market noise and will not
+#: trigger a hard rejection — only a debug log.  Corresponds to 1% OI change,
+#: which is well-documented in quant literature as the minimum meaningful OI
+#: shift on Binance perpetuals.
+OI_NOISE_THRESHOLD: float = 0.01  # 1 %
+
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -204,6 +211,7 @@ def check_oi_gate(
     direction: str,
     oi_analysis: Optional[OIAnalysis],
     reject_low_quality: bool = True,
+    min_oi_change_pct: float = OI_NOISE_THRESHOLD,
 ) -> tuple[bool, str]:
     """Pipeline hook: return ``(allowed, reason)`` for the OI/funding gate.
 
@@ -218,6 +226,11 @@ def check_oi_gate(
     reject_low_quality:
         When ``True`` (default), hard-reject LOW quality signals.
         Set to ``False`` to return a warning but still allow the trade.
+    min_oi_change_pct:
+        Minimum absolute OI change (as a fraction, e.g. ``0.01`` = 1%) for a
+        SQUEEZE or DISTRIBUTION pattern to trigger a hard rejection.  Changes
+        below this threshold are treated as noise and the signal is allowed
+        through with a debug log.  Defaults to :data:`OI_NOISE_THRESHOLD`.
 
     Returns
     -------
@@ -230,6 +243,15 @@ def check_oi_gate(
 
     # Reject squeeze signals for LONG (price up, OI down)
     if dir_upper == "LONG" and oi_analysis.signal == "SQUEEZE":
+        if abs(oi_analysis.oi_change_pct) < min_oi_change_pct:
+            log.debug(
+                "OI squeeze below noise threshold ({:.2%}), allowing",
+                oi_analysis.oi_change_pct,
+            )
+            return True, (
+                f"OI: minor squeeze ({oi_analysis.oi_change_pct:+.2%})"
+                " — below noise threshold"
+            )
         msg = f"OI: rising price + falling OI (squeeze) – LONG quality: {oi_analysis.quality}"
         if reject_low_quality:
             return False, msg
@@ -237,6 +259,15 @@ def check_oi_gate(
 
     # Reject distribution signals for SHORT (price down, OI up – longs being trapped)
     if dir_upper == "SHORT" and oi_analysis.signal == "DISTRIBUTION":
+        if abs(oi_analysis.oi_change_pct) < min_oi_change_pct:
+            log.debug(
+                "OI distribution below noise threshold ({:.2%}), allowing",
+                oi_analysis.oi_change_pct,
+            )
+            return True, (
+                f"OI: minor distribution ({oi_analysis.oi_change_pct:+.2%})"
+                " — below noise threshold"
+            )
         msg = f"OI: falling price + rising OI (distribution) – SHORT quality: {oi_analysis.quality}"
         if reject_low_quality:
             return False, msg

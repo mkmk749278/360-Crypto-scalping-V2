@@ -91,8 +91,18 @@ class TestIsSqueeze:
 
 class TestIsOIInvalidated:
     def test_rising_invalidates(self):
-        assert is_oi_invalidated(OITrend.RISING, "LONG") is True
-        assert is_oi_invalidated(OITrend.RISING, "SHORT") is True
+        # A significant OI rise (> 1%) invalidates the signal
+        assert is_oi_invalidated(OITrend.RISING, "LONG", oi_change_pct=0.02) is True
+        assert is_oi_invalidated(OITrend.RISING, "SHORT", oi_change_pct=0.015) is True
+
+    def test_rising_below_noise_threshold_does_not_invalidate(self):
+        # An OI rise below 1% is treated as noise and does NOT invalidate
+        assert is_oi_invalidated(OITrend.RISING, "LONG", oi_change_pct=0.005) is False
+        assert is_oi_invalidated(OITrend.RISING, "SHORT", oi_change_pct=0.009) is False
+
+    def test_rising_exactly_at_threshold_invalidates(self):
+        # Exactly 1% is at or above the threshold → invalidates
+        assert is_oi_invalidated(OITrend.RISING, "LONG", oi_change_pct=0.01) is True
 
     def test_falling_does_not_invalidate(self):
         assert is_oi_invalidated(OITrend.FALLING, "LONG") is False
@@ -100,6 +110,10 @@ class TestIsOIInvalidated:
 
     def test_neutral_does_not_invalidate(self):
         assert is_oi_invalidated(OITrend.NEUTRAL, "LONG") is False
+
+    def test_no_oi_change_pct_does_not_invalidate(self):
+        # Default oi_change_pct=0.0 — below noise threshold, treated as no change
+        assert is_oi_invalidated(OITrend.RISING, "LONG") is False
 
 
 # ---------------------------------------------------------------------------

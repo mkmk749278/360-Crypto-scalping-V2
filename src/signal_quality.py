@@ -294,12 +294,115 @@ def assess_pair_quality(
 
     volume_tier = "ELITE" if volume_24h >= 20_000_000 else "HIGH" if volume_24h >= 10_000_000 else "NORMAL"
     label = "ELITE" if total >= 85 else "GOOD" if total >= 72 else "WEAK"
-    passed = total >= 58 and spread_pct <= 0.03 and volume_24h >= 1_000_000
+    passed = total >= 58 and spread_pct <= 0.05 and volume_24h >= 1_000_000
     reason = ""
     if not passed:
-        if spread_pct > 0.03:
+        if spread_pct > 0.05:
             reason = "spread too wide"
         elif volume_24h < 1_000_000:
+            reason = "liquidity too thin"
+        else:
+            reason = "pair quality below threshold"
+
+    return PairQualityAssessment(
+        passed=passed,
+        score=total,
+        label=label,
+        volume_tier=volume_tier,
+        spread_score=round(spread_score, 2),
+        volatility_score=round(volatility_score, 2),
+        noise_score=round(noise_score, 2),
+        reason=reason,
+    )
+
+
+# Per-channel spread limits for `assess_pair_quality_for_channel()`.
+# Tighter limits for execution-sensitive scalp channels, wider for longer-hold
+# strategies that can absorb higher spread costs over extended holding periods.
+_SPREAD_LIMIT_BY_CHANNEL: Dict[str, float] = {
+    "360_SCALP":      0.025,  # Tightest — execution-sensitive
+    "360_SCALP_FVG":  0.03,
+    "360_SCALP_CVD":  0.03,
+    "360_SCALP_OBI":  0.03,
+    "360_SCALP_VWAP": 0.03,
+    "360_SWING":      0.05,   # Wider allowed — longer holding period
+    "360_SPOT":       0.06,   # Widest intraday channel — multi-day holds
+    "360_GEM":        0.08,   # Gem/altcoin pairs have wider spreads
+}
+
+# Minimum 24h volume (USD) for non-SCALP channels.  Scalp channels keep the
+# higher $1M floor to ensure adequate liquidity for tight execution.
+_MIN_VOLUME_NON_SCALP: float = 500_000.0
+
+
+def assess_pair_quality_for_channel(
+    volume_24h: float,
+    spread_pct: float,
+    indicators: Dict[str, Any],
+    candles: Optional[dict],
+    channel_name: str,
+) -> PairQualityAssessment:
+    """Assess pair quality with per-channel spread and volume thresholds.
+
+    Applies channel-specific spread limits from :data:`_SPREAD_LIMIT_BY_CHANNEL`
+    instead of the global hard gate.  Non-SCALP channels also use a lower
+    minimum volume floor (:data:`_MIN_VOLUME_NON_SCALP`) to avoid excluding
+    valid lower-cap futures pairs.
+
+    The composite scoring (spread/volume/volatility/noise) and pass/fail
+    reason string are identical to :func:`assess_pair_quality`; only the
+    final hard-gate thresholds differ.
+
+    Parameters
+    ----------
+    volume_24h:
+        24-hour traded volume in USD.
+    spread_pct:
+        Current bid-ask spread as a fraction (e.g. ``0.002`` = 0.2 %).
+    indicators:
+        Indicator dict for the primary timeframe (must contain ``atr_last``).
+    candles:
+        Candle OHLCV dict for the primary timeframe.
+    channel_name:
+        Name of the trading channel (e.g. ``"360_SCALP"``, ``"360_SWING"``).
+
+    Returns
+    -------
+    :class:`PairQualityAssessment`
+    """
+    atr_val = _safe_float(indicators.get("atr_last"))
+    close = _last(candles.get("close", []) if candles else [], 1.0)
+    atr_pct = (atr_val / close * 100.0) if close else 0.0
+    wickiness = _wickiness(candles)
+
+    spread_score = max(0.0, min(100.0, 100.0 - (spread_pct / 0.02) * 100.0))
+    volume_score = max(0.0, min(100.0, (volume_24h / 15_000_000.0) * 100.0))
+    if 0.15 <= atr_pct <= 3.5:
+        volatility_score = 100.0
+    elif atr_pct < 0.15:
+        volatility_score = max(20.0, atr_pct / 0.15 * 100.0)
+    else:
+        volatility_score = max(0.0, 100.0 - ((atr_pct - 3.5) / 3.0) * 100.0)
+    noise_score = max(0.0, min(100.0, 100.0 - max(wickiness - 1.0, 0.0) * 35.0))
+    total = round(
+        spread_score * 0.3 + volume_score * 0.3 + volatility_score * 0.2 + noise_score * 0.2,
+        2,
+    )
+
+    volume_tier = "ELITE" if volume_24h >= 20_000_000 else "HIGH" if volume_24h >= 10_000_000 else "NORMAL"
+    label = "ELITE" if total >= 85 else "GOOD" if total >= 72 else "WEAK"
+
+    # Per-channel thresholds
+    spread_limit = _SPREAD_LIMIT_BY_CHANNEL.get(channel_name, 0.05)
+    is_scalp = channel_name.startswith("360_SCALP")
+    min_volume = 1_000_000.0 if is_scalp else _MIN_VOLUME_NON_SCALP
+
+    passed = total >= 58 and spread_pct <= spread_limit and volume_24h >= min_volume
+    reason = ""
+    if not passed:
+        if spread_pct > spread_limit:
+            reason = "spread too wide"
+        elif volume_24h < min_volume:
             reason = "liquidity too thin"
         else:
             reason = "pair quality below threshold"
