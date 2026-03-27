@@ -334,6 +334,30 @@ _SPREAD_LIMIT_BY_CHANNEL: Dict[str, float] = {
 # higher $1M floor to ensure adequate liquidity for tight execution.
 _MIN_VOLUME_NON_SCALP: float = 500_000.0
 
+# Per-channel minimum composite score thresholds.
+_MIN_COMPOSITE_SCORE_BY_CHANNEL: Dict[str, float] = {
+    "360_SCALP":      58.0,
+    "360_SCALP_FVG":  58.0,
+    "360_SCALP_CVD":  58.0,
+    "360_SCALP_OBI":  58.0,
+    "360_SCALP_VWAP": 58.0,
+    "360_SWING":      50.0,
+    "360_SPOT":       45.0,
+    "360_GEM":        40.0,
+}
+
+# Per-channel minimum 24h volume floors (USD).
+_MIN_VOLUME_BY_CHANNEL: Dict[str, float] = {
+    "360_SCALP":      1_000_000.0,
+    "360_SCALP_FVG":  1_000_000.0,
+    "360_SCALP_CVD":  1_000_000.0,
+    "360_SCALP_OBI":  1_000_000.0,
+    "360_SCALP_VWAP": 1_000_000.0,
+    "360_SWING":        500_000.0,
+    "360_SPOT":         250_000.0,
+    "360_GEM":          100_000.0,
+}
+
 
 def assess_pair_quality_for_channel(
     volume_24h: float,
@@ -341,6 +365,7 @@ def assess_pair_quality_for_channel(
     indicators: Dict[str, Any],
     candles: Optional[dict],
     channel_name: str,
+    current_regime: str = "RANGING",
 ) -> PairQualityAssessment:
     """Assess pair quality with per-channel spread and volume thresholds.
 
@@ -394,13 +419,20 @@ def assess_pair_quality_for_channel(
 
     # Per-channel thresholds
     spread_limit = _SPREAD_LIMIT_BY_CHANNEL.get(channel_name, 0.05)
-    is_scalp = channel_name.startswith("360_SCALP")
-    min_volume = 1_000_000.0 if is_scalp else _MIN_VOLUME_NON_SCALP
+    min_composite = _MIN_COMPOSITE_SCORE_BY_CHANNEL.get(channel_name, 58.0)
+    min_volume = _MIN_VOLUME_BY_CHANNEL.get(channel_name, 500_000.0)
 
-    passed = total >= 58 and spread_pct <= spread_limit and volume_24h >= min_volume
+    # Regime-aware spread relaxation: widen spread tolerance by 30% in VOLATILE regime
+    effective_spread_limit = spread_limit * 1.3 if current_regime == "VOLATILE" else spread_limit
+
+    passed = (
+        total >= min_composite
+        and spread_pct <= effective_spread_limit
+        and volume_24h >= min_volume
+    )
     reason = ""
     if not passed:
-        if spread_pct > spread_limit:
+        if spread_pct > effective_spread_limit:
             reason = "spread too wide"
         elif volume_24h < min_volume:
             reason = "liquidity too thin"

@@ -43,6 +43,35 @@ _POLL_INTERVAL: int = 60
 # Minimum number of candles required to compute momentum indicators.
 _MIN_CANDLES: int = 22
 
+# Default lifecycle check intervals for channels not in LIFECYCLE_CHECK_INTERVAL.
+_DEFAULT_SCALP_LIFECYCLE_INTERVAL: int = 900    # 15 minutes for scalp channels
+_DEFAULT_LIFECYCLE_INTERVAL: int = 3600         # 1 hour generic fallback
+
+
+def get_lifecycle_interval(channel_name: str) -> int:
+    """Return the lifecycle check interval (seconds) for *channel_name*.
+
+    Uses :data:`config.LIFECYCLE_CHECK_INTERVAL` as the primary lookup.
+    Falls back to a 15-minute interval for all SCALP-family channels, and
+    to a 1-hour interval for any other unrecognised channel name.
+
+    Parameters
+    ----------
+    channel_name:
+        Name of the trading channel, e.g. ``"360_SCALP"``, ``"360_SWING"``.
+
+    Returns
+    -------
+    int
+        Interval in seconds.
+    """
+    if channel_name in LIFECYCLE_CHECK_INTERVAL:
+        return LIFECYCLE_CHECK_INTERVAL[channel_name]
+    if "SCALP" in channel_name:
+        return _DEFAULT_SCALP_LIFECYCLE_INTERVAL
+    return _DEFAULT_LIFECYCLE_INTERVAL
+
+
 # Primary timeframe for each lifecycle-monitored channel (used to pull
 # candles for regime / momentum / structure assessment).
 _PRIMARY_TIMEFRAME: Dict[str, str] = {
@@ -519,7 +548,7 @@ class SignalLifecycleMonitor:
         )
         pnl_sign = "+" if pnl_pct >= 0 else ""
 
-        interval_seconds = LIFECYCLE_CHECK_INTERVAL.get(signal.channel, 21600)
+        interval_seconds = get_lifecycle_interval(signal.channel)
         interval_hours = interval_seconds // 3600
 
         if should_close:

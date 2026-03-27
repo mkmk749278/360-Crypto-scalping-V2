@@ -43,6 +43,9 @@ REASON_CLUSTER: str = "cluster"
 REASON_STAT_FILTER: str = "stat_filter"
 REASON_LIFESPAN: str = "lifespan"
 REASON_CONFIDENCE: str = "confidence"
+REASON_REGIME_PENALTY: str = "regime_penalty"
+REASON_PAIR_QUALITY: str = "pair_quality"
+REASON_RANGING_ADX: str = "ranging_adx"
 
 # Default rolling window (4 hours)
 _DEFAULT_WINDOW_SECONDS: float = 4 * 3600.0
@@ -197,4 +200,103 @@ class SuppressionTracker:
             for sym, count in top_syms:
                 lines.append(f"  • {sym}: {count}")
 
+        return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Multi-window analytics
+# ---------------------------------------------------------------------------
+
+_ANALYTICS_WINDOWS: Dict[str, float] = {
+    "1h":  1 * 3600.0,
+    "6h":  6 * 3600.0,
+    "24h": 24 * 3600.0,
+}
+
+
+class SuppressionAnalytics:
+    """Enhanced suppression analytics with multi-window (1h/6h/24h) tracking.
+
+    Parameters
+    ----------
+    max_events:
+        Maximum total events to retain across all windows.
+
+    Usage::
+
+        analytics = SuppressionAnalytics()
+        analytics.record(SuppressionEvent(...))
+        summary = analytics.get_suppression_summary("1h")
+    """
+
+    def __init__(self, max_events: int = 10000) -> None:
+        self._max_events = max_events
+        self._trackers: Dict[str, SuppressionTracker] = {
+            label: SuppressionTracker(window_seconds=secs)
+            for label, secs in _ANALYTICS_WINDOWS.items()
+        }
+        # Evaluation counters per channel — used to compute suppression rate.
+        self._evaluated_by_channel: Dict[str, int] = defaultdict(int)
+
+    def record(self, event: SuppressionEvent, signals_evaluated: int = 0) -> None:
+        """Record a suppression event across all time windows."""
+        for tracker in self._trackers.values():
+            tracker.record(event)
+        if signals_evaluated > 0:
+            self._evaluated_by_channel[event.channel] += signals_evaluated
+
+    def get_suppression_summary(self, window: str = "24h") -> dict:
+        """Return a structured suppression summary for the given window.
+
+        Parameters
+        ----------
+        window:
+            Time window label: ``"1h"``, ``"6h"``, or ``"24h"``.
+
+        Returns
+        -------
+        dict
+            Summary with keys: ``total_suppressed``, ``by_reason``,
+            ``by_channel``, ``by_symbol``, ``top_suppressed_pairs``,
+            ``suppression_rate_pct``.
+        """
+        tracker = self._trackers.get(window, self._trackers["24h"])
+        total = tracker.total_in_window()
+        evaluated = sum(self._evaluated_by_channel.values())
+        suppression_rate = (
+            total / (total + evaluated) * 100.0 if (total + evaluated) > 0 else 0.0
+        )
+        return {
+            "window": window,
+            "total_suppressed": total,
+            "by_reason": tracker.summary(),
+            "by_channel": tracker.by_channel(),
+            "by_symbol": dict(tracker.by_symbol(top_n=20)),
+            "top_suppressed_pairs": tracker.by_symbol(top_n=10),
+            "suppression_rate_pct": round(suppression_rate, 2),
+        }
+
+    def format_report(self, window: str = "24h") -> str:
+        """Format a human-readable multi-window suppression report for Telegram."""
+        summary = self.get_suppression_summary(window)
+        lines = [
+            f"📊 *Suppression Analytics — {window} window*",
+            f"Total suppressed: *{summary['total_suppressed']}*",
+            f"Suppression rate: *{summary['suppression_rate_pct']:.1f}%*",
+            "",
+        ]
+        if summary["by_reason"]:
+            lines.append("*By reason:*")
+            for reason, count in sorted(summary["by_reason"].items(), key=lambda kv: -kv[1]):
+                lines.append(f"  • {reason}: {count}")
+            lines.append("")
+        if summary["by_channel"]:
+            lines.append("*By channel:*")
+            for ch, count in sorted(summary["by_channel"].items(), key=lambda kv: -kv[1]):
+                lines.append(f"  • {ch}: {count}")
+            lines.append("")
+        if summary["top_suppressed_pairs"]:
+            lines.append("*Top suppressed pairs:*")
+            for sym, count in summary["top_suppressed_pairs"][:5]:
+                lines.append(f"  • {sym}: {count}")
         return "\n".join(lines)
