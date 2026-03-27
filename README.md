@@ -222,7 +222,7 @@ Then deploy the engine:
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/kishore446/360-Crypto-scalping-V2.git
+git clone https://github.com/mkmk749278/360-Crypto-scalping-V2.git
 cd 360-Crypto-scalping-V2
 
 # 2. Configure credentials
