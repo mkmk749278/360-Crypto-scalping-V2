@@ -540,10 +540,24 @@ class Scanner:
                         "Scan latency circuit breaker: skipping Tier 2 pairs "
                         "(last latency={:.0f}ms)", self.telemetry.scan_latency_ms
                     )
+                # PR 4 — Preemptive rate-limit throttling: pause Tier 2 scans
+                # when either limiter reports >85% budget usage so the engine
+                # never reaches the hard Binance cap and 42 s lockout.
+                _rl_tier2_paused = (
+                    rate_limiter.is_tier2_paused or futures_rate_limiter.is_tier2_paused
+                )
+                if _rl_tier2_paused:
+                    log.warning(
+                        "Rate limit >85%% — preemptively pausing Tier 2 pair scans "
+                        "(spot=%d/%d, futures=%d/%d)",
+                        rate_limiter.used, rate_limiter.budget,
+                        futures_rate_limiter.used, futures_rate_limiter.budget,
+                    )
                 pairs_this_cycle = [
                     (sym, info) for sym, info in sorted_pairs
                     if info.tier == PairTier.TIER1
-                    or (info.tier == PairTier.TIER2 and scan_tier2 and not skip_tier2_for_latency)
+                    or (info.tier == PairTier.TIER2 and scan_tier2
+                        and not skip_tier2_for_latency and not _rl_tier2_paused)
                 ]
 
                 # Apply cheap in-memory pre-filters to reduce the number of
@@ -590,7 +604,19 @@ class Scanner:
 
                 # Tier 3 lightweight scan (time-gated, independent of cycle count)
                 _now = time.monotonic()
-                if _now - self._last_tier3_scan_time >= TIER3_SCAN_INTERVAL_MINUTES * 60:
+                # PR 4 — Skip Tier 3 scan when rate limit >70% to preserve budget.
+                _rl_tier3_paused = (
+                    rate_limiter.is_tier3_paused or futures_rate_limiter.is_tier3_paused
+                )
+                if _rl_tier3_paused:
+                    log.warning(
+                        "Rate limit >70%% — preemptively pausing Tier 3 lightweight scan "
+                        "(spot=%d/%d, futures=%d/%d)",
+                        rate_limiter.used, rate_limiter.budget,
+                        futures_rate_limiter.used, futures_rate_limiter.budget,
+                    )
+                if (not _rl_tier3_paused
+                        and _now - self._last_tier3_scan_time >= TIER3_SCAN_INTERVAL_MINUTES * 60):
                     self._last_tier3_scan_time = _now
                     await self._lightweight_tier3_scan()
 
