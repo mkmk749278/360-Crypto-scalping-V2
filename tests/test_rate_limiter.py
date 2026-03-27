@@ -135,13 +135,14 @@ class TestAcquireBlocking:
         """After blocking and reset, subsequent acquires proceed immediately."""
         rl = _make_limiter(budget=10, window_s=0.1)
         await rl.acquire(10)
-        await rl.acquire(3)  # blocks until reset
-        # After reset, another small acquire should be instant
+        await rl.acquire(3)  # blocks until reset (sleep happens outside lock)
+        # After the blocking acquire's sleep completes (~0.1s), the window
+        # resets again when acquire(2) calls _maybe_reset(), so used == 2.
         t0 = time.monotonic()
         await rl.acquire(2)
         elapsed = time.monotonic() - t0
         assert elapsed < 0.05, f"Expected fast acquire, got elapsed={elapsed:.3f}s"
-        assert rl.used == 5
+        assert rl.used == 2
 
 
 # ---------------------------------------------------------------------------
