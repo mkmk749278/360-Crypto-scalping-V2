@@ -338,18 +338,18 @@ The following 12 PRs are ordered so that each builds on the previous without cir
 
 | PR | Title | Primary Dependency | GitHub PR | Status |
 |----|-------|--------------------|-----------|--------|
-| PR_01 | Market Regime Detector Enhancement | None | [#127](https://github.com/kishore446/360-Crypto-scalping-V2/pull/127) | ✅ Merged |
-| PR_02 | Per-Pair Config Profiles | PR_01 | [#128](https://github.com/kishore446/360-Crypto-scalping-V2/pull/128) | ✅ Merged |
-| PR_03 | Adaptive EMA Thresholds | PR_02 | [#129](https://github.com/kishore446/360-Crypto-scalping-V2/pull/129) | ✅ Merged |
-| PR_04 | MACD Confirmation Layer | PR_01 | [#130](https://github.com/kishore446/360-Crypto-scalping-V2/pull/130) | ✅ Merged |
-| PR_05 | Candlestick Pattern Engine | None | [#131](https://github.com/kishore446/360-Crypto-scalping-V2/pull/131) | ✅ Merged |
-| PR_06 | Multi-Timeframe Confirmation | PR_01, PR_02 | [#132](https://github.com/kishore446/360-Crypto-scalping-V2/pull/132) | ✅ Merged |
-| PR_07 | Dynamic SL/TP ATR+Regime | PR_01, PR_02 | [#133](https://github.com/kishore446/360-Crypto-scalping-V2/pull/133) | ✅ Merged |
-| PR_08 | Trailing Stop Upgrade | PR_07 | [#134](https://github.com/kishore446/360-Crypto-scalping-V2/pull/134) | ✅ Merged |
-| PR_09 | Signal Scoring Engine | PR_04, PR_05, PR_06 | [#135](https://github.com/kishore446/360-Crypto-scalping-V2/pull/135) | ✅ Merged |
-| PR_10 | Duplicate Code Refactor | PR_01–PR_06 | [#136](https://github.com/kishore446/360-Crypto-scalping-V2/pull/136) | ✅ Merged |
-| PR_11 | Backtester Per-Pair + Regime | PR_01, PR_02, PR_07 | [#137](https://github.com/kishore446/360-Crypto-scalping-V2/pull/137) | ✅ Merged |
-| PR_12 | AI Statistical Filter | PR_09, PR_11 | [#138](https://github.com/kishore446/360-Crypto-scalping-V2/pull/138) | ✅ Merged |
+| PR_01 | Market Regime Detector Enhancement | None | [#127](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/127) | ✅ Merged |
+| PR_02 | Per-Pair Config Profiles | PR_01 | [#128](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/128) | ✅ Merged |
+| PR_03 | Adaptive EMA Thresholds | PR_02 | [#129](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/129) | ✅ Merged |
+| PR_04 | MACD Confirmation Layer | PR_01 | [#130](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/130) | ✅ Merged |
+| PR_05 | Candlestick Pattern Engine | None | [#131](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/131) | ✅ Merged |
+| PR_06 | Multi-Timeframe Confirmation | PR_01, PR_02 | [#132](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/132) | ✅ Merged |
+| PR_07 | Dynamic SL/TP ATR+Regime | PR_01, PR_02 | [#133](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/133) | ✅ Merged |
+| PR_08 | Trailing Stop Upgrade | PR_07 | [#134](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/134) | ✅ Merged |
+| PR_09 | Signal Scoring Engine | PR_04, PR_05, PR_06 | [#135](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/135) | ✅ Merged |
+| PR_10 | Duplicate Code Refactor | PR_01–PR_06 | [#136](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/136) | ✅ Merged |
+| PR_11 | Backtester Per-Pair + Regime | PR_01, PR_02, PR_07 | [#137](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/137) | ✅ Merged |
+| PR_12 | AI Statistical Filter | PR_09, PR_11 | [#138](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/138) | ✅ Merged |
 
 See individual PR documents (`PR_01_*.md` through `PR_12_*.md`) for full implementation steps, expected impact, and file-level change specifications.
 
@@ -361,18 +361,18 @@ All 12 Phase 1 PRs have been implemented and merged as of 2026-03-26. The table 
 
 | PR | Title | GitHub PR | Merged Date | Status |
 |----|-------|-----------|-------------|--------|
-| PR_01 | Market Regime Detector Enhancement | [#127](https://github.com/kishore446/360-Crypto-scalping-V2/pull/127) | 2026-03-26 | ✅ Merged |
-| PR_02 | Per-Pair Config Profiles | [#128](https://github.com/kishore446/360-Crypto-scalping-V2/pull/128) | 2026-03-26 | ✅ Merged |
-| PR_03 | Adaptive EMA Thresholds | [#129](https://github.com/kishore446/360-Crypto-scalping-V2/pull/129) | 2026-03-26 | ✅ Merged |
-| PR_04 | MACD Confirmation Layer | [#130](https://github.com/kishore446/360-Crypto-scalping-V2/pull/130) | 2026-03-26 | ✅ Merged |
-| PR_05 | Candlestick Pattern Engine | [#131](https://github.com/kishore446/360-Crypto-scalping-V2/pull/131) | 2026-03-26 | ✅ Merged |
-| PR_06 | Multi-Timeframe Confirmation | [#132](https://github.com/kishore446/360-Crypto-scalping-V2/pull/132) | 2026-03-26 | ✅ Merged |
-| PR_07 | Dynamic SL/TP ATR+Regime | [#133](https://github.com/kishore446/360-Crypto-scalping-V2/pull/133) | 2026-03-26 | ✅ Merged |
-| PR_08 | Trailing Stop Upgrade | [#134](https://github.com/kishore446/360-Crypto-scalping-V2/pull/134) | 2026-03-26 | ✅ Merged |
-| PR_09 | Signal Scoring Engine | [#135](https://github.com/kishore446/360-Crypto-scalping-V2/pull/135) | 2026-03-26 | ✅ Merged |
-| PR_10 | Duplicate Code Refactor | [#136](https://github.com/kishore446/360-Crypto-scalping-V2/pull/136) | 2026-03-26 | ✅ Merged |
-| PR_11 | Backtester Per-Pair + Regime | [#137](https://github.com/kishore446/360-Crypto-scalping-V2/pull/137) | 2026-03-26 | ✅ Merged |
-| PR_12 | AI Statistical Filter | [#138](https://github.com/kishore446/360-Crypto-scalping-V2/pull/138) | 2026-03-26 | ✅ Merged |
+| PR_01 | Market Regime Detector Enhancement | [#127](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/127) | 2026-03-26 | ✅ Merged |
+| PR_02 | Per-Pair Config Profiles | [#128](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/128) | 2026-03-26 | ✅ Merged |
+| PR_03 | Adaptive EMA Thresholds | [#129](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/129) | 2026-03-26 | ✅ Merged |
+| PR_04 | MACD Confirmation Layer | [#130](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/130) | 2026-03-26 | ✅ Merged |
+| PR_05 | Candlestick Pattern Engine | [#131](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/131) | 2026-03-26 | ✅ Merged |
+| PR_06 | Multi-Timeframe Confirmation | [#132](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/132) | 2026-03-26 | ✅ Merged |
+| PR_07 | Dynamic SL/TP ATR+Regime | [#133](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/133) | 2026-03-26 | ✅ Merged |
+| PR_08 | Trailing Stop Upgrade | [#134](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/134) | 2026-03-26 | ✅ Merged |
+| PR_09 | Signal Scoring Engine | [#135](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/135) | 2026-03-26 | ✅ Merged |
+| PR_10 | Duplicate Code Refactor | [#136](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/136) | 2026-03-26 | ✅ Merged |
+| PR_11 | Backtester Per-Pair + Regime | [#137](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/137) | 2026-03-26 | ✅ Merged |
+| PR_12 | AI Statistical Filter | [#138](https://github.com/mkmk749278/360-Crypto-scalping-V2/pull/138) | 2026-03-26 | ✅ Merged |
 
 ---
 

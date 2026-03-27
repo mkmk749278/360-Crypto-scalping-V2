@@ -34,7 +34,7 @@ else
     DEPLOY_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
 fi
 PROJECT_DIR="$DEPLOY_HOME/360-Crypto-scalping-V2"
-REPO_URL="https://github.com/kishore446/360-Crypto-scalping-V2.git"
+REPO_URL="https://github.com/mkmk749278/360-Crypto-scalping-V2.git"
 SERVICE_NAME="360-crypto-engine"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
