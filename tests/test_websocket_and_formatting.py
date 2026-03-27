@@ -51,6 +51,82 @@ class TestWebSocketFallback:
         assert ws._rest_fallback_active is False
 
 
+class TestWebSocketHealthRatio:
+    """WebSocketManager.health_ratio returns a continuous 0.0–1.0 health score."""
+
+    def test_health_ratio_one_before_start(self):
+        """Before start() is called there are no connections: ratio == 1.0."""
+        async def handler(data): pass
+        ws = WebSocketManager(handler, market="spot")
+        assert ws.health_ratio == 1.0
+
+    def test_health_ratio_all_healthy(self):
+        """All connections open and recently pinged → ratio == 1.0."""
+        async def handler(data): pass
+        ws = WebSocketManager(handler, market="spot")
+        now = time.monotonic()
+        conn1 = WSConnection(streams=["btcusdt@kline_1m"], last_pong=now)
+        conn2 = WSConnection(streams=["ethusdt@kline_1m"], last_pong=now)
+        # Attach mock open WebSocket objects
+        mock_ws = mock.MagicMock()
+        mock_ws.closed = False
+        conn1.ws = mock_ws
+        conn2.ws = mock_ws
+        ws._connections = [conn1, conn2]
+        assert ws.health_ratio == 1.0
+
+    def test_health_ratio_half_healthy(self):
+        """One of two connections stale → ratio == 0.5."""
+        async def handler(data): pass
+        ws = WebSocketManager(handler, market="spot")
+        now = time.monotonic()
+        mock_open = mock.MagicMock()
+        mock_open.closed = False
+        mock_closed = mock.MagicMock()
+        mock_closed.closed = True
+
+        conn_healthy = WSConnection(streams=["btcusdt@kline_1m"], last_pong=now, ws=mock_open)
+        conn_unhealthy = WSConnection(streams=["ethusdt@kline_1m"], last_pong=now, ws=mock_closed)
+        ws._connections = [conn_healthy, conn_unhealthy]
+        assert ws.health_ratio == 0.5
+
+    def test_health_ratio_all_stale(self):
+        """All connections stale → ratio == 0.0."""
+        async def handler(data): pass
+        ws = WebSocketManager(handler, market="spot")
+        stale_pong = time.monotonic() - 9999.0  # way in the past
+        mock_ws = mock.MagicMock()
+        mock_ws.closed = False
+        conn = WSConnection(streams=["btcusdt@kline_1m"], last_pong=stale_pong, ws=mock_ws)
+        ws._connections = [conn]
+        assert ws.health_ratio == 0.0
+
+    def test_health_ratio_no_ws_object(self):
+        """Connection without a ws object counts as unhealthy."""
+        async def handler(data): pass
+        ws = WebSocketManager(handler, market="spot")
+        conn = WSConnection(streams=["btcusdt@kline_1m"])  # ws=None
+        ws._connections = [conn]
+        assert ws.health_ratio == 0.0
+
+    def test_is_healthy_uses_strict_all_or_nothing(self):
+        """is_healthy still requires ALL connections to be healthy."""
+        async def handler(data): pass
+        ws = WebSocketManager(handler, market="spot")
+        now = time.monotonic()
+        mock_open = mock.MagicMock()
+        mock_open.closed = False
+        mock_closed = mock.MagicMock()
+        mock_closed.closed = True
+
+        conn_healthy = WSConnection(streams=["btcusdt@kline_1m"], last_pong=now, ws=mock_open)
+        conn_unhealthy = WSConnection(streams=["ethusdt@kline_1m"], last_pong=now, ws=mock_closed)
+        ws._connections = [conn_healthy, conn_unhealthy]
+        # health_ratio is 0.5 but is_healthy is False (strict)
+        assert ws.health_ratio == 0.5
+        assert ws.is_healthy is False
+
+
 class TestFormatFreeSignal:
     def test_free_signal_has_header_and_footer(self):
         sig = Signal(

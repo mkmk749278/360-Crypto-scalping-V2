@@ -470,6 +470,29 @@ class WebSocketManager:
         return sum(len(c.streams) for c in self._connections)
 
     @property
+    def health_ratio(self) -> float:
+        """Fraction of connections that are currently open and non-stale (0.0–1.0).
+
+        Unlike :attr:`is_healthy` which requires *all* connections to be
+        healthy, this property returns a continuous value so callers can
+        make proportional decisions (e.g. reduce REST fallback intensity when
+        only a minority of connections are down).
+
+        Returns ``1.0`` when no connections have been started yet so callers
+        treat the manager as fully healthy before :meth:`start` is called.
+        """
+        if not self._connections:
+            return 1.0
+        now = time.monotonic()
+        healthy_count = sum(
+            1 for c in self._connections
+            if c.ws is not None
+            and not c.ws.closed
+            and (now - c.last_pong) < self._heartbeat_interval * self._staleness_multiplier
+        )
+        return healthy_count / len(self._connections)
+
+    @property
     def is_healthy(self) -> bool:
         now = time.monotonic()
         open_connections = [

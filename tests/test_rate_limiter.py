@@ -414,3 +414,84 @@ class TestPrefilterPairs:
         assert len(result) == 20
         # Reduction > 80%
         assert len(result) / len(pairs) < 0.15  # expect ≤15% of pairs to pass through
+
+
+# ---------------------------------------------------------------------------
+# Burst protection
+# ---------------------------------------------------------------------------
+
+class TestBurstProtection:
+    """acquire() adds a micro-sleep when budget is nearly exhausted."""
+
+    @pytest.mark.asyncio
+    async def test_no_burst_sleep_on_fresh_budget(self):
+        """No extra delay when the budget has plenty of headroom."""
+        rl = _make_limiter(budget=1000, window_s=60.0)
+        # Consume 50% — well above the 15% threshold
+        rl._used = 500
+        t0 = time.monotonic()
+        await rl.acquire(1)
+        elapsed = time.monotonic() - t0
+        # Should complete quickly (< 50 ms) — no burst sleep triggered
+        assert elapsed < 0.05, f"Unexpected delay: {elapsed:.3f}s"
+
+    @pytest.mark.asyncio
+    async def test_burst_sleep_triggered_near_exhaustion(self):
+        """A micro-sleep is injected when remaining budget < 15%."""
+        rl = _make_limiter(budget=1000, window_s=60.0)
+        # Fill to 90% (100 remaining = 10%, below the 15% threshold)
+        rl._used = 900
+        t0 = time.monotonic()
+        await rl.acquire(1)
+        elapsed = time.monotonic() - t0
+        # Should have slept at least a small amount
+        assert elapsed >= 0.05, f"Expected burst-protection sleep, got {elapsed:.3f}s"
+
+    @pytest.mark.asyncio
+    async def test_burst_sleep_increases_near_zero(self):
+        """Sleep grows as remaining budget approaches zero."""
+        rl_low = _make_limiter(budget=1000, window_s=60.0)
+        rl_very_low = _make_limiter(budget=1000, window_s=60.0)
+
+        rl_low._used = 860   # 14% remaining — just inside the threshold
+        rl_very_low._used = 990  # 1% remaining — near zero
+
+        t0 = time.monotonic()
+        await rl_low.acquire(1)
+        t_low = time.monotonic() - t0
+
+        t0 = time.monotonic()
+        await rl_very_low.acquire(1)
+        t_very_low = time.monotonic() - t0
+
+        # Deeper into burst territory means longer sleep
+        assert t_very_low > t_low, (
+            f"Expected t_very_low ({t_very_low:.3f}s) > t_low ({t_low:.3f}s)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_burst_protection_does_not_exceed_max_sleep(self):
+        """The injected sleep never exceeds _BURST_PROTECTION_MAX_SLEEP_S."""
+        from src.rate_limiter import _BURST_PROTECTION_MAX_SLEEP_S
+        rl = _make_limiter(budget=1000, window_s=60.0)
+        rl._used = 999  # 0.1% remaining
+
+        t0 = time.monotonic()
+        await rl.acquire(1)
+        elapsed = time.monotonic() - t0
+
+        # Allow a small margin for scheduling overhead
+        assert elapsed < _BURST_PROTECTION_MAX_SLEEP_S + 0.1, (
+            f"Sleep exceeded maximum: {elapsed:.3f}s > {_BURST_PROTECTION_MAX_SLEEP_S + 0.1:.3f}s"
+        )
+
+    @pytest.mark.asyncio
+    async def test_full_budget_acquire_no_burst_sleep(self):
+        """Consuming exactly the full budget in one call must not trigger burst sleep."""
+        rl = _make_limiter(budget=10, window_s=60.0)
+        # _used=0 → remaining_before=10 (100%), well above 15% threshold
+        t0 = time.monotonic()
+        await rl.acquire(10)
+        elapsed = time.monotonic() - t0
+        assert elapsed < 0.05, f"Unexpected burst sleep on full-budget acquire: {elapsed:.3f}s"
+        assert rl.used == 10
