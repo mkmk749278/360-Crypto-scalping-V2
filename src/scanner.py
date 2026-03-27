@@ -79,6 +79,7 @@ from src.mtf import check_mtf_gate, compute_mtf_confluence, _TF_WEIGHTS as _MTF_
 from src.oi_filter import analyse_oi, check_oi_gate
 from src.pair_manager import PairTier, classify_pair_tier
 from src.spoof_detect import check_spoof_gate
+from src.tier_manager import TierManager
 from src.utils import get_logger, price_decimal_fmt, utcnow
 from src.volume_divergence import check_volume_divergence_gate
 from src.vwap import check_vwap_extension, compute_vwap
@@ -331,6 +332,7 @@ class Scanner:
         openai_evaluator: Optional[Any] = None,
         onchain_client: Optional[Any] = None,
         order_flow_store: Optional[Any] = None,
+        tier_manager: Optional[TierManager] = None,
     ) -> None:
         self.pair_mgr = pair_mgr
         self.data_store = data_store
@@ -347,6 +349,13 @@ class Scanner:
         self.openai_evaluator: Optional[Any] = openai_evaluator
         self.onchain_client: Optional[Any] = onchain_client
         self.order_flow_store: Optional[Any] = order_flow_store
+
+        # Optional dynamic tier manager (PR 2 — Market Watchdog & Dynamic Tiering).
+        # When present, get_symbol_tier() delegates to TierManager.get_tier() which
+        # returns a live, volume+volatility-ranked PairTier refreshed every ~5 min.
+        # When absent, the scanner falls back to the PairManager's static tier
+        # assignment (rank-by-volume-only, updated on pair refresh).
+        self.tier_manager: Optional[TierManager] = tier_manager
 
         # Stateful signal-quality enhancement modules
         self.feedback_loop: FeedbackLoop = FeedbackLoop()
@@ -406,6 +415,30 @@ class Scanner:
         # partially degraded.  Set at the start of each scan cycle and used
         # by _get_spread_pct to apply tighter REST fetch limits.
         self._ws_any_degraded_this_cycle: bool = False
+
+    # ------------------------------------------------------------------
+    # Dynamic tier query helper
+    # ------------------------------------------------------------------
+
+    def get_symbol_tier(self, symbol: str) -> PairTier:
+        """Return the current :class:`~src.pair_manager.PairTier` for *symbol*.
+
+        Resolution order
+        ----------------
+        1. If a :class:`~src.tier_manager.TierManager` is attached, delegate to
+           its live volume+volatility-ranked tier assignment (refreshed every
+           ~5 minutes by the background polling loop).
+        2. Otherwise fall back to the :class:`~src.pair_manager.PairManager`
+           static tier — the volume-rank assignment from the last pair refresh.
+        3. If the symbol is not found in either source, return
+           :attr:`~src.pair_manager.PairTier.TIER3` as a safe default.
+        """
+        if self.tier_manager is not None:
+            return self.tier_manager.get_tier(symbol)
+        info = self.pair_mgr.pairs.get(symbol)
+        if info is not None:
+            return info.tier
+        return PairTier.TIER3
 
     # ------------------------------------------------------------------
     # Public interface
