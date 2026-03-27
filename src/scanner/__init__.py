@@ -34,6 +34,7 @@ from config import (
     SMC_SCALP_LOOKBACK,
     SMC_SCALP_TOLERANCE_PCT,
     TIER2_SCAN_EVERY_N_CYCLES,
+    TIER3_SCAN_EVERY_N_CYCLES,
     TIER3_SCAN_INTERVAL_MINUTES,
     WS_DEGRADED_CYCLES_ALERT,
     WS_DEGRADED_MAX_PAIRS,
@@ -68,6 +69,7 @@ from src.signal_quality import (
     SignalScoringEngine,
     ScoringInput,
     assess_pair_quality,
+    assess_pair_quality_for_channel,
     build_risk_plan,
     classify_market_state,
     classify_setup,
@@ -90,6 +92,18 @@ from src.vwap import check_vwap_extension, compute_vwap
 from src.ai_engine import get_ai_insight
 from src.chart_patterns import detect_patterns, pattern_confidence_bonus, detect_all_patterns
 from src.stat_filter import StatisticalFilter
+from src.suppression_telemetry import (
+    SuppressionTracker,
+    SuppressionEvent,
+    REASON_QUIET_REGIME,
+    REASON_SPREAD_GATE,
+    REASON_VOLUME_GATE,
+    REASON_OI_INVALIDATION,
+    REASON_CLUSTER,
+    REASON_STAT_FILTER,
+    REASON_LIFESPAN,
+    REASON_CONFIDENCE,
+)
 
 log = get_logger("scanner")
 
@@ -144,7 +158,7 @@ _SCALP_CHANNELS: frozenset = frozenset({
 })
 
 # Maximum number of symbols scanned concurrently
-_MAX_CONCURRENT_SCANS: int = 10
+_MAX_CONCURRENT_SCANS: int = 15
 
 # Regime-channel compatibility matrix.
 # Maps channel name → list of regimes where that channel is blocked.
@@ -438,6 +452,10 @@ class Scanner:
         # over each scan cycle and logged as a summary at cycle end.
         self._suppression_counters: Dict[str, int] = defaultdict(int)
 
+        # Suppression tracker — records structured suppression events for
+        # Telegram digest and data-driven threshold tuning.
+        self.suppression_tracker: SuppressionTracker = SuppressionTracker()
+
         # Data fetcher — delegates kline and order-book retrieval
         self._data_fetcher = DataFetcher(
             data_store=data_store,
@@ -548,8 +566,10 @@ class Scanner:
                 # Tiered scanning:
                 #   Tier 1 → every cycle (full scan, all channels)
                 #   Tier 2 → every TIER2_SCAN_EVERY_N_CYCLES cycles (SWING+SPOT only)
-                #   Tier 3 → lightweight volume scan on a time-based interval
+                #   Tier 3 → every TIER3_SCAN_EVERY_N_CYCLES cycles (cycle-based)
+                #            OR on the time-based interval (whichever fires first)
                 scan_tier2 = (self._scan_cycle_count % TIER2_SCAN_EVERY_N_CYCLES == 0)
+                scan_tier3 = (self._scan_cycle_count % TIER3_SCAN_EVERY_N_CYCLES == 0)
                 # If scan latency has been extremely high, temporarily skip
                 # Tier 2 pairs to reduce cycle time.
                 skip_tier2_for_latency = (
@@ -565,6 +585,7 @@ class Scanner:
                     (sym, info) for sym, info in sorted_pairs
                     if info.tier == PairTier.TIER1
                     or (info.tier == PairTier.TIER2 and scan_tier2 and not skip_tier2_for_latency)
+                    or (info.tier == PairTier.TIER3 and scan_tier3 and not skip_tier2_for_latency)
                 ]
 
                 # Apply cheap in-memory pre-filters to reduce the number of
@@ -1119,15 +1140,60 @@ class Scanner:
             log.debug("Skipping {} {} – Tier 2 pair excluded from SCALP", symbol, chan_name)
             self._suppression_counters[f"tier2_scalp_excluded:{chan_name}"] += 1
             return True
+        # Per-channel pair quality gate: the generic ctx.pair_quality uses a
+        # universal 5% spread limit.  When it fails, we re-evaluate with
+        # channel-specific thresholds — this allows wider-spread pairs on
+        # SWING/SPOT/GEM channels while keeping SCALP at a tighter limit.
         if not ctx.pair_quality.passed:
-            log.debug(
-                "Skipping {} {} – pair quality gate failed: {}",
-                symbol,
-                chan_name,
-                ctx.pair_quality.reason,
-            )
-            self._suppression_counters[f"pair_quality:{ctx.pair_quality.reason}"] += 1
-            return True
+            _regime_ind = ctx.indicators.get("5m", ctx.indicators.get("1m", {}))
+            _regime_candles = ctx.candles.get("5m", ctx.candles.get("1m"))
+            try:
+                _vol = float(pair_info.volume_24h_usd) if pair_info is not None else 0.0
+            except (TypeError, ValueError):
+                _vol = 0.0
+            # Only attempt the channel-specific re-check when we have valid data;
+            # if volume is unavailable, fail open (don't double-penalise the pair).
+            if _vol > 0.0:
+                chan_quality = assess_pair_quality_for_channel(
+                    volume_24h=_vol,
+                    spread_pct=ctx.spread_pct,
+                    indicators=_regime_ind,
+                    candles=_regime_candles,
+                    channel_name=chan_name,
+                )
+                if not chan_quality.passed:
+                    log.debug(
+                        "Skipping {} {} – pair quality gate failed: {}",
+                        symbol,
+                        chan_name,
+                        chan_quality.reason,
+                    )
+                    _supp_reason = (
+                        REASON_SPREAD_GATE if "spread" in chan_quality.reason
+                        else REASON_VOLUME_GATE
+                    )
+                    self._suppression_counters[f"pair_quality:{chan_quality.reason}"] += 1
+                    self.suppression_tracker.record(SuppressionEvent(
+                        symbol=symbol,
+                        channel=chan_name,
+                        reason=_supp_reason,
+                        regime=ctx.regime_result.regime.value,
+                    ))
+                    return True
+                # Channel-specific re-check passed — allow through despite generic failure
+                log.debug(
+                    "{} {} passed channel-specific quality gate (generic failed)",
+                    symbol, chan_name,
+                )
+            else:
+                log.debug(
+                    "Skipping {} {} – pair quality gate failed: {}",
+                    symbol,
+                    chan_name,
+                    ctx.pair_quality.reason,
+                )
+                self._suppression_counters[f"pair_quality:{ctx.pair_quality.reason}"] += 1
+                return True
         if ctx.market_state == MarketState.VOLATILE_UNSUITABLE:
             # Higher-timeframe strategies (SPOT/GEM operate on H4/D1/W1) can
             # tolerate short-term intraday volatility — only block lower-TF channels.
@@ -1184,6 +1250,12 @@ class Scanner:
                 current_regime,
             )
             self._suppression_counters[f"regime:{current_regime}:{chan_name}"] += 1
+            self.suppression_tracker.record(SuppressionEvent(
+                symbol=symbol,
+                channel=chan_name,
+                reason=REASON_QUIET_REGIME,
+                regime=current_regime,
+            ))
             return True
         return False
 
@@ -2028,6 +2100,13 @@ class Scanner:
                     "stat_filter suppressed {}/{}: {}",
                     symbol, chan_name, _sf_reason,
                 )
+                self.suppression_tracker.record(SuppressionEvent(
+                    symbol=symbol,
+                    channel=chan_name,
+                    reason=REASON_STAT_FILTER,
+                    regime=_regime_key,
+                    would_be_confidence=sig.confidence,
+                ))
                 return None, cross_verified
             sig.confidence = _sf_conf
             if "penalty" in _sf_reason:
@@ -2045,6 +2124,13 @@ class Scanner:
                     "QUIET_SCALP_BLOCK {} {} conf={:.1f} < min={:.1f}",
                     symbol, chan_name, sig.confidence, QUIET_SCALP_MIN_CONFIDENCE,
                 )
+                self.suppression_tracker.record(SuppressionEvent(
+                    symbol=symbol,
+                    channel=chan_name,
+                    reason=REASON_CONFIDENCE,
+                    regime=_regime_key,
+                    would_be_confidence=sig.confidence,
+                ))
                 return None, cross_verified
         # WATCHLIST tier: signals with confidence 50-64 are kept as WATCHLIST
         # instead of being discarded.  Only the SCALP channel family generates
@@ -2064,6 +2150,13 @@ class Scanner:
             or sig.component_scores.get("execution", 0.0) < 10.0
             or sig.component_scores.get("risk", 0.0) < 10.0
         ):
+            self.suppression_tracker.record(SuppressionEvent(
+                symbol=symbol,
+                channel=chan_name,
+                reason=REASON_CONFIDENCE,
+                regime=_regime_key,
+                would_be_confidence=sig.confidence,
+            ))
             return None, cross_verified
         self._populate_signal_context(sig, volume_24h, ctx)
         return sig, cross_verified

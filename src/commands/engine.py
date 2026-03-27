@@ -207,3 +207,20 @@ async def handle_set_free_channel_limit(args: List[str], ctx: CommandContext) ->
         await ctx.reply(f"✅ Free channel daily signal limit set to {ctx.free_channel_limit}")
     except ValueError:
         await ctx.reply("❌ Value must be an integer.")
+
+
+@registry.command(
+    "/suppressed",
+    aliases=["/suppression"],
+    admin=True,
+    group="engine",
+    help_text="Show suppressed signal digest for the last 4h",
+)
+async def handle_suppressed(args: List[str], ctx: CommandContext) -> None:
+    """Send a rolling-window suppression digest to the admin chat."""
+    tracker = getattr(ctx.scanner, "suppression_tracker", None)
+    if tracker is None:
+        await ctx.reply("⚠️ Suppression tracker not available.")
+        return
+    digest = tracker.format_telegram_digest()
+    await ctx.reply(digest)

@@ -174,7 +174,10 @@ TIER2_PAIR_COUNT: int = int(os.getenv("TIER2_PAIR_COUNT", "200"))
 TIER2_SCAN_EVERY_N_CYCLES: int = int(os.getenv("TIER2_SCAN_EVERY_N_CYCLES", "3"))
 # Tier 3 — Full Universe: all remaining USDT pairs.  Lightweight volume /
 # momentum scan every N minutes.  Auto-promoted to Tier 2 on volume surges.
+# Also supports cycle-based scheduling: Tier 3 is included in the main scan
+# loop every TIER3_SCAN_EVERY_N_CYCLES cycles (default 6).
 TIER3_SCAN_INTERVAL_MINUTES: int = int(os.getenv("TIER3_SCAN_INTERVAL_MINUTES", "30"))
+TIER3_SCAN_EVERY_N_CYCLES: int = int(os.getenv("TIER3_SCAN_EVERY_N_CYCLES", "6"))
 TIER3_VOLUME_SURGE_MULTIPLIER: float = float(os.getenv("TIER3_VOLUME_SURGE_MULTIPLIER", "3.0"))
 # When enabled, pairs absent from the latest exchange response are pruned from
 # the active universe (handles delistings and low-volume pair removal).
