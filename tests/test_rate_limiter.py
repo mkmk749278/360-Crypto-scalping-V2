@@ -495,3 +495,79 @@ class TestBurstProtection:
         elapsed = time.monotonic() - t0
         assert elapsed < 0.05, f"Unexpected burst sleep on full-budget acquire: {elapsed:.3f}s"
         assert rl.used == 10
+
+
+# ---------------------------------------------------------------------------
+# Tier-pause properties (PR 4 — Intelligent Preemptive Rate Limiting)
+# ---------------------------------------------------------------------------
+
+class TestTierPauseProperties:
+    """is_tier3_paused and is_tier2_paused reflect preemptive throttle thresholds."""
+
+    def test_not_paused_at_low_usage(self):
+        """Below 70% — neither tier is paused."""
+        rl = _make_limiter(budget=100)
+        rl._used = 50  # 50%
+        assert not rl.is_tier3_paused
+        assert not rl.is_tier2_paused
+
+    def test_tier3_paused_at_exactly_70_pct(self):
+        """At exactly 70% usage, Tier 3 is paused but Tier 2 is not."""
+        rl = _make_limiter(budget=100)
+        rl._used = 70  # exactly 70%
+        assert rl.is_tier3_paused
+        assert not rl.is_tier2_paused
+
+    def test_tier3_paused_above_70_pct(self):
+        """Above 70% — Tier 3 is paused."""
+        rl = _make_limiter(budget=100)
+        rl._used = 75  # 75%
+        assert rl.is_tier3_paused
+
+    def test_tier2_paused_at_exactly_85_pct(self):
+        """At exactly 85% usage, both Tier 2 and Tier 3 are paused."""
+        rl = _make_limiter(budget=100)
+        rl._used = 85  # exactly 85%
+        assert rl.is_tier2_paused
+        assert rl.is_tier3_paused  # 85% > 70%
+
+    def test_both_paused_above_85_pct(self):
+        """Above 85% — both Tier 2 and Tier 3 are paused."""
+        rl = _make_limiter(budget=100)
+        rl._used = 90  # 90%
+        assert rl.is_tier3_paused
+        assert rl.is_tier2_paused
+
+    def test_not_paused_just_below_70_pct(self):
+        """Just below 70% — neither tier is paused."""
+        rl = _make_limiter(budget=100)
+        rl._used = 69  # 69%
+        assert not rl.is_tier3_paused
+        assert not rl.is_tier2_paused
+
+    def test_tier3_only_between_70_and_85_pct(self):
+        """Between 70% and 85% — only Tier 3 is paused, Tier 2 is still active."""
+        rl = _make_limiter(budget=100)
+        rl._used = 80  # 80% — above Tier 3 threshold, below Tier 2 threshold
+        assert rl.is_tier3_paused
+        assert not rl.is_tier2_paused
+
+    def test_pauses_reset_after_window_expires(self):
+        """Pauses clear automatically when the rate-limit window resets."""
+        rl = _make_limiter(budget=100, window_s=0.01)
+        rl._used = 90  # 90% — both paused
+        # Expire the window
+        rl._window_start = time.monotonic() - 1.0
+        # Properties call _maybe_reset() internally
+        assert not rl.is_tier3_paused
+        assert not rl.is_tier2_paused
+
+    def test_pauses_work_with_large_budget(self):
+        """Thresholds are fractional so they scale with any budget size."""
+        rl = _make_limiter(budget=5000)
+        rl._used = 3500  # 70% of 5000 = 3500
+        assert rl.is_tier3_paused
+        assert not rl.is_tier2_paused
+
+        rl._used = 4250  # 85% of 5000 = 4250
+        assert rl.is_tier2_paused

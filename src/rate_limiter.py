@@ -8,6 +8,8 @@ Provides :class:`RateLimiter` which:
 - Syncs the authoritative weight counter from the ``X-MBX-USED-WEIGHT-1m``
   response header via :meth:`~RateLimiter.update_from_header`.
 - Supports dynamic budget adjustment via :meth:`~RateLimiter.set_budget`.
+- Exposes :attr:`~RateLimiter.is_tier3_paused` and
+  :attr:`~RateLimiter.is_tier2_paused` for tier-based preemptive throttling.
 
 Two module-level singletons are exported: :data:`spot_rate_limiter` and
 :data:`futures_rate_limiter`.  Binance tracks spot and futures rate limits
@@ -25,6 +27,10 @@ Safety targets
   ``_BURST_PROTECTION_THRESHOLD`` (15% of budget) to prevent the engine
   from burning through the last units in a single burst and triggering the
   hard Binance 429 lockout (observed as ~42 s pause at 100% usage).
+- Tier throttling: :attr:`~RateLimiter.is_tier3_paused` signals at 70%
+  budget usage; :attr:`~RateLimiter.is_tier2_paused` signals at 85%.
+  The scanner reads these flags to skip non-essential Tier 3/2 REST calls
+  well before hitting the hard cap.
 """
 
 from __future__ import annotations
@@ -51,6 +57,18 @@ _DEFAULT_FUTURES_BUDGET: int = 2_000
 
 # Warn when usage reaches this fraction of the budget
 _WARN_THRESHOLD: float = 0.80
+
+# Tier-based preemptive throttling thresholds.
+# When the consumed weight fraction exceeds these levels the corresponding
+# ``is_tier*_paused`` property returns ``True`` so the scanner can skip
+# non-essential REST calls for lower-priority pairs *before* a hard Binance
+# 429 lockout is triggered.
+#   > 70% → pause Tier 3 (Cold) non-essential requests
+#   > 85% → pause Tier 2 (Warm) non-essential requests
+# Tier 1 (Hot) pairs and critical trade execution are never artificially
+# paused by these thresholds.
+_TIER3_PAUSE_THRESHOLD: float = 0.70
+_TIER2_PAUSE_THRESHOLD: float = 0.85
 
 # Burst protection: when remaining budget falls below this fraction of the
 # total budget, a proportional micro-sleep is injected *before* consuming
@@ -115,6 +133,33 @@ class RateLimiter:
         """Estimated remaining weight in the current window."""
         self._maybe_reset()
         return max(0, self._budget - self._used)
+
+    @property
+    def is_tier3_paused(self) -> bool:
+        """True when API weight usage exceeds 70% of the budget.
+
+        When this is ``True``, the scanner should skip non-essential REST
+        requests for Tier 3 (Cold) pairs to prevent exhausting the budget
+        and triggering the hard Binance 429/418 lockout.
+        """
+        self._maybe_reset()
+        if self._budget <= 0:
+            return False
+        return self._used / self._budget >= _TIER3_PAUSE_THRESHOLD
+
+    @property
+    def is_tier2_paused(self) -> bool:
+        """True when API weight usage exceeds 85% of the budget.
+
+        When this is ``True``, the scanner should skip non-essential REST
+        requests for Tier 2 (Warm) pairs in addition to Tier 3.  Only
+        Tier 1 (Hot) pairs and critical trade-execution commands continue
+        to be processed.
+        """
+        self._maybe_reset()
+        if self._budget <= 0:
+            return False
+        return self._used / self._budget >= _TIER2_PAUSE_THRESHOLD
 
     # ------------------------------------------------------------------
     # Core API
