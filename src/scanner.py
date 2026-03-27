@@ -115,6 +115,14 @@ _MIN_WEIGHT_FOR_ORDER_BOOK: int = 100
 _MAX_ORDER_BOOK_FETCHES_WS_DEGRADED: int = 10
 _MIN_WEIGHT_FOR_ORDER_BOOK_WS_DEGRADED: int = 400
 
+# Timeout for the global bookTicker pre-fetch issued when WS is degraded.
+_BOOK_TICKER_PREFETCH_TIMEOUT_S: float = 8.0
+
+# TTL for spread entries seeded from the global bookTicker endpoint.
+# bookTicker returns only bid/ask (no depth), so we keep the TTL shorter
+# than the standard depth-based entry to encourage fresher polling.
+_BOOK_TICKER_CACHE_TTL: float = 20.0
+
 # ADX threshold below which SCALP signals are suppressed during RANGING regime
 _RANGING_ADX_SUPPRESS_THRESHOLD: float = 15.0
 
@@ -556,6 +564,17 @@ class Scanner:
                         ws_spot_ratio, ws_futures_ratio, WS_DEGRADED_MAX_PAIRS,
                     )
 
+                # PR 3 — Tier-aware REST fallback: when WS is degraded, issue
+                # a single weight-efficient global bookTicker call (Weight 2)
+                # to pre-populate the spread cache for all Tier 2 and Tier 3
+                # pairs.  This replaces per-symbol /depth calls for those tiers
+                # and reserves the heavier /depth endpoint strictly for Tier 1
+                # (Hot) pairs.  The concurrent symbol scans below will then
+                # find valid cache entries for Tier 2/3 symbols and skip the
+                # per-symbol fetch entirely.
+                if self._ws_any_degraded_this_cycle:
+                    await self._fetch_global_book_tickers(market="futures")
+
                 sem = self._scan_semaphore
                 tasks = [
                     self._scan_symbol_bounded(sem, sym, info.volume_24h_usd)
@@ -807,6 +826,83 @@ class Scanner:
             indicators[tf_key] = ind
         return indicators
 
+    async def _fetch_global_book_tickers(self, market: str = "futures") -> None:
+        """Pre-populate the spread cache for Tier 2 and Tier 3 pairs using a
+        single weight-efficient ``bookTicker`` call.
+
+        When WebSockets degrade, calling ``/fapi/v1/depth`` for every pair
+        individually exhausts the Binance API weight budget and produces
+        30-50 s scan latencies.  Instead, this method issues **one** global
+        ``/fapi/v1/ticker/bookTicker`` request (Weight: 2) that returns the
+        best bid/ask for *all* symbols, then seeds :attr:`_order_book_cache`
+        for every Tier 2 and Tier 3 pair found in the response.
+
+        Tier 1 (Hot) pairs are deliberately excluded from this pre-population
+        so that their higher-priority ``/depth`` call (which also captures full
+        order-book depth for OBI filtering) is not suppressed by the shorter
+        bookTicker TTL.
+
+        Parameters
+        ----------
+        market:
+            ``"futures"`` (default) or ``"spot"``.  The appropriate
+            :class:`~src.binance.BinanceClient` instance is lazily created if
+            not already present.
+        """
+        try:
+            if market == "futures":
+                if self.futures_client is None:
+                    self.futures_client = BinanceClient("futures")
+                client = self.futures_client
+            else:
+                if self.spot_client is None:
+                    self.spot_client = BinanceClient("spot")
+                client = self.spot_client
+
+            tickers = await asyncio.wait_for(
+                client.fetch_all_book_tickers(),
+                timeout=_BOOK_TICKER_PREFETCH_TIMEOUT_S,
+            )
+            if not tickers:
+                log.warning(
+                    "Global bookTicker pre-fetch returned no data (market={})", market
+                )
+                return
+
+            now = time.monotonic()
+            populated = 0
+            for symbol, entry in tickers.items():
+                # Only seed Tier 2/3; Tier 1 uses the fuller /depth endpoint.
+                tier = self.get_symbol_tier(symbol)
+                if tier == PairTier.TIER1:
+                    continue
+                # Skip if there is already a fresh cache entry for this symbol.
+                existing = self._order_book_cache.get(symbol)
+                if existing and now < existing[1]:
+                    continue
+                try:
+                    best_bid = float(entry.get("bidPrice", 0))
+                    best_ask = float(entry.get("askPrice", 0))
+                except (TypeError, ValueError):
+                    continue
+                if best_bid <= 0 or best_ask <= 0:
+                    continue
+                mid = (best_bid + best_ask) / 2.0
+                if mid <= 0:
+                    continue
+                spread_pct = (best_ask - best_bid) / mid * 100.0
+                self._order_book_cache[symbol] = (spread_pct, now + _BOOK_TICKER_CACHE_TTL)
+                populated += 1
+
+            log.debug(
+                "Global bookTicker pre-fetch populated {} Tier 2/3 spread cache entries",
+                populated,
+            )
+        except asyncio.TimeoutError:
+            log.warning("Global bookTicker pre-fetch timed out (market={})", market)
+        except Exception as exc:
+            log.warning("Global bookTicker pre-fetch error (market={}): {}", market, exc)
+
     async def _get_spread_pct(self, symbol: str, market: str = "spot") -> float:
         spread_pct = 0.01  # fallback
         now = time.monotonic()
@@ -818,6 +914,14 @@ class Scanner:
         if self._ws_any_degraded_this_cycle:
             effective_max_fetches = _MAX_ORDER_BOOK_FETCHES_WS_DEGRADED
             effective_min_weight = _MIN_WEIGHT_FOR_ORDER_BOOK_WS_DEGRADED
+            # PR 3 — Tier-aware REST fallback: when WS is degraded, skip the
+            # heavy per-symbol /depth call for Tier 2 and Tier 3 pairs.
+            # Their spread data was already pre-populated from the global
+            # bookTicker call issued at the start of this scan cycle.
+            # Reserve /depth strictly for Tier 1 (Hot) pairs.
+            symbol_tier = self.get_symbol_tier(symbol)
+            if symbol_tier != PairTier.TIER1:
+                return spread_pct
         else:
             effective_max_fetches = _MAX_ORDER_BOOK_FETCHES_PER_CYCLE
             effective_min_weight = _MIN_WEIGHT_FOR_ORDER_BOOK

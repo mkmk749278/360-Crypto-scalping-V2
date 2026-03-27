@@ -296,6 +296,33 @@ class BinanceClient:
             timeout=_DEPTH_TIMEOUT_S,
         )
 
+    async def fetch_all_book_tickers(self) -> Optional[Dict[str, Dict[str, str]]]:
+        """Fetch best bid/ask prices for **all** symbols in a single request.
+
+        This is the weight-efficient alternative to per-symbol ``/depth``
+        polling.  A single call returns the best bid and ask for every active
+        symbol instead of issuing one request per symbol.
+
+        Weight
+        ------
+        * Futures ``/fapi/v1/ticker/bookTicker`` (no ``symbol`` param): **2**
+        * Spot    ``/api/v3/ticker/bookTicker``  (no ``symbol`` param): **2**
+
+        Returns
+        -------
+        dict[str, dict]
+            Mapping of symbol → ``{"bidPrice": str, "askPrice": str, ...}``,
+            or ``None`` if the request fails.
+        """
+        if self.market == "futures":
+            path = "/fapi/v1/ticker/bookTicker"
+        else:
+            path = "/api/v3/ticker/bookTicker"
+        data = await self._get(path, weight=2)
+        if not isinstance(data, list):
+            return None
+        return {item["symbol"]: item for item in data if "symbol" in item}
+
     async def fetch_exchange_info(self) -> Optional[Dict[str, Any]]:
         """Fetch exchange trading rules and symbol information.
 
