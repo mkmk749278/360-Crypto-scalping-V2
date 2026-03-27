@@ -6,6 +6,7 @@ channel evaluators and the confidence scorer can adapt their behaviour.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, Optional
@@ -92,9 +93,9 @@ def volume_profile_classify(
 
 # Thresholds (tunable via environment variables in the future)
 _ADX_TRENDING_MIN: float = 25.0
-_ADX_RANGING_MAX: float = 20.0
+_ADX_RANGING_MAX: float = float(os.getenv("ADX_RANGING_MAX", "18.0"))
 _BB_WIDTH_VOLATILE_PCT: float = 5.0   # Bollinger width as % of price
-_BB_WIDTH_QUIET_PCT: float = 1.2
+_BB_WIDTH_QUIET_PCT: float = float(os.getenv("BB_WIDTH_QUIET_PCT", "1.2"))
 # Volume-delta override: if |volume_delta_pct| >= this threshold, the regime
 # is forced out of QUIET / RANGING into VOLATILE or TRENDING.
 _VOLUME_DELTA_SPIKE_PCT: float = 60.0  # percent of total volume as net delta
@@ -413,6 +414,82 @@ class MarketRegimeDetector:
                 return MarketRegime.TRENDING_DOWN
 
         return MarketRegime.RANGING
+
+
+# ---------------------------------------------------------------------------
+# Tier-specific regime threshold profiles
+# ---------------------------------------------------------------------------
+
+_TIER_REGIME_PROFILES: Dict[str, Dict[str, float]] = {
+    "MAJOR": {
+        "adx_trending_min": float(os.getenv("MAJOR_ADX_TRENDING_MIN", "28.0")),
+        "adx_ranging_max":  float(os.getenv("MAJOR_ADX_RANGING_MAX",  "22.0")),
+        "bb_width_quiet":   float(os.getenv("MAJOR_BB_WIDTH_QUIET",    "1.0")),
+        "bb_width_volatile": float(os.getenv("MAJOR_BB_WIDTH_VOLATILE", "4.0")),
+    },
+    "MIDCAP": {
+        "adx_trending_min": float(os.getenv("MIDCAP_ADX_TRENDING_MIN", "25.0")),
+        "adx_ranging_max":  float(os.getenv("MIDCAP_ADX_RANGING_MAX",  "20.0")),
+        "bb_width_quiet":   float(os.getenv("MIDCAP_BB_WIDTH_QUIET",    "1.2")),
+        "bb_width_volatile": float(os.getenv("MIDCAP_BB_WIDTH_VOLATILE", "5.0")),
+    },
+    "ALTCOIN": {
+        "adx_trending_min": float(os.getenv("ALTCOIN_ADX_TRENDING_MIN", "20.0")),
+        "adx_ranging_max":  float(os.getenv("ALTCOIN_ADX_RANGING_MAX",  "15.0")),
+        "bb_width_quiet":   float(os.getenv("ALTCOIN_BB_WIDTH_QUIET",    "0.8")),
+        "bb_width_volatile": float(os.getenv("ALTCOIN_BB_WIDTH_VOLATILE", "6.0")),
+    },
+}
+
+
+class AdaptiveRegimeDetector(MarketRegimeDetector):
+    """Regime detector with tier-specific ADX and Bollinger Band thresholds.
+
+    Applies different classification thresholds based on the pair's volume
+    tier (MAJOR, MIDCAP, ALTCOIN) to avoid misclassifying altcoins that have
+    lower absolute ADX values for comparable trend strength.
+
+    Parameters
+    ----------
+    pair_tier:
+        Volume tier of the pair: ``"MAJOR"``, ``"MIDCAP"``, or ``"ALTCOIN"``.
+    hysteresis_candles:
+        Passed through to :class:`MarketRegimeDetector`.
+    """
+
+    def __init__(self, pair_tier: str = "MIDCAP", hysteresis_candles: int = 3) -> None:
+        super().__init__(hysteresis_candles=hysteresis_candles)
+        self._pair_tier = pair_tier
+        profile = _TIER_REGIME_PROFILES.get(pair_tier, _TIER_REGIME_PROFILES["MIDCAP"])
+        self._adx_trending_min: float = profile["adx_trending_min"]
+        self._adx_ranging_max: float = profile["adx_ranging_max"]
+        self._bb_width_quiet: float = profile["bb_width_quiet"]
+        self._bb_width_volatile: float = profile["bb_width_volatile"]
+
+    def classify(
+        self,
+        indicators: Dict[str, Any],
+        candles: Optional[Dict[str, Any]] = None,
+        timeframe: str = "5m",
+        volume_delta: Optional[float] = None,
+    ) -> RegimeResult:
+        """Classify using tier-specific thresholds."""
+        import src.regime as _regime_module
+        _orig_trending = _regime_module._ADX_TRENDING_MIN
+        _orig_ranging = _regime_module._ADX_RANGING_MAX
+        _orig_quiet = _regime_module._BB_WIDTH_QUIET_PCT
+        _orig_volatile = _regime_module._BB_WIDTH_VOLATILE_PCT
+        try:
+            _regime_module._ADX_TRENDING_MIN = self._adx_trending_min
+            _regime_module._ADX_RANGING_MAX = self._adx_ranging_max
+            _regime_module._BB_WIDTH_QUIET_PCT = self._bb_width_quiet
+            _regime_module._BB_WIDTH_VOLATILE_PCT = self._bb_width_volatile
+            return super().classify(indicators, candles, timeframe, volume_delta)
+        finally:
+            _regime_module._ADX_TRENDING_MIN = _orig_trending
+            _regime_module._ADX_RANGING_MAX = _orig_ranging
+            _regime_module._BB_WIDTH_QUIET_PCT = _orig_quiet
+            _regime_module._BB_WIDTH_VOLATILE_PCT = _orig_volatile
 
 
 # ---------------------------------------------------------------------------

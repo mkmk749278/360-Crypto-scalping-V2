@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from dotenv import load_dotenv
 
@@ -179,6 +179,31 @@ TIER2_SCAN_EVERY_N_CYCLES: int = int(os.getenv("TIER2_SCAN_EVERY_N_CYCLES", "3")
 TIER3_SCAN_INTERVAL_MINUTES: int = int(os.getenv("TIER3_SCAN_INTERVAL_MINUTES", "30"))
 TIER3_SCAN_EVERY_N_CYCLES: int = int(os.getenv("TIER3_SCAN_EVERY_N_CYCLES", "6"))
 TIER3_VOLUME_SURGE_MULTIPLIER: float = float(os.getenv("TIER3_VOLUME_SURGE_MULTIPLIER", "3.0"))
+
+# ---------------------------------------------------------------------------
+# Tiered scanning configuration
+# ---------------------------------------------------------------------------
+SCANNING_TIERS: Dict[str, Any] = {
+    "TIER_1_CRITICAL": {
+        "pairs": ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"],
+        "scan_interval_seconds": 5,
+        "priority": "HIGH",
+    },
+    "TIER_2_FUTURES_TOP": {
+        "count": 50,
+        "scan_interval_seconds": 15,
+        "priority": "MEDIUM",
+    },
+    "TIER_3_SPOT_BATCH": {
+        "count": 200,
+        "scan_interval_seconds": 60,
+        "priority": "LOW",
+        "batch_size": 25,
+    },
+}
+
+#: Enable adaptive per-tier regime threshold adjustment.
+ADAPTIVE_REGIME_ENABLED: bool = os.getenv("ADAPTIVE_REGIME_ENABLED", "true").lower() in ("true", "1", "yes")
 # When enabled, pairs absent from the latest exchange response are pruned from
 # the active universe (handles delistings and low-volume pair removal).
 PAIR_PRUNE_ENABLED: bool = os.getenv("PAIR_PRUNE_ENABLED", "true").lower() in ("1", "true", "yes")
@@ -251,6 +276,7 @@ class ChannelConfig:
     dca_weight_1: float = 0.6                  # Position weight for Entry 1
     dca_weight_2: float = 0.4                  # Position weight for Entry 2
     dca_min_momentum: float = 0.2              # Minimum |momentum| for DCA validation
+    min_signal_lifespan: int = 900             # Minimum signal lifespan in seconds
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +372,7 @@ CHANNEL_SCALP = ChannelConfig(
     min_confidence=68,
     min_volume=5_000_000.0,
     dca_enabled=True,
+    min_signal_lifespan=int(os.getenv("SCALP_MIN_LIFESPAN", "900")),
 )
 
 CHANNEL_SWING = ChannelConfig(
@@ -361,6 +388,7 @@ CHANNEL_SWING = ChannelConfig(
     min_confidence=72,
     min_volume=10_000_000.0,
     dca_enabled=True,
+    min_signal_lifespan=int(os.getenv("SWING_MIN_LIFESPAN", "7200")),
 )
 
 CHANNEL_GEM = ChannelConfig(
@@ -376,6 +404,7 @@ CHANNEL_GEM = ChannelConfig(
     min_confidence=55,
     min_volume=1_000_000.0,
     dca_enabled=False,
+    min_signal_lifespan=int(os.getenv("GEM_MIN_LIFESPAN", "43200")),
 )
 
 CHANNEL_SPOT = ChannelConfig(
@@ -395,6 +424,7 @@ CHANNEL_SPOT = ChannelConfig(
     dca_weight_1=0.6,
     dca_weight_2=0.4,
     dca_min_momentum=0.2,
+    min_signal_lifespan=int(os.getenv("SPOT_MIN_LIFESPAN", "21600")),
 )
 
 # ---------------------------------------------------------------------------
@@ -414,6 +444,7 @@ CHANNEL_SCALP_FVG = ChannelConfig(
     min_confidence=68,
     min_volume=5_000_000.0,
     dca_enabled=True,
+    min_signal_lifespan=int(os.getenv("SCALP_MIN_LIFESPAN", "900")),
 )
 
 CHANNEL_SCALP_CVD = ChannelConfig(
@@ -429,6 +460,7 @@ CHANNEL_SCALP_CVD = ChannelConfig(
     min_confidence=68,
     min_volume=5_000_000.0,
     dca_enabled=True,
+    min_signal_lifespan=int(os.getenv("SCALP_MIN_LIFESPAN", "900")),
 )
 
 CHANNEL_SCALP_VWAP = ChannelConfig(
@@ -444,6 +476,7 @@ CHANNEL_SCALP_VWAP = ChannelConfig(
     min_confidence=68,
     min_volume=5_000_000.0,
     dca_enabled=True,
+    min_signal_lifespan=int(os.getenv("SCALP_MIN_LIFESPAN", "900")),
 )
 
 CHANNEL_SCALP_OBI = ChannelConfig(
@@ -459,6 +492,7 @@ CHANNEL_SCALP_OBI = ChannelConfig(
     min_confidence=68,
     min_volume=5_000_000.0,
     dca_enabled=True,
+    min_signal_lifespan=int(os.getenv("SCALP_MIN_LIFESPAN", "900")),
 )
 
 ALL_CHANNELS: List[ChannelConfig] = [
@@ -674,11 +708,14 @@ LIFECYCLE_CONFIDENCE_DROP_RED: float = float(
 # Anti-noise: minimum signal lifespan before SL/TP checks are applied (secs)
 # ---------------------------------------------------------------------------
 MIN_SIGNAL_LIFESPAN_SECONDS: Dict[str, int] = {
-    "360_SCALP": 180,
-    "360_SWING": 300,
-    "360_SPOT": 600,
-    "360_GEM": 21600,  # 6 hours — reduced from 24h; GEM signals on volatile
-                       # small-cap tokens often have shorter valid windows
+    "360_SCALP":      int(os.getenv("MIN_LIFESPAN_SCALP",      "180")),
+    "360_SCALP_FVG":  int(os.getenv("MIN_LIFESPAN_SCALP_FVG",  "180")),
+    "360_SCALP_CVD":  int(os.getenv("MIN_LIFESPAN_SCALP_CVD",  "180")),
+    "360_SCALP_VWAP": int(os.getenv("MIN_LIFESPAN_SCALP_VWAP", "180")),
+    "360_SCALP_OBI":  int(os.getenv("MIN_LIFESPAN_SCALP_OBI",  "180")),
+    "360_SWING":      int(os.getenv("MIN_LIFESPAN_SWING",       "300")),
+    "360_SPOT":       int(os.getenv("MIN_LIFESPAN_SPOT",        "600")),
+    "360_GEM":        int(os.getenv("MIN_LIFESPAN_GEM",         "21600")),
 }
 
 # ---------------------------------------------------------------------------
@@ -689,7 +726,7 @@ MIN_SIGNAL_LIFESPAN_SECONDS: Dict[str, int] = {
 #: Acts as a hard floor — only top-tier signals proceed when the market is
 #: compressed.  Configurable via the QUIET_SCALP_MIN_CONFIDENCE env var.
 QUIET_SCALP_MIN_CONFIDENCE: float = float(
-    os.getenv("QUIET_SCALP_MIN_CONFIDENCE", "72.0")
+    os.getenv("QUIET_SCALP_MIN_CONFIDENCE", "68.0")
 )
 
 #: Volume multiplier required for scalp entries in QUIET regime.
@@ -702,6 +739,29 @@ QUIET_SCALP_MIN_CONFIDENCE: float = float(
 QUIET_SCALP_VOLUME_MULTIPLIER: float = float(
     os.getenv("QUIET_SCALP_VOLUME_MULTIPLIER", "2.5")
 )
+
+#: Confidence penalty applied to SCALP signals in QUIET regime.
+REGIME_QUIET_PENALTY: float = float(os.getenv("REGIME_QUIET_PENALTY", "8.0"))
+
+#: Confidence penalty applied to SCALP signals in RANGING regime with ADX below threshold.
+REGIME_RANGING_PENALTY: float = float(os.getenv("REGIME_RANGING_PENALTY", "5.0"))
+
+#: ADX threshold below which SCALP signals receive a soft penalty in RANGING.
+RANGING_ADX_SUPPRESS_THRESHOLD: float = float(
+    os.getenv("RANGING_ADX_SUPPRESS_THRESHOLD", "12.0")
+)
+
+# ---------------------------------------------------------------------------
+# Per-channel pair quality thresholds (overridable via env vars)
+# ---------------------------------------------------------------------------
+PAIR_QUALITY_THRESHOLD_SCALP: float = float(os.getenv("PAIR_QUALITY_THRESHOLD_SCALP", "58.0"))
+PAIR_QUALITY_THRESHOLD_SWING: float = float(os.getenv("PAIR_QUALITY_THRESHOLD_SWING", "50.0"))
+PAIR_QUALITY_THRESHOLD_SPOT:  float = float(os.getenv("PAIR_QUALITY_THRESHOLD_SPOT",  "45.0"))
+PAIR_QUALITY_THRESHOLD_GEM:   float = float(os.getenv("PAIR_QUALITY_THRESHOLD_GEM",   "40.0"))
+
+PAIR_QUALITY_VOLUME_FLOOR_SWING: float = float(os.getenv("PAIR_QUALITY_VOLUME_FLOOR_SWING", "500000.0"))
+PAIR_QUALITY_VOLUME_FLOOR_SPOT:  float = float(os.getenv("PAIR_QUALITY_VOLUME_FLOOR_SPOT",  "250000.0"))
+PAIR_QUALITY_VOLUME_FLOOR_GEM:   float = float(os.getenv("PAIR_QUALITY_VOLUME_FLOOR_GEM",   "100000.0"))
 
 # ---------------------------------------------------------------------------
 # How long a signal setup remains actionable (minutes).  After this window
@@ -924,3 +984,22 @@ DEPTH_MAX_RETRIES: int = int(os.getenv("DEPTH_MAX_RETRIES", "3"))
 WS_RECONNECT_FAIL_ALERT_THRESHOLD: int = int(
     os.getenv("WS_RECONNECT_FAIL_ALERT_THRESHOLD", "50")
 )
+
+#: Interval (seconds) between WebSocket connection health checks.
+WS_HEALTH_CHECK_INTERVAL: int = int(os.getenv("WS_HEALTH_CHECK_INTERVAL", "30"))
+#: Minimum message rate (messages/minute) below which a connection is flagged unhealthy.
+WS_MIN_MESSAGE_RATE: float = float(os.getenv("WS_MIN_MESSAGE_RATE", "1.0"))
+#: Pairs that get dedicated (non-multiplexed) WebSocket connections for lowest latency.
+WS_PRIORITY_DEDICATED_PAIRS: List[str] = [
+    p.strip() for p in os.getenv(
+        "WS_PRIORITY_DEDICATED_PAIRS", "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT"
+    ).split(",") if p.strip()
+]
+
+# ---------------------------------------------------------------------------
+# Suppression telemetry
+# ---------------------------------------------------------------------------
+#: Enable suppression telemetry collection.
+SUPPRESSION_TELEMETRY_ENABLED: bool = os.getenv("SUPPRESSION_TELEMETRY_ENABLED", "true").lower() in ("true", "1", "yes")
+#: Maximum number of suppression events to keep in memory.
+SUPPRESSION_TELEMETRY_MAX_EVENTS: int = int(os.getenv("SUPPRESSION_TELEMETRY_MAX_EVENTS", "10000"))

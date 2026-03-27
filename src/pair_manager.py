@@ -128,6 +128,21 @@ class PairManager:
     def tier3_symbols(self) -> List[str]:
         return [s for s, p in self.pairs.items() if p.tier == PairTier.TIER3]
 
+    def get_tiered_pairs(self) -> Dict[str, List[str]]:
+        """Return pairs categorized into scanning tiers.
+
+        Returns
+        -------
+        Dict[str, List[str]]
+            Dictionary with keys ``"tier1"``, ``"tier2"``, ``"tier3"`` mapping
+            to lists of symbols in each scanning tier.
+        """
+        return {
+            "tier1": self.tier1_symbols,
+            "tier2": self.tier2_symbols,
+            "tier3": self.tier3_symbols,
+        }
+
     @property
     def tier1_spot_symbols(self) -> List[str]:
         return [s for s, p in self.pairs.items() if p.tier == PairTier.TIER1 and p.market == "spot"]

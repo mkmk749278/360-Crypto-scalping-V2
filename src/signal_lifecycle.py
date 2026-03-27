@@ -519,7 +519,14 @@ class SignalLifecycleMonitor:
         )
         pnl_sign = "+" if pnl_pct >= 0 else ""
 
-        interval_seconds = LIFECYCLE_CHECK_INTERVAL.get(signal.channel, 21600)
+        def _get_lifecycle_interval(channel_name: str) -> int:
+            if channel_name in LIFECYCLE_CHECK_INTERVAL:
+                return LIFECYCLE_CHECK_INTERVAL[channel_name]
+            if "SCALP" in channel_name:
+                return 900
+            return 3600
+
+        interval_seconds = _get_lifecycle_interval(signal.channel)
         interval_hours = interval_seconds // 3600
 
         if should_close:

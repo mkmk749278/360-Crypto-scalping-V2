@@ -16,7 +16,7 @@ import json
 import random
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine, List, Optional, Set
+from typing import Any, Callable, Coroutine, Dict, List, Optional, Set
 
 import aiohttp
 
@@ -29,9 +29,11 @@ from config import (
     WS_FALLBACK_BULK_LIMIT,
     WS_FALLBACK_POLL_INTERVALS,
     WS_FALLBACK_TIMEFRAMES,
+    WS_HEALTH_CHECK_INTERVAL,
     WS_HEARTBEAT_INTERVAL,
     WS_HEARTBEAT_INTERVAL_FUTURES,
     WS_MAX_STREAMS_PER_CONN,
+    WS_MIN_MESSAGE_RATE,
     WS_PING_TIMEOUT_MS,
     WS_RECONNECT_BASE_DELAY,
     WS_RECONNECT_FAIL_ALERT_THRESHOLD,
@@ -85,6 +87,9 @@ class WebSocketManager:
         self._last_alert_time: float = 0.0
         self._total_drops: int = 0
         self._data_store = data_store
+        self._ws_rest_fallback_count: int = 0
+        self._ws_reconnection_count: int = 0
+        self._connection_message_rates: Dict[int, float] = {}  # conn_index -> msgs/min
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -575,3 +580,45 @@ class WebSocketManager:
             (now - c.last_pong) < self._heartbeat_interval * self._staleness_multiplier
             for c in open_connections
         )
+
+    @property
+    def ws_rest_fallback_count(self) -> int:
+        return self._ws_rest_fallback_count
+
+    @property
+    def ws_reconnection_count(self) -> int:
+        return self._ws_reconnection_count
+
+    def get_healthy_connection_ratio(self) -> float:
+        """Return ratio of healthy connections (0.0–1.0)."""
+        if not self._connections:
+            return 1.0
+        healthy = sum(
+            1 for c in self._connections
+            if c.ws is not None and not c.ws.closed
+        )
+        return healthy / len(self._connections)
+
+    async def _health_check_loop(self) -> None:
+        """Periodically assess connection message rates and flag stale connections."""
+        while self._running:
+            await asyncio.sleep(WS_HEALTH_CHECK_INTERVAL)
+            if not self._connections:
+                continue
+            now = time.monotonic()
+            for idx, conn in enumerate(self._connections):
+                elapsed = now - getattr(conn, "_health_check_ts", now)
+                msg_count = getattr(conn, "_health_msg_count", 0)
+                if elapsed > 0:
+                    rate = (msg_count / elapsed) * 60.0  # msgs/min
+                else:
+                    rate = 0.0
+                self._connection_message_rates[idx] = rate
+                if rate < WS_MIN_MESSAGE_RATE and conn.ws is not None and not conn.ws.closed:
+                    log.info(
+                        "WS connection {} ({}) has low message rate {:.2f} msgs/min — flagging unhealthy",
+                        idx, self._label, rate,
+                    )
+                # Reset counters for next interval
+                conn._health_check_ts = now  # type: ignore[attr-defined]
+                conn._health_msg_count = 0  # type: ignore[attr-defined]

@@ -139,8 +139,13 @@ _BOOK_TICKER_PREFETCH_TIMEOUT_S: float = 8.0
 # than the standard depth-based entry to encourage fresher polling.
 _BOOK_TICKER_CACHE_TTL: float = 20.0
 
-# ADX threshold below which SCALP signals are suppressed during RANGING regime
-_RANGING_ADX_SUPPRESS_THRESHOLD: float = 15.0
+# ADX threshold below which SCALP signals receive a soft penalty during RANGING regime
+_RANGING_ADX_SUPPRESS_THRESHOLD: float = float(
+    os.getenv("RANGING_ADX_SUPPRESS_THRESHOLD", "12.0")
+)
+_RANGING_LOW_ADX_CONF_PENALTY: float = float(
+    os.getenv("REGIME_RANGING_PENALTY", "5.0")
+)
 
 # Confidence boost applied to SCALP RANGE_FADE setup class when regime is RANGING
 _RANGING_RANGE_FADE_CONF_BOOST: float = 5.0
@@ -315,6 +320,7 @@ class ScanContext:
     pair_quality: PairQualityAssessment
     market_state: MarketState
     regime_context: Any = None  # RegimeContext from regime detector
+    confidence_adjustments: Dict[str, float] = _dc.field(default_factory=dict)
 
 
 class Scanner:
@@ -1220,13 +1226,17 @@ class Scanner:
                     indicators=_regime_ind,
                     candles=_regime_candles,
                     channel_name=chan_name,
+                    current_regime=ctx.regime_result.regime.value,
                 )
                 if not chan_quality.passed:
-                    log.debug(
-                        "Skipping {} {} – pair quality gate failed: {}",
+                    log.info(
+                        "Skipping {} {} – pair quality gate failed: {} (score={:.1f}, vol={:.0f}, spread={:.4f})",
                         symbol,
                         chan_name,
                         chan_quality.reason,
+                        chan_quality.score,
+                        _vol,
+                        ctx.spread_pct,
                     )
                     _supp_reason = (
                         REASON_SPREAD_GATE if "spread" in chan_quality.reason
@@ -1292,13 +1302,13 @@ class Scanner:
             and ctx.is_ranging
             and ctx.adx_val < _RANGING_ADX_SUPPRESS_THRESHOLD
         ):
+            # Soft-gate: apply confidence penalty instead of hard block.
+            ctx.confidence_adjustments["RANGING_LOW_ADX"] = -_RANGING_LOW_ADX_CONF_PENALTY
             log.debug(
-                "Suppressing SCALP signal for {} (RANGING, ADX={:.1f})",
-                symbol,
-                ctx.adx_val,
+                "RANGING low-ADX soft penalty for {} {} (ADX={:.1f}, penalty={:.1f}pts)",
+                symbol, chan_name, ctx.adx_val, _RANGING_LOW_ADX_CONF_PENALTY,
             )
-            self._suppression_counters[f"ranging_low_adx:{chan_name}"] += 1
-            return True
+            self._suppression_counters[f"ranging_low_adx_soft:{chan_name}"] += 1
         # Regime-channel compatibility matrix
         current_regime = ctx.regime_result.regime.value
         incompatible_regimes = _REGIME_CHANNEL_INCOMPATIBLE.get(chan_name, [])
@@ -2176,6 +2186,12 @@ class Scanner:
             log.debug("stat_filter error for {} {} (fail open): {}", symbol, chan_name, _sf_exc)
 
         min_conf = self.confidence_overrides.get(chan_name, chan.config.min_confidence)
+        # Apply regime soft-gate confidence adjustments
+        for _reason, _delta in ctx.confidence_adjustments.items():
+            sig.confidence += _delta
+            _existing = sig.soft_gate_flags or ""
+            sig.soft_gate_flags = (_existing + f",REGIME_ADJUSTED:{_reason}").lstrip(",")
+            log.debug("regime_penalty_applied {} {} reason={} delta={:.1f}", symbol, chan_name, _reason, _delta)
         # QUIET regime safety net for scalp channels: only the highest-quality
         # mean-reversion setups are allowed through when the market is compressed.
         if _regime_key == "QUIET" and chan_name.startswith("360_SCALP"):
