@@ -486,7 +486,14 @@ CHART_ENABLED_CHANNELS: set = {"360_SPOT", "360_GEM"}
 # ---------------------------------------------------------------------------
 # WebSocket settings
 # ---------------------------------------------------------------------------
-WS_MAX_STREAMS_PER_CONN: int = 50
+# Binance allows up to 1024 streams per connection; keep well below that.
+# 200 streams/connection is a safe operational cap that still gives plenty of
+# room before Binance's hard limit while allowing reasonable shard counts.
+WS_MAX_STREAMS_PER_CONN: int = int(os.getenv("WS_MAX_STREAMS_PER_CONN", "200"))
+# Ping/pong latency threshold: if the RTT of a manual ping exceeds this value
+# (in milliseconds) or a pong is not received within this window, the shard is
+# force-closed so _run_connection can reconnect with fresh TCP state.
+WS_PING_TIMEOUT_MS: int = int(os.getenv("WS_PING_TIMEOUT_MS", "2000"))
 WS_HEARTBEAT_INTERVAL: int = 30  # seconds (spot)
 # Futures WS endpoint (fstream.binance.com) is higher-throughput and can delay
 # PONG responses beyond 45 s during liquidation cascades (e.g. Extreme Fear

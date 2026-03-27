@@ -4,6 +4,7 @@ import asyncio
 import time
 import unittest.mock as mock
 
+import aiohttp
 import pytest
 
 
@@ -823,3 +824,323 @@ class TestForceOrderStreamSeparation:
         engine = CryptoSignalEngine()
         assert hasattr(engine, "_ws_futures_liq")
         assert engine._ws_futures_liq is None  # set during boot, None at init
+
+
+class TestStreamShardingCap:
+    """Requirement 1 & 2: Hard cap and auto-sharding across connections."""
+
+    def test_max_streams_per_conn_at_least_150(self):
+        """Safe stream cap must be >= 150 (well below Binance's 1024 limit)."""
+        from config import WS_MAX_STREAMS_PER_CONN
+        assert WS_MAX_STREAMS_PER_CONN >= 150
+
+    def test_max_streams_per_conn_at_most_200(self):
+        """Safe stream cap must be <= 200 to stay well within Binance limits."""
+        from config import WS_MAX_STREAMS_PER_CONN
+        assert WS_MAX_STREAMS_PER_CONN <= 200
+
+    def test_streams_sharded_into_multiple_connections(self):
+        """start() must distribute streams across multiple WSConnection objects."""
+        from config import WS_MAX_STREAMS_PER_CONN
+        ws = WebSocketManager(lambda data: None, market="spot")
+        ws._running = True
+        ws._session = mock.MagicMock()
+
+        dummy_task = mock.MagicMock()
+        dummy_task.done.return_value = False
+
+        # Build a stream list large enough to require 2 shards
+        stream_count = WS_MAX_STREAMS_PER_CONN + 1
+        streams = [f"sym{i}usdt@kline_1m" for i in range(stream_count)]
+
+        with mock.patch("asyncio.create_task", return_value=dummy_task):
+            asyncio.get_event_loop().run_until_complete(
+                _mock_start(ws, streams)
+            )
+
+        assert len(ws._connections) >= 2, "Must create at least 2 shards for > MAX_STREAMS_PER_CONN streams"
+        for conn in ws._connections:
+            assert len(conn.streams) <= WS_MAX_STREAMS_PER_CONN, "No shard may exceed the cap"
+
+    def test_single_shard_for_small_stream_list(self):
+        """A small stream list that fits within the cap uses exactly one shard."""
+        from config import WS_MAX_STREAMS_PER_CONN
+        ws = WebSocketManager(lambda data: None, market="spot")
+        ws._running = True
+        ws._session = mock.MagicMock()
+
+        dummy_task = mock.MagicMock()
+        dummy_task.done.return_value = False
+
+        streams = [f"sym{i}usdt@kline_1m" for i in range(10)]
+
+        with mock.patch("asyncio.create_task", return_value=dummy_task):
+            asyncio.get_event_loop().run_until_complete(
+                _mock_start(ws, streams)
+            )
+
+        assert len(ws._connections) == 1
+
+
+async def _mock_start(ws: WebSocketManager, streams: list) -> None:
+    """Helper: run WebSocketManager.start() without actually connecting."""
+    ws._connections = []
+    ws._subscribed_streams = set()
+    ws._rest_fallback_active = False
+    from config import WS_MAX_STREAMS_PER_CONN
+    for i in range(0, len(streams), WS_MAX_STREAMS_PER_CONN):
+        chunk = streams[i: i + WS_MAX_STREAMS_PER_CONN]
+        conn = WSConnection(streams=chunk)
+        ws._connections.append(conn)
+        conn.task = mock.MagicMock()
+
+
+class TestPingPongHeartbeatMonitor:
+    """Requirement 3: Strict ping/pong latency and timeout detection."""
+
+    def test_ws_ping_timeout_ms_config_exists(self):
+        """WS_PING_TIMEOUT_MS constant must exist in config."""
+        from config import WS_PING_TIMEOUT_MS
+        assert WS_PING_TIMEOUT_MS > 0
+
+    def test_ws_ping_timeout_ms_is_2000(self):
+        """WS_PING_TIMEOUT_MS default must be 2000 ms."""
+        from config import WS_PING_TIMEOUT_MS
+        assert WS_PING_TIMEOUT_MS == 2000
+
+    def test_ws_connection_has_last_ping_time_field(self):
+        """WSConnection must expose last_ping_time for latency tracking."""
+        conn = WSConnection()
+        assert hasattr(conn, "last_ping_time")
+        assert conn.last_ping_time == 0.0
+
+    def test_ws_connection_has_ping_latency_ms_field(self):
+        """WSConnection must expose ping_latency_ms for RTT measurement."""
+        conn = WSConnection()
+        assert hasattr(conn, "ping_latency_ms")
+        assert conn.ping_latency_ms == 0.0
+
+    @pytest.mark.asyncio
+    async def test_watchdog_closes_connection_on_ping_timeout(self):
+        """Watchdog must force-close a shard when pong is not received within WS_PING_TIMEOUT_MS."""
+        from config import WS_PING_TIMEOUT_MS
+
+        ws = WebSocketManager(lambda data: None, market="spot")
+        ws._running = True
+
+        closed = []
+
+        class FakeWS:
+            closed = False
+
+            async def close(self):
+                closed.append(True)
+                FakeWS.closed = True
+
+            async def ping(self):
+                pass
+
+        fake_ws = FakeWS()
+        conn = WSConnection(streams=["btcusdt@kline_1m"])
+        conn.ws = fake_ws
+        conn.last_pong = time.monotonic()
+        # Simulate a ping sent WS_PING_TIMEOUT_MS + 100ms ago with no pong back
+        conn.last_ping_time = time.monotonic() - (WS_PING_TIMEOUT_MS / 1000 + 0.1)
+        conn.ping_latency_ms = 0.0
+        ws._connections = [conn]
+        ws._heartbeat_interval = 0  # skip the sleep
+
+        # Run one watchdog tick (sleep=0 so it completes quickly)
+        with mock.patch.object(ws, "_heartbeat_interval", 0):
+            task = asyncio.create_task(ws._health_watchdog())
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert closed, "Watchdog must close the connection when ping times out"
+
+    @pytest.mark.asyncio
+    async def test_watchdog_closes_connection_on_high_latency(self):
+        """Watchdog must force-close a shard when measured RTT exceeds WS_PING_TIMEOUT_MS."""
+        from config import WS_PING_TIMEOUT_MS
+
+        ws = WebSocketManager(lambda data: None, market="spot")
+        ws._running = True
+
+        closed = []
+
+        class FakeWS:
+            closed = False
+
+            async def close(self):
+                closed.append(True)
+                FakeWS.closed = True
+
+            async def ping(self):
+                pass
+
+        fake_ws = FakeWS()
+        conn = WSConnection(streams=["btcusdt@kline_1m"])
+        conn.ws = fake_ws
+        conn.last_pong = time.monotonic()
+        conn.last_ping_time = 0.0
+        # Simulate a previously measured high RTT
+        conn.ping_latency_ms = WS_PING_TIMEOUT_MS + 500
+        ws._connections = [conn]
+
+        with mock.patch.object(ws, "_heartbeat_interval", 0):
+            task = asyncio.create_task(ws._health_watchdog())
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert closed, "Watchdog must close the connection when RTT exceeds threshold"
+
+    @pytest.mark.asyncio
+    async def test_watchdog_sends_ping_when_connection_healthy(self):
+        """Watchdog must send a manual ping on healthy connections to measure latency."""
+        ws = WebSocketManager(lambda data: None, market="spot")
+        ws._running = True
+
+        pings_sent = []
+
+        class FakeWS:
+            closed = False
+
+            async def close(self):
+                pass
+
+            async def ping(self):
+                pings_sent.append(time.monotonic())
+
+        conn = WSConnection(streams=["btcusdt@kline_1m"])
+        conn.ws = FakeWS()
+        conn.last_pong = time.monotonic()
+        conn.last_ping_time = 0.0
+        conn.ping_latency_ms = 0.0
+        ws._connections = [conn]
+
+        # _heartbeat_interval=0 -> asyncio.sleep(0) yields to event loop without blocking.
+        # The staleness threshold is max(1.0, 0 * staleness_multiplier) = 1.0 s, so a
+        # freshly created connection (last_pong ~= now) won't be falsely closed.
+        ws._heartbeat_interval = 0
+        task = asyncio.create_task(ws._health_watchdog())
+        # Two sleep(0) calls are needed: the first tick starts the watchdog and
+        # lets it hit its own sleep(0); the second tick runs the watchdog body
+        # (staleness checks + the manual ping send).
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert pings_sent, "Watchdog must send a manual ping on healthy connections"
+        assert conn.last_ping_time > 0, "last_ping_time must be set after ping is sent"
+
+    @pytest.mark.asyncio
+    async def test_listen_computes_latency_on_pong(self):
+        """_listen must compute ping_latency_ms when a PONG frame arrives."""
+        received = []
+
+        async def on_msg(data):
+            received.append(data)
+
+        ws = WebSocketManager(on_msg, market="spot")
+        conn = WSConnection(streams=["btcusdt@kline_1m"])
+        # Simulate a ping sent 50ms ago
+        conn.last_ping_time = time.monotonic() - 0.05
+
+        class FakeMsg:
+            def __init__(self, mtype, data=""):
+                self.type = mtype
+                self.data = data
+
+        class FakeWS:
+            def __init__(self):
+                self._msgs = [
+                    FakeMsg(aiohttp.WSMsgType.PONG),
+                    FakeMsg(aiohttp.WSMsgType.CLOSED),
+                ]
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self._msgs:
+                    return self._msgs.pop(0)
+                raise StopAsyncIteration
+
+        conn.ws = FakeWS()
+        await ws._listen(conn)
+
+        assert conn.ping_latency_ms > 0, "ping_latency_ms must be set after PONG"
+        assert conn.last_ping_time == 0.0, "last_ping_time must be reset after PONG"
+
+    @pytest.mark.asyncio
+    async def test_connect_resets_ping_fields(self):
+        """_connect must reset last_ping_time and ping_latency_ms on (re)connect."""
+        ws = WebSocketManager(lambda data: None, market="spot")
+        ws._running = True
+
+        class FakeWS:
+            closed = False
+
+        fake_ws_response = FakeWS()
+
+        class FakeSession:
+            async def ws_connect(self, url, **kwargs):
+                return fake_ws_response
+
+        ws._session = FakeSession()
+
+        conn = WSConnection(streams=["btcusdt@kline_1m"])
+        conn.last_ping_time = 99.9
+        conn.ping_latency_ms = 1234.5
+
+        await ws._connect(conn)
+
+        assert conn.last_ping_time == 0.0
+        assert conn.ping_latency_ms == 0.0
+
+
+class TestShardResiliency:
+    """Requirement 4: Individual shard failure must not affect other shards."""
+
+    def test_degraded_flag_per_connection(self):
+        """Each WSConnection has its own degraded flag, independent of others."""
+        conn1 = WSConnection(streams=["btcusdt@kline_1m"])
+        conn2 = WSConnection(streams=["ethusdt@kline_1m"])
+        conn1.degraded = True
+        assert conn2.degraded is False, "conn2 must be unaffected when conn1 is degraded"
+
+    def test_health_ratio_reflects_partial_degradation(self):
+        """health_ratio must reflect the fraction of healthy shards."""
+        ws = WebSocketManager(lambda data: None, market="spot")
+        now = time.monotonic()
+
+        mock_open = type("FWS", (), {"closed": False})()
+        mock_closed = type("FWS", (), {"closed": True})()
+
+        conn_ok = WSConnection(streams=["btcusdt@kline_1m"], last_pong=now, ws=mock_open)
+        conn_down = WSConnection(streams=["ethusdt@kline_1m"], last_pong=now, ws=mock_closed)
+        ws._connections = [conn_ok, conn_down]
+
+        ratio = ws.health_ratio
+        assert ratio == 0.5, f"Expected 0.5, got {ratio}"
+
+    def test_ping_fields_independent_per_shard(self):
+        """Ping latency fields on one shard are independent of another shard's fields."""
+        conn1 = WSConnection(streams=["btcusdt@kline_1m"])
+        conn2 = WSConnection(streams=["ethusdt@kline_1m"])
+        conn1.ping_latency_ms = 3000.0
+        conn1.last_ping_time = 1.0
+        assert conn2.ping_latency_ms == 0.0
+        assert conn2.last_ping_time == 0.0

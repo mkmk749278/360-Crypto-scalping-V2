@@ -32,6 +32,7 @@ from config import (
     WS_HEARTBEAT_INTERVAL,
     WS_HEARTBEAT_INTERVAL_FUTURES,
     WS_MAX_STREAMS_PER_CONN,
+    WS_PING_TIMEOUT_MS,
     WS_RECONNECT_BASE_DELAY,
     WS_RECONNECT_FAIL_ALERT_THRESHOLD,
     WS_RECONNECT_MAX_DELAY,
@@ -55,6 +56,9 @@ class WSConnection:
     reconnect_attempts: int = 0
     task: Optional[asyncio.Task] = None
     degraded: bool = False
+    # Ping/pong latency tracking
+    last_ping_time: float = 0.0   # monotonic time when last manual ping was sent
+    ping_latency_ms: float = 0.0  # RTT (ms) of the most recent completed ping/pong
 
 
 class WebSocketManager:
@@ -375,6 +379,8 @@ class WebSocketManager:
         conn.last_pong = time.monotonic()
         conn.reconnect_attempts = 0
         conn.degraded = False
+        conn.last_ping_time = 0.0
+        conn.ping_latency_ms = 0.0
         self._subscribed_streams.update(conn.streams)
         log.info("Connected WS: {} streams", len(conn.streams))
 
@@ -393,7 +399,14 @@ class WebSocketManager:
             elif msg.type in (aiohttp.WSMsgType.PING, aiohttp.WSMsgType.PONG):
                 # Binance sends PING frames every ~3 minutes; aiohttp auto-replies
                 # with PONG.  Treat both as proof that the connection is alive.
-                conn.last_pong = time.monotonic()
+                now_mono = time.monotonic()
+                conn.last_pong = now_mono
+                # When a PONG arrives, measure RTT against the last manual ping
+                # sent by the watchdog and reset last_ping_time so the watchdog
+                # does not report a false timeout on the next iteration.
+                if msg.type == aiohttp.WSMsgType.PONG and conn.last_ping_time > 0:
+                    conn.ping_latency_ms = (now_mono - conn.last_ping_time) * 1000
+                    conn.last_ping_time = 0.0
             elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                 log.warning("WS closed/error, will reconnect")
                 break
@@ -403,19 +416,77 @@ class WebSocketManager:
     # ------------------------------------------------------------------
 
     async def _health_watchdog(self) -> None:
-        """Periodically force-close stale connections so _run_connection reconnects."""
+        """Periodically force-close stale or lagging connections so _run_connection reconnects.
+
+        Three checks run on every shard at each tick:
+
+        1. **Staleness** - no data at all for ``heartbeat_interval x staleness_multiplier``
+           seconds -> dead connection, force-close.
+        2. **Ping timeout** - a manual ping was sent on the previous tick and no PONG has
+           come back within ``WS_PING_TIMEOUT_MS`` ms -> connection is lagging, force-close.
+        3. **High latency** - the most recently completed ping/pong RTT exceeds
+           ``WS_PING_TIMEOUT_MS`` ms -> connection is degraded, force-close.
+
+        After the checks a fresh manual ping is sent so the next tick can measure
+        latency.  aiohttp's built-in ``heartbeat=`` keepalive continues to run
+        alongside; these manual pings are additional probes for latency measurement.
+        """
         try:
             while self._running:
                 await asyncio.sleep(self._heartbeat_interval)
                 now = time.monotonic()
                 for conn in self._connections:
-                    if conn.ws and not conn.ws.closed:
-                        if (now - conn.last_pong) >= self._heartbeat_interval * self._staleness_multiplier:
+                    if not (conn.ws and not conn.ws.closed):
+                        continue
+
+                    # 1. Staleness check (unchanged from original behaviour)
+                    # Use max(1.0, ...) to guarantee a minimum 1-second threshold
+                    # regardless of the configured heartbeat interval.
+                    stale_threshold = max(1.0, self._heartbeat_interval * self._staleness_multiplier)
+                    if (now - conn.last_pong) >= stale_threshold:
+                        log.warning(
+                            "Watchdog: stale WS connection ({:.0f}s since last data) — force-closing to trigger reconnect",
+                            now - conn.last_pong,
+                        )
+                        conn.last_ping_time = 0.0
+                        await conn.ws.close()
+                        continue
+
+                    # 2. Ping timeout: pong not received within WS_PING_TIMEOUT_MS
+                    if conn.last_ping_time > 0:
+                        overdue_ms = (now - conn.last_ping_time) * 1000
+                        if overdue_ms > WS_PING_TIMEOUT_MS:
                             log.warning(
-                                "Watchdog: stale WS connection ({:.0f}s since last data) — force-closing to trigger reconnect",
-                                now - conn.last_pong,
+                                "Watchdog: ping timeout ({:.0f}ms > {}ms) — "
+                                "force-closing shard to trigger reconnect",
+                                overdue_ms,
+                                WS_PING_TIMEOUT_MS,
                             )
+                            conn.last_ping_time = 0.0
+                            conn.ping_latency_ms = 0.0
                             await conn.ws.close()
+                            continue
+
+                    # 3. High latency: previous ping RTT exceeded threshold
+                    if conn.ping_latency_ms > WS_PING_TIMEOUT_MS:
+                        log.warning(
+                            "Watchdog: high ping latency ({:.0f}ms > {}ms) — "
+                            "force-closing shard to trigger reconnect",
+                            conn.ping_latency_ms,
+                            WS_PING_TIMEOUT_MS,
+                        )
+                        conn.ping_latency_ms = 0.0
+                        conn.last_ping_time = 0.0
+                        await conn.ws.close()
+                        continue
+
+                    # Send a fresh manual ping to probe latency on the next tick
+                    try:
+                        conn.last_ping_time = time.monotonic()
+                        await conn.ws.ping()
+                    except Exception as exc:
+                        log.debug("Watchdog ping send error ({}): {}", self._label, exc)
+                        conn.last_ping_time = 0.0
         except asyncio.CancelledError:
             pass
 
