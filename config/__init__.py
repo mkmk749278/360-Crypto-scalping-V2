@@ -102,6 +102,32 @@ MACRO_WATCHDOG_FEAR_GREED_THRESHOLD_HIGH: int = int(
     os.getenv("MACRO_WATCHDOG_FEAR_GREED_THRESHOLD_HIGH", "80")
 )
 
+# ---------------------------------------------------------------------------
+# Dynamic Tiering (Market Watchdog) — PR 2
+# ---------------------------------------------------------------------------
+# Enable/disable the background TierManager that periodically polls Binance
+# global 24hr tickers and re-ranks the entire pair universe into Hot / Warm /
+# Cold tiers based on volume + volatility.
+DYNAMIC_TIER_ENABLED: bool = os.getenv("DYNAMIC_TIER_ENABLED", "true").lower() in (
+    "true", "1", "yes"
+)
+# How often (seconds) the TierManager polls Binance aggregate ticker endpoints.
+DYNAMIC_TIER_POLL_INTERVAL: float = float(
+    os.getenv("DYNAMIC_TIER_POLL_INTERVAL", "300")  # 5 minutes default
+)
+# Number of pairs in Tier 1 (Hot) — highest volume + volatility rank.
+DYNAMIC_TIER1_HOT_COUNT: int = int(os.getenv("DYNAMIC_TIER1_HOT_COUNT", "50"))
+# Total pairs in Tier 1 + Tier 2 combined; Tier 2 = (DYNAMIC_TIER12_WARM_CUTOFF - DYNAMIC_TIER1_HOT_COUNT).
+DYNAMIC_TIER12_WARM_CUTOFF: int = int(os.getenv("DYNAMIC_TIER12_WARM_CUTOFF", "200"))
+# Weighting of 24h quote-volume in the composite ranking score (0–1).
+DYNAMIC_TIER_VOLUME_WEIGHT: float = float(os.getenv("DYNAMIC_TIER_VOLUME_WEIGHT", "0.7"))
+# Weighting of absolute 24h price-change-percent in the composite ranking score (0–1).
+DYNAMIC_TIER_VOLATILITY_WEIGHT: float = float(os.getenv("DYNAMIC_TIER_VOLATILITY_WEIGHT", "0.3"))
+# Redis key names for tier membership sets.
+DYNAMIC_TIER1_REDIS_KEY: str = os.getenv("DYNAMIC_TIER1_REDIS_KEY", "tier_1_active")
+DYNAMIC_TIER2_REDIS_KEY: str = os.getenv("DYNAMIC_TIER2_REDIS_KEY", "tier_2_active")
+DYNAMIC_TIER3_REDIS_KEY: str = os.getenv("DYNAMIC_TIER3_REDIS_KEY", "tier_3_active")
+
 # On-chain intelligence — Glassnode (optional)
 ONCHAIN_API_KEY: str = os.getenv("ONCHAIN_API_KEY", "")
 
