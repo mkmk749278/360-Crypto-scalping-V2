@@ -693,6 +693,9 @@ QUIET_SCALP_MIN_CONFIDENCE: float = float(
 #: Scalp signals in low-volatility markets are only accepted when current
 #: volume is at least this multiple of the rolling average, ensuring signals
 #: fire on genuine micro-breakouts rather than random noise.
+#: This constant is exported for use by volume-aware gate logic in the
+#: scalp channel evaluation pipeline.  The `_compute_base_confidence`
+#: path reads this value when checking volume-spike conditions in QUIET.
 QUIET_SCALP_VOLUME_MULTIPLIER: float = float(
     os.getenv("QUIET_SCALP_VOLUME_MULTIPLIER", "2.5")
 )

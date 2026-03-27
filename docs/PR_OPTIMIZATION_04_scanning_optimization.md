@@ -1,5 +1,9 @@
 # PR-OPT-04 — Scanning Optimization Strategy (Aggregate Endpoints)
 
+> **Note:** This document describes a *planned* future optimization that is NOT part of the
+> current PR implementation.  It is included here as a design specification for the next
+> scanning infrastructure change.
+
 **Priority:** P2  
 **Estimated Impact:** ~70% reduction in Binance API weight consumption per scan cycle  
 **Dependencies:** None  
