@@ -519,12 +519,15 @@ class SignalLifecycleMonitor:
         )
         pnl_sign = "+" if pnl_pct >= 0 else ""
 
+        _DEFAULT_SCALP_LIFECYCLE_INTERVAL: int = 900   # 15 minutes for scalp channels
+        _DEFAULT_LIFECYCLE_INTERVAL: int = 3600        # 1 hour generic fallback
+
         def _get_lifecycle_interval(channel_name: str) -> int:
             if channel_name in LIFECYCLE_CHECK_INTERVAL:
                 return LIFECYCLE_CHECK_INTERVAL[channel_name]
             if "SCALP" in channel_name:
-                return 900
-            return 3600
+                return _DEFAULT_SCALP_LIFECYCLE_INTERVAL
+            return _DEFAULT_LIFECYCLE_INTERVAL
 
         interval_seconds = _get_lifecycle_interval(signal.channel)
         interval_hours = interval_seconds // 3600

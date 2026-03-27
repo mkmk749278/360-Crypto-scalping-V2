@@ -276,7 +276,7 @@ class ChannelConfig:
     dca_weight_1: float = 0.6                  # Position weight for Entry 1
     dca_weight_2: float = 0.4                  # Position weight for Entry 2
     dca_min_momentum: float = 0.2              # Minimum |momentum| for DCA validation
-    min_signal_lifespan: int = 900             # Minimum signal lifespan in seconds
+    min_signal_lifespan: int = 900             # Default minimum lifespan; overridden per-channel by callers
 
 
 # ---------------------------------------------------------------------------
