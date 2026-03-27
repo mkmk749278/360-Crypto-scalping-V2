@@ -61,6 +61,9 @@ class WSConnection:
     # Ping/pong latency tracking
     last_ping_time: float = 0.0   # monotonic time when last manual ping was sent
     ping_latency_ms: float = 0.0  # RTT (ms) of the most recent completed ping/pong
+    # Health monitoring fields (used by _health_check_loop)
+    health_check_ts: float = 0.0   # last time a health check snapshot was taken
+    health_msg_count: int = 0      # messages received since last health check
 
 
 class WebSocketManager:
@@ -607,8 +610,8 @@ class WebSocketManager:
                 continue
             now = time.monotonic()
             for idx, conn in enumerate(self._connections):
-                elapsed = now - getattr(conn, "_health_check_ts", now)
-                msg_count = getattr(conn, "_health_msg_count", 0)
+                elapsed = now - conn.health_check_ts if conn.health_check_ts > 0 else now
+                msg_count = conn.health_msg_count
                 if elapsed > 0:
                     rate = (msg_count / elapsed) * 60.0  # msgs/min
                 else:
@@ -620,5 +623,5 @@ class WebSocketManager:
                         idx, self._label, rate,
                     )
                 # Reset counters for next interval
-                conn._health_check_ts = now  # type: ignore[attr-defined]
-                conn._health_msg_count = 0  # type: ignore[attr-defined]
+                conn.health_check_ts = now
+                conn.health_msg_count = 0

@@ -473,23 +473,100 @@ class AdaptiveRegimeDetector(MarketRegimeDetector):
         timeframe: str = "5m",
         volume_delta: Optional[float] = None,
     ) -> RegimeResult:
-        """Classify using tier-specific thresholds."""
-        import src.regime as _regime_module
-        _orig_trending = _regime_module._ADX_TRENDING_MIN
-        _orig_ranging = _regime_module._ADX_RANGING_MAX
-        _orig_quiet = _regime_module._BB_WIDTH_QUIET_PCT
-        _orig_volatile = _regime_module._BB_WIDTH_VOLATILE_PCT
-        try:
-            _regime_module._ADX_TRENDING_MIN = self._adx_trending_min
-            _regime_module._ADX_RANGING_MAX = self._adx_ranging_max
-            _regime_module._BB_WIDTH_QUIET_PCT = self._bb_width_quiet
-            _regime_module._BB_WIDTH_VOLATILE_PCT = self._bb_width_volatile
-            return super().classify(indicators, candles, timeframe, volume_delta)
-        finally:
-            _regime_module._ADX_TRENDING_MIN = _orig_trending
-            _regime_module._ADX_RANGING_MAX = _orig_ranging
-            _regime_module._BB_WIDTH_QUIET_PCT = _orig_quiet
-            _regime_module._BB_WIDTH_VOLATILE_PCT = _orig_volatile
+        """Classify using tier-specific thresholds.
+
+        Overrides :meth:`MarketRegimeDetector.classify` to use instance-level
+        threshold parameters via :meth:`_decide_adaptive` instead of modifying
+        the shared module-level constants (which would create a race condition
+        when multiple detectors run concurrently).
+        """
+        adx_val: Optional[float] = indicators.get("adx_last")
+        ema_fast: Optional[float] = indicators.get("ema9_last")
+        ema_slow: Optional[float] = indicators.get("ema21_last")
+        bb_upper: Optional[float] = indicators.get("bb_upper_last")
+        bb_lower: Optional[float] = indicators.get("bb_lower_last")
+        bb_mid: Optional[float] = indicators.get("bb_mid_last")
+
+        if timeframe != self._last_timeframe:
+            self._previous_regime = None
+            self._pending_regime = None
+            self._regime_dwell_count = 0
+            self._last_timeframe = timeframe
+
+        close: Optional[float] = None
+        if candles is not None and len(candles.get("close", [])) > 0:
+            close = float(candles["close"][-1])
+        if ema_fast is None and close is not None:
+            ema_fast = close
+        if ema_slow is None and close is not None:
+            ema_slow = close
+
+        ema_slope: Optional[float] = None
+        if ema_fast is not None and ema_slow is not None and ema_slow != 0.0:
+            ema_slope = (ema_fast - ema_slow) / ema_slow * 100.0
+
+        bb_width_pct: Optional[float] = None
+        if bb_upper is not None and bb_lower is not None and bb_mid and bb_mid != 0.0:
+            bb_width_pct = (bb_upper - bb_lower) / bb_mid * 100.0
+
+        regime = self._decide_adaptive(adx_val, ema_slope, bb_width_pct, timeframe=timeframe)
+        stable_regime = self._apply_hysteresis(regime)
+
+        volume_delta_pct: Optional[float] = None
+        if volume_delta is not None:
+            abs_volume_delta = abs(volume_delta)
+            if abs_volume_delta >= _VOLUME_DELTA_SPIKE_PCT:
+                volume_delta_pct = float(volume_delta)
+                if stable_regime in (MarketRegime.QUIET, MarketRegime.RANGING):
+                    ema_slope_threshold = 0.15 if timeframe == "1m" else 0.05
+                    forced_regime: MarketRegime = MarketRegime.VOLATILE
+                    if ema_slope is not None and ema_slope > ema_slope_threshold:
+                        forced_regime = MarketRegime.TRENDING_UP
+                    elif ema_slope is not None and ema_slope < -ema_slope_threshold:
+                        forced_regime = MarketRegime.TRENDING_DOWN
+                    stable_regime = forced_regime
+                    self._previous_regime = forced_regime
+                    self._pending_regime = forced_regime
+                    self._regime_dwell_count = self._hysteresis_candles
+
+        return RegimeResult(
+            regime=stable_regime,
+            adx=adx_val,
+            bb_width_pct=bb_width_pct,
+            ema_slope=ema_slope,
+            volume_delta_pct=volume_delta_pct,
+        )
+
+    def _decide_adaptive(
+        self,
+        adx: Optional[float],
+        ema_slope: Optional[float],
+        bb_width_pct: Optional[float],
+        timeframe: str = "5m",
+    ) -> MarketRegime:
+        """Like :meth:`_decide` but uses instance-level tier thresholds."""
+        ema_slope_threshold = 0.15 if timeframe == "1m" else 0.05
+        if bb_width_pct is not None:
+            if bb_width_pct >= self._bb_width_volatile:
+                return MarketRegime.VOLATILE
+            if bb_width_pct <= self._bb_width_quiet:
+                return MarketRegime.QUIET
+        if adx is not None and self._adx_ranging_max < adx < self._adx_trending_min:
+            if ema_slope is not None and abs(ema_slope) > ema_slope_threshold:
+                return MarketRegime.TRENDING_UP if ema_slope > 0 else MarketRegime.TRENDING_DOWN
+            return MarketRegime.RANGING
+        if adx is not None and adx >= self._adx_trending_min:
+            if ema_slope is not None:
+                return MarketRegime.TRENDING_UP if ema_slope > 0 else MarketRegime.TRENDING_DOWN
+            return MarketRegime.TRENDING_UP
+        if adx is not None and adx <= self._adx_ranging_max:
+            return MarketRegime.RANGING
+        if ema_slope is not None:
+            if ema_slope > ema_slope_threshold:
+                return MarketRegime.TRENDING_UP
+            if ema_slope < -ema_slope_threshold:
+                return MarketRegime.TRENDING_DOWN
+        return MarketRegime.RANGING
 
 
 # ---------------------------------------------------------------------------
