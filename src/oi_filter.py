@@ -64,6 +64,15 @@ FUNDING_EXTREME_THRESHOLD: float = 0.003  # 0.3 % (as a decimal)
 #: shift on Binance perpetuals.
 OI_NOISE_THRESHOLD: float = 0.01  # 1 %
 
+#: Below this threshold (1%) OI changes are treated as pure market noise — no
+#: rejection occurs (same as :data:`OI_NOISE_THRESHOLD`).
+OI_SOFT_THRESHOLD: float = 0.01  # 1 %
+
+#: Above this threshold (3%) OI changes paired with LOW quality trigger a hard
+#: rejection.  Between :data:`OI_SOFT_THRESHOLD` and this value a soft warning
+#: is issued but the signal is still allowed through.
+OI_HARD_THRESHOLD: float = 0.03  # 3 %
+
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -217,6 +226,14 @@ def check_oi_gate(
 
     Fails open when *oi_analysis* is ``None`` (data not yet available).
 
+    Graduated response (per :data:`OI_SOFT_THRESHOLD` / :data:`OI_HARD_THRESHOLD`):
+
+    * ``|Δ OI| < OI_SOFT_THRESHOLD`` (1 %) — treat as noise, allow through.
+    * ``OI_SOFT_THRESHOLD ≤ |Δ OI| < OI_HARD_THRESHOLD`` (1–3 %) — soft
+      warning, signal still allowed (``allowed=True`` with non-empty reason).
+    * ``|Δ OI| ≥ OI_HARD_THRESHOLD`` (≥ 3 %) **and** quality is ``"LOW"`` —
+      hard reject (``allowed=False``).
+
     Parameters
     ----------
     direction:
@@ -224,11 +241,11 @@ def check_oi_gate(
     oi_analysis:
         Output of :func:`analyse_oi`.  ``None`` → fails open.
     reject_low_quality:
-        When ``True`` (default), hard-reject LOW quality signals.
-        Set to ``False`` to return a warning but still allow the trade.
+        When ``True`` (default), hard-reject LOW quality signals above the
+        hard threshold.  Set to ``False`` to always return a warning.
     min_oi_change_pct:
         Minimum absolute OI change (as a fraction, e.g. ``0.01`` = 1%) for a
-        SQUEEZE or DISTRIBUTION pattern to trigger a hard rejection.  Changes
+        SQUEEZE or DISTRIBUTION pattern to trigger any action.  Changes
         below this threshold are treated as noise and the signal is allowed
         through with a debug log.  Defaults to :data:`OI_NOISE_THRESHOLD`.
 
@@ -243,7 +260,8 @@ def check_oi_gate(
 
     # Reject squeeze signals for LONG (price up, OI down)
     if dir_upper == "LONG" and oi_analysis.signal == "SQUEEZE":
-        if abs(oi_analysis.oi_change_pct) < min_oi_change_pct:
+        abs_chg = abs(oi_analysis.oi_change_pct)
+        if abs_chg < min_oi_change_pct:
             log.debug(
                 "OI squeeze below noise threshold ({:.2%}), allowing",
                 oi_analysis.oi_change_pct,
@@ -252,6 +270,14 @@ def check_oi_gate(
                 f"OI: minor squeeze ({oi_analysis.oi_change_pct:+.2%})"
                 " — below noise threshold"
             )
+        if abs_chg < OI_HARD_THRESHOLD:
+            # Soft warning — marginal OI move, allow with annotation
+            soft_reason = (
+                f"OI: moderate squeeze ({oi_analysis.oi_change_pct:+.2%})"
+                " — soft warning only"
+            )
+            log.debug("OI squeeze soft warning (not blocking): {}", soft_reason)
+            return True, soft_reason
         msg = f"OI: rising price + falling OI (squeeze) – LONG quality: {oi_analysis.quality}"
         if reject_low_quality:
             return False, msg
@@ -259,7 +285,8 @@ def check_oi_gate(
 
     # Reject distribution signals for SHORT (price down, OI up – longs being trapped)
     if dir_upper == "SHORT" and oi_analysis.signal == "DISTRIBUTION":
-        if abs(oi_analysis.oi_change_pct) < min_oi_change_pct:
+        abs_chg = abs(oi_analysis.oi_change_pct)
+        if abs_chg < min_oi_change_pct:
             log.debug(
                 "OI distribution below noise threshold ({:.2%}), allowing",
                 oi_analysis.oi_change_pct,
@@ -268,6 +295,14 @@ def check_oi_gate(
                 f"OI: minor distribution ({oi_analysis.oi_change_pct:+.2%})"
                 " — below noise threshold"
             )
+        if abs_chg < OI_HARD_THRESHOLD:
+            # Soft warning — marginal OI move, allow with annotation
+            soft_reason = (
+                f"OI: moderate distribution ({oi_analysis.oi_change_pct:+.2%})"
+                " — soft warning only"
+            )
+            log.debug("OI distribution soft warning (not blocking): {}", soft_reason)
+            return True, soft_reason
         msg = f"OI: falling price + rising OI (distribution) – SHORT quality: {oi_analysis.quality}"
         if reject_low_quality:
             return False, msg

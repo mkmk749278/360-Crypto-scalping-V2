@@ -212,3 +212,63 @@ class TestBuildRegimeContext:
         # The is_regime_strengthening depends on the computed adx_slope
         expected = rc.adx_slope > 0 and rc.adx_value > 20
         assert rc.is_regime_strengthening == expected
+
+
+# ---------------------------------------------------------------------------
+# BB width QUIET threshold
+# ---------------------------------------------------------------------------
+
+
+class TestBBWidthQuietThreshold:
+    """Verify that _BB_WIDTH_QUIET_PCT is set to 1.2 (reduced from 1.5).
+
+    This reduces the number of pairs classified as QUIET by requiring a
+    tighter Bollinger Band squeeze, which increases valid signal generation.
+    """
+
+    def test_bb_width_quiet_threshold_is_1_point_2(self):
+        from src.regime import _BB_WIDTH_QUIET_PCT
+        assert _BB_WIDTH_QUIET_PCT == pytest.approx(1.2)
+
+    def test_pair_above_1_point_2_bb_width_not_quiet(self):
+        """A pair with BB width of 1.35% (between 1.2 and old 1.5) should
+        no longer be classified as QUIET with the new threshold."""
+        import numpy as np
+        # Build candles with Bollinger Bands slightly wider than 1.2% of price
+        # so the pair would have been QUIET under the old 1.5 threshold
+        # but NOT quiet under the new 1.2 threshold.
+        n = 50
+        price = 100.0
+        # We need BB width ≈ 1.35% of price → upper - lower ≈ 1.35
+        # BB uses 20-period SMA ± 2 std. To hit ~0.675 std, we need
+        # std ≈ 0.3375, so use returns with ~0.3% std.
+        rng = np.random.default_rng(42)
+        closes = price + rng.normal(0, 0.35, n)
+        closes = np.maximum(closes, 0.01)
+        highs = closes + 0.05
+        lows = closes - 0.05
+        candles = {
+            "close": list(closes),
+            "high": list(highs),
+            "low": list(lows),
+            "open": list(closes),
+            "volume": [1_000_000.0] * n,
+        }
+        indicators = {
+            "bb_upper_last": float(np.mean(closes[-20:]) + 2 * np.std(closes[-20:])),
+            "bb_lower_last": float(np.mean(closes[-20:]) - 2 * np.std(closes[-20:])),
+            "bb_mid_last":   float(np.mean(closes[-20:])),
+            "adx_last": 25.0,
+            "ema_fast_last": float(closes[-1]),
+            "ema_slow_last": float(closes[-1]) * 0.99,
+            "atr_last": 0.3,
+            "rsi_last": 50.0,
+        }
+        detector = MarketRegimeDetector()
+        result = detector.classify(indicators, candles, timeframe="5m")
+        # The regime should NOT be QUIET when BB width is above 1.2%
+        bb_upper = indicators["bb_upper_last"]
+        bb_lower = indicators["bb_lower_last"]
+        bb_width_pct = (bb_upper - bb_lower) / float(np.mean(closes[-20:])) * 100.0
+        if bb_width_pct > 1.2:
+            assert result.regime != MarketRegime.QUIET

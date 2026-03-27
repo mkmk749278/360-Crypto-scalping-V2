@@ -501,10 +501,65 @@ class TestCheckOIGate:
         allowed, reason = check_oi_gate("LONG", result, reject_low_quality=False)
         assert allowed is True
 
+    def test_squeeze_below_hard_threshold_is_soft_warning(self):
+        """OI change between 1% and 3% triggers soft warning but does not hard-reject."""
+        result = OIAnalysis(
+            price_direction="RISING",
+            oi_direction="FALLING",
+            signal="SQUEEZE",
+            quality="LOW",
+            funding_bias="NEUTRAL",
+            price_change_pct=0.02,
+            oi_change_pct=-0.02,  # 2% — between OI_SOFT_THRESHOLD and OI_HARD_THRESHOLD
+            latest_funding_rate=None,
+        )
+        from src.oi_filter import OI_HARD_THRESHOLD, OI_SOFT_THRESHOLD
+        assert abs(-0.02) >= OI_SOFT_THRESHOLD
+        assert abs(-0.02) < OI_HARD_THRESHOLD
+        allowed, reason = check_oi_gate("LONG", result)
+        assert allowed is True
+        assert "soft warning" in reason.lower() or "moderate" in reason.lower()
 
-# ===========================================================================
-# 4. Kill Zone / Session Volume Profiling
-# ===========================================================================
+    def test_squeeze_at_hard_threshold_is_hard_rejected(self):
+        """OI change >= 3% with LOW quality triggers hard rejection."""
+        result = OIAnalysis(
+            price_direction="RISING",
+            oi_direction="FALLING",
+            signal="SQUEEZE",
+            quality="LOW",
+            funding_bias="NEUTRAL",
+            price_change_pct=0.04,
+            oi_change_pct=-0.04,  # 4% — exceeds OI_HARD_THRESHOLD
+            latest_funding_rate=None,
+        )
+        from src.oi_filter import OI_HARD_THRESHOLD
+        assert abs(-0.04) >= OI_HARD_THRESHOLD
+        allowed, reason = check_oi_gate("LONG", result)
+        assert allowed is False
+
+    def test_distribution_soft_warning_between_thresholds(self):
+        """Distribution between 1–3% OI change issues soft warning for SHORT."""
+        result = OIAnalysis(
+            price_direction="FALLING",
+            oi_direction="RISING",
+            signal="DISTRIBUTION",
+            quality="LOW",
+            funding_bias="NEUTRAL",
+            price_change_pct=-0.02,
+            oi_change_pct=0.02,  # 2% — soft window
+            latest_funding_rate=None,
+        )
+        allowed, reason = check_oi_gate("SHORT", result)
+        assert allowed is True
+        assert "soft warning" in reason.lower() or "moderate" in reason.lower()
+
+    def test_oi_soft_threshold_constant_is_one_pct(self):
+        from src.oi_filter import OI_SOFT_THRESHOLD
+        assert OI_SOFT_THRESHOLD == pytest.approx(0.01)
+
+    def test_oi_hard_threshold_constant_is_three_pct(self):
+        from src.oi_filter import OI_HARD_THRESHOLD
+        assert OI_HARD_THRESHOLD == pytest.approx(0.03)
 
 
 def _utc(weekday_offset: int, hour: int, minute: int = 0) -> datetime:

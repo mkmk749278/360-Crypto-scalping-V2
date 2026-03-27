@@ -94,7 +94,7 @@ def volume_profile_classify(
 _ADX_TRENDING_MIN: float = 25.0
 _ADX_RANGING_MAX: float = 20.0
 _BB_WIDTH_VOLATILE_PCT: float = 5.0   # Bollinger width as % of price
-_BB_WIDTH_QUIET_PCT: float = 1.5
+_BB_WIDTH_QUIET_PCT: float = 1.2
 # Volume-delta override: if |volume_delta_pct| >= this threshold, the regime
 # is forced out of QUIET / RANGING into VOLATILE or TRENDING.
 _VOLUME_DELTA_SPIKE_PCT: float = 60.0  # percent of total volume as net delta
