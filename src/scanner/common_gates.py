@@ -47,7 +47,7 @@ class GateCheckResult:
         if not result.passed:
             self.passed = False
             self.fired_gates.append(result.name)
-        if result.penalty > 0:
+        elif result.penalty > 0:
             self.total_penalty += result.penalty
             self.fired_gates.append(f"{result.name}(penalty={result.penalty:.1f})")
 

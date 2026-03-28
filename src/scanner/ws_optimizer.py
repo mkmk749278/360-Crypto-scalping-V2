@@ -1,7 +1,7 @@
 """WebSocket & scan latency optimization helpers.
 
 Provides shard health scoring, adaptive reconnection scheduling,
-and latency-aware scan prioritisation for the scanner loop.
+and latency-aware scan prioritization for the scanner loop.
 
 PR 03 Implementation.
 """
@@ -80,7 +80,7 @@ def score_shard_health(
 
 @dataclass
 class LatencyTracker:
-    """Tracks scan-cycle latency for adaptive pair prioritisation."""
+    """Tracks scan-cycle latency for adaptive pair prioritization."""
 
     _history: List[float] = field(default_factory=list)
     _max_history: int = 50

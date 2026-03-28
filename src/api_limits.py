@@ -123,13 +123,14 @@ class BatchScheduler:
         end = start + self._spot_batch_size
         batch = all_spot[start:end]
         # Advance index, wrap around when exhausted
+        batch_number = self._spot_batch_index
         self._spot_batch_index += 1
         if end >= len(all_spot):
             self._spot_batch_index = 0
         self._last_spot_batch_time = time.monotonic()
         log.info(
             "Spot batch {}: scanning {} pairs (index {}-{})",
-            self._spot_batch_index,
+            batch_number,
             len(batch),
             start,
             min(end, len(all_spot)) - 1,
