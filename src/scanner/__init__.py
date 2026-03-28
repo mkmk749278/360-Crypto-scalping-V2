@@ -105,6 +105,16 @@ from src.suppression_telemetry import (
     REASON_CONFIDENCE,
 )
 
+# --- PR 01-08 new module imports ------------------------------------------
+from src.scanner.filter_module import check_pair_probability, get_pair_probability
+from src.volatility_metrics import calculate_dynamic_sl_tp
+from src.scanner.ws_optimizer import LatencyTracker, score_shard_health, select_priority_pairs
+from src.api_limits import APIWeightTracker, BatchScheduler
+from src.scanner.common_gates import run_common_gates, GateCheckResult
+from src.logging_utils import SuppressionLogger, LatencyMonitor
+from src.scanner.regime_manager import RegimeManager
+# --------------------------------------------------------------------------
+
 log = get_logger("scanner")
 
 # Composite signal scoring engine — instantiated once at module level.
@@ -455,6 +465,20 @@ class Scanner:
         # Suppression tracker — records structured suppression events for
         # Telegram digest and data-driven threshold tuning.
         self.suppression_tracker: SuppressionTracker = SuppressionTracker()
+
+        # --- PR 01-08 new module instances --------------------------------
+        # PR 01: High-probability filter (pair probability scoring)
+        self.suppression_logger: SuppressionLogger = SuppressionLogger()
+        # PR 03: Scan latency tracker for adaptive pair prioritisation
+        self.latency_tracker: LatencyTracker = LatencyTracker()
+        # PR 04: API weight tracker and batch scheduler
+        self.api_weight_tracker: APIWeightTracker = APIWeightTracker()
+        self.batch_scheduler: BatchScheduler = BatchScheduler()
+        # PR 06: Latency monitor for pipeline component tracking
+        self.latency_monitor: LatencyMonitor = LatencyMonitor()
+        # PR 07: Regime-adaptive channel scheduling
+        self.regime_manager: RegimeManager = RegimeManager()
+        # -----------------------------------------------------------------
 
         # Data fetcher — delegates kline and order-book retrieval
         self._data_fetcher = DataFetcher(
