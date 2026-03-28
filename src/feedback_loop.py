@@ -52,6 +52,7 @@ import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
+import asyncio as _asyncio
 import json as _json
 import os as _os
 from typing import Dict, Optional
@@ -649,9 +650,8 @@ class FeedbackLoop:
         save_path:
             Optional file path for persistence.
         """
-        import asyncio
         while True:
-            await asyncio.sleep(interval_seconds)
+            await _asyncio.sleep(interval_seconds)
             if self.should_retrain(min_new_outcomes=min_outcomes):
                 log.info(
                     "Periodic retraining triggered ({} outcomes)",

@@ -1004,7 +1004,7 @@ class Backtester:
                 continue
 
             # AI confidence suppression: skip signals below threshold
-            if 0 < sig.confidence < self._min_confidence_threshold:
+            if self._min_confidence_threshold > 0 and sig.confidence < self._min_confidence_threshold:
                 log.debug(
                     "Backtest: suppressed %s signal at candle %d (confidence %.1f < %.1f)",
                     symbol, i, sig.confidence, self._min_confidence_threshold,

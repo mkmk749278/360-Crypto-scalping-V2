@@ -728,7 +728,7 @@ class PairManager:
                 f"Low confidence: {confidence:.1f} < {min_confidence:.1f}"
             )
 
-        if info.rank_score > 0 and info.rank_score < min_rank_score:
+        if 0 < info.rank_score < min_rank_score:
             return True, (
                 f"Low rank score: {info.rank_score:.3f} < {min_rank_score:.3f}"
             )
