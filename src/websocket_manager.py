@@ -171,6 +171,60 @@ class WebSocketManager:
             "Critical pairs auto-populated ({}): {}", len(self._critical_pairs), list(self._critical_pairs)[:20]
         )
 
+    async def update_streams_for_top50(
+        self,
+        symbols: List[str],
+        intervals: Optional[List[str]] = None,
+    ) -> None:
+        """Dynamically update WS streams to cover *symbols* (top-50) only.
+
+        Computes the symmetric difference between the current subscribed kline
+        streams and the desired set, then restarts the manager with the new
+        stream list.  This is a full restart (stop → start) to keep the
+        implementation simple; the caller should avoid calling this too
+        frequently.
+
+        This method is the entry-point for PR4 dynamic top-50 WS management:
+        whenever the top-50 futures list changes, the main engine calls this
+        method to shed streams for pairs that dropped out of the top-50 and
+        open new streams for pairs that entered.
+
+        Parameters
+        ----------
+        symbols:
+            Current top-50 futures symbols (upper-case, e.g. ``"BTCUSDT"``).
+        intervals:
+            Kline intervals to stream for each symbol.  Defaults to
+            ``["1m", "5m", "15m"]``.
+        """
+        if not self._running:
+            log.debug("update_streams_for_top50: manager not running — skipping")
+            return
+
+        intervals = intervals or ["1m", "5m", "15m"]
+        desired_streams: Set[str] = set()
+        for sym in symbols:
+            for tf in intervals:
+                desired_streams.add(self.build_kline_stream(sym.lower(), tf))
+
+        current_streams = set(self._subscribed_streams)
+        if desired_streams == current_streams:
+            log.debug("update_streams_for_top50: no stream changes required")
+            return
+
+        added = desired_streams - current_streams
+        removed = current_streams - desired_streams
+        log.info(
+            "update_streams_for_top50: +%d / -%d streams for %d symbols (%s)",
+            len(added), len(removed), len(symbols), self._label,
+        )
+
+        # Restart with the new stream list.  auto_populate_critical_pairs is
+        # re-applied so the REST fallback remains aligned to the new top-50.
+        await self.stop()
+        await self.start(sorted(desired_streams))
+        self.auto_populate_critical_pairs(symbols)
+
     async def _rest_fallback_loop(self) -> None:
         """Poll REST klines for critical pairs while WS is down."""
         assert self._session is not None

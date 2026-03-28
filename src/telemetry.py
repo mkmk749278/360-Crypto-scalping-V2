@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import psutil
 
@@ -57,6 +57,51 @@ class TelemetryCollector:
         self._last_no_signal_alert_time: float = 0.0
         # Optional async callback for admin alerts (e.g. TelegramBot.send_admin_alert).
         self._admin_alert: Optional[Any] = None
+        # Top-50 pairs filter (PR5): when non-empty, only log activity for
+        # these pairs; all other pair-level log events are suppressed.
+        self._top50_pairs: set = set()
+        # When True, only active-trade events are logged (reduced verbosity).
+        self._active_trades_only: bool = False
+
+    def set_top50_pairs(self, pairs: List[Any]) -> None:
+        """Set the top-50 futures pairs for reduced telemetry verbosity (PR5).
+
+        When this list is non-empty and ``active_trades_only`` is ``True``,
+        pair-level log output is restricted to pairs in this set.  Pass an
+        empty list to clear the filter and restore full logging.
+
+        Parameters
+        ----------
+        pairs:
+            Iterable of symbol strings (e.g. ``["BTCUSDT", "ETHUSDT"]``).
+        """
+        self._top50_pairs = {s.upper() for s in pairs} if pairs else set()
+        log.debug("Telemetry top-50 pairs set: %d symbols", len(self._top50_pairs))
+
+    def set_active_trades_only(self, enabled: bool) -> None:
+        """Toggle active-trades-only logging mode (PR5).
+
+        When ``True``, verbose pair-level telemetry is suppressed for pairs
+        that are not in the top-50 list and have no active signals.  CPU,
+        memory, WS health, and scan-latency telemetry is always emitted.
+
+        Parameters
+        ----------
+        enabled:
+            ``True`` to reduce logging to active trades only.
+        """
+        self._active_trades_only = enabled
+        log.info("Telemetry active_trades_only mode: %s", enabled)
+
+    def is_top50_pair(self, symbol: str) -> bool:
+        """Return True when *symbol* is in the configured top-50 list.
+
+        Always returns ``True`` when no top-50 filter has been set (i.e.
+        full-universe mode is active).
+        """
+        if not self._top50_pairs:
+            return True
+        return symbol.upper() in self._top50_pairs
 
     def record_api_call(self) -> None:
         self._api_call_count += 1

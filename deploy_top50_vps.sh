@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# deploy_top50_vps.sh — VPS bare-metal deployment for the top-50 futures engine.
+#
+# Installs Python 3.10+, project dependencies, creates a .env file from
+# environment variables (if not already present), and registers the engine
+# as a systemd service with log rotation.
+#
+# Usage:
+#   chmod +x deploy_top50_vps.sh
+#   sudo ./deploy_top50_vps.sh
+#
+# Required environment variables (or set them in .env before running):
+#   TELEGRAM_BOT_TOKEN          — Telegram bot token
+#   TELEGRAM_ACTIVE_CHANNEL_ID  — Channel ID for active trade signals
+#   BINANCE_API_KEY             — Binance API key
+#   BINANCE_API_SECRET          — Binance API secret
+#
+# Optional tuning variables (sensible defaults are provided):
+#   TOP50_FUTURES_ONLY          — "true" to restrict engine to top-50 futures (default: true)
+#   TOP50_FUTURES_COUNT         — Number of top pairs to track (default: 50)
+#   TOP50_UPDATE_INTERVAL_SECONDS — Refresh interval in seconds (default: 90)
+
+set -euo pipefail
+
+SERVICE_NAME="360scalp-top50"
+INSTALL_DIR="/opt/360-crypto-scalping-v2"
+PYTHON_MIN="3.10"
+LOG_DIR="/var/log/${SERVICE_NAME}"
+VENV_DIR="${INSTALL_DIR}/.venv"
+SERVICE_USER="360scalp"
+SERVICE_GROUP="360scalp"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+info()  { echo "  ✅  $*"; }
+warn()  { echo "  ⚠️   $*"; }
+error() { echo "  ❌  $*" >&2; exit 1; }
+
+require_root() {
+    [[ "$(id -u)" -eq 0 ]] || error "This script must be run as root (sudo $0)"
+}
+
+check_python() {
+    local py ver major minor
+    for py in python3.12 python3.11 python3.10 python3; do
+        if command -v "$py" &>/dev/null; then
+            ver=$("$py" -c "import sys; print('%d %d' % sys.version_info[:2])" 2>/dev/null) || continue
+            major=${ver%% *}
+            minor=${ver##* }
+            if [[ "$major" -gt 3 ]] || [[ "$major" -eq 3 && "$minor" -ge 10 ]]; then
+                echo "$py"
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Step 0 — root check
+# ---------------------------------------------------------------------------
+require_root
+
+echo ""
+echo "🚀  360-Crypto Top-50 Futures Engine — VPS Deployment"
+echo "======================================================="
+echo ""
+
+# ---------------------------------------------------------------------------
+# Step 1 — System packages
+# ---------------------------------------------------------------------------
+echo "📦  Installing system dependencies …"
+if command -v apt-get &>/dev/null; then
+    apt-get update -qq
+    apt-get install -y -qq \
+        python3 python3-pip python3-venv python3-dev \
+        build-essential git curl logrotate \
+        >/dev/null 2>&1
+    info "apt packages installed"
+elif command -v yum &>/dev/null; then
+    yum install -y -q python3 python3-pip python3-devel gcc git curl logrotate \
+        >/dev/null 2>&1
+    info "yum packages installed"
+else
+    warn "Unknown package manager — please install Python ${PYTHON_MIN}+, pip, venv manually"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 2 — Verify Python version
+# ---------------------------------------------------------------------------
+PYTHON_BIN=$(check_python) || error "Python ${PYTHON_MIN}+ not found. Install it manually."
+info "Using Python: ${PYTHON_BIN} ($("${PYTHON_BIN}" --version 2>&1))"
+
+# ---------------------------------------------------------------------------
+# Step 3 — Install / update project files
+# ---------------------------------------------------------------------------
+echo ""
+echo "📂  Setting up project directory: ${INSTALL_DIR}"
+if [[ ! -d "${INSTALL_DIR}" ]]; then
+    # Fresh install: copy from current working directory
+    mkdir -p "${INSTALL_DIR}"
+    cp -r . "${INSTALL_DIR}/"
+    info "Project copied to ${INSTALL_DIR}"
+else
+    info "Project directory already exists — updating files"
+    rsync -a --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc' \
+        . "${INSTALL_DIR}/" 2>/dev/null || cp -r . "${INSTALL_DIR}/"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 4 — Python virtual environment
+# ---------------------------------------------------------------------------
+echo ""
+echo "🐍  Creating virtual environment …"
+"${PYTHON_BIN}" -m venv "${VENV_DIR}"
+"${VENV_DIR}/bin/pip" install --upgrade pip -q
+"${VENV_DIR}/bin/pip" install -r "${INSTALL_DIR}/requirements.txt" -q
+info "Virtual environment ready: ${VENV_DIR}"
+
+# ---------------------------------------------------------------------------
+# Step 5 — .env file
+# ---------------------------------------------------------------------------
+echo ""
+echo "⚙️   Configuring environment …"
+ENV_FILE="${INSTALL_DIR}/.env"
+if [[ ! -f "${ENV_FILE}" ]]; then
+    cat > "${ENV_FILE}" <<EOF
+# Generated by deploy_top50_vps.sh — edit as needed
+TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-your_bot_token_here}
+TELEGRAM_ACTIVE_CHANNEL_ID=${TELEGRAM_ACTIVE_CHANNEL_ID:-}
+BINANCE_API_KEY=${BINANCE_API_KEY:-}
+BINANCE_API_SECRET=${BINANCE_API_SECRET:-}
+
+# Top-50 futures-only mode (PR1–PR5)
+TOP50_FUTURES_ONLY=true
+TOP50_FUTURES_COUNT=50
+TOP50_UPDATE_INTERVAL_SECONDS=90
+
+# Pair management
+TIER1_PAIR_COUNT=50
+TIER2_PAIR_COUNT=50
+TOP_PAIRS_COUNT=50
+
+# Scan & WS tuning for low-latency top-50 operation
+SCAN_MIN_VOLUME_USD=1000000
+WS_MAX_STREAMS_PER_CONN=200
+EOF
+    info ".env created at ${ENV_FILE}"
+    warn "Please edit ${ENV_FILE} and fill in your API keys before starting the service"
+else
+    info ".env already exists — not overwriting"
+    # Ensure top-50 mode is set
+    if ! grep -q "TOP50_FUTURES_ONLY" "${ENV_FILE}"; then
+        echo "" >> "${ENV_FILE}"
+        echo "# Top-50 futures-only mode (added by deploy_top50_vps.sh)" >> "${ENV_FILE}"
+        echo "TOP50_FUTURES_ONLY=true" >> "${ENV_FILE}"
+        echo "TOP50_FUTURES_COUNT=50" >> "${ENV_FILE}"
+        echo "TOP50_UPDATE_INTERVAL_SECONDS=90" >> "${ENV_FILE}"
+        info "Appended TOP50_* variables to existing .env"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 6 — Log directory
+# ---------------------------------------------------------------------------
+mkdir -p "${LOG_DIR}"
+# Create a dedicated system user for the service if it doesn't exist
+if ! id -u "${SERVICE_USER}" &>/dev/null; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin "${SERVICE_USER}" 2>/dev/null || true
+    info "Created system user: ${SERVICE_USER}"
+fi
+chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${LOG_DIR}" 2>/dev/null || true
+chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_DIR}" 2>/dev/null || true
+info "Log directory: ${LOG_DIR}"
+
+# ---------------------------------------------------------------------------
+# Step 7 — logrotate config
+# ---------------------------------------------------------------------------
+cat > "/etc/logrotate.d/${SERVICE_NAME}" <<EOF
+${LOG_DIR}/*.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+info "logrotate config written"
+
+# ---------------------------------------------------------------------------
+# Step 8 — systemd service unit
+# ---------------------------------------------------------------------------
+echo ""
+echo "🛠   Writing systemd service unit …"
+cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
+[Unit]
+Description=360 Crypto Top-50 Futures Scalping Engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_GROUP}
+WorkingDirectory=${INSTALL_DIR}
+EnvironmentFile=${ENV_FILE}
+ExecStart=${VENV_DIR}/bin/python -m src.main
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:${LOG_DIR}/engine.log
+StandardError=append:${LOG_DIR}/engine.log
+# Resource limits — keep API weight usage below 1200/min
+LimitNOFILE=65536
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+info "Service unit written: /etc/systemd/system/${SERVICE_NAME}.service"
+
+# ---------------------------------------------------------------------------
+# Step 9 — Enable and start (or restart) the service
+# ---------------------------------------------------------------------------
+echo ""
+echo "🚦  Enabling and starting service …"
+systemctl daemon-reload
+systemctl enable "${SERVICE_NAME}"
+
+if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
+    systemctl restart "${SERVICE_NAME}"
+    info "Service restarted"
+else
+    systemctl start "${SERVICE_NAME}" || warn "Service failed to start — check: journalctl -u ${SERVICE_NAME} -n 50"
+    info "Service started"
+fi
+
+# ---------------------------------------------------------------------------
+# Done
+# ---------------------------------------------------------------------------
+echo ""
+echo "✅  Deployment complete!"
+echo ""
+echo "📊  Service status:"
+systemctl status "${SERVICE_NAME}" --no-pager -l 2>/dev/null || true
+echo ""
+echo "📋  Useful commands:"
+echo "  journalctl -u ${SERVICE_NAME} -f          # Follow live logs"
+echo "  systemctl restart ${SERVICE_NAME}          # Restart the engine"
+echo "  systemctl stop    ${SERVICE_NAME}          # Stop the engine"
+echo "  tail -f ${LOG_DIR}/engine.log              # Tail log file"
+echo ""
+echo "⚙️   Environment: ${ENV_FILE}"
+echo "🐍  Python:      ${VENV_DIR}/bin/python"

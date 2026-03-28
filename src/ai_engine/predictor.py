@@ -102,6 +102,32 @@ class SignalPredictor:
             "correlation": 0.15,
         }
         self._prediction_count = 0
+        # Optional allowlist: when non-empty, predict() returns NEUTRAL for
+        # any symbol not in this set (PR3 — top-50 futures-only AI inference).
+        self._allowed_pairs: Optional[set] = None
+
+    def set_allowed_pairs(self, pairs: List[str]) -> None:
+        """Restrict AI inference to the specified symbol list.
+
+        When set, :meth:`predict` returns a neutral result for any symbol
+        that is not in *pairs*, keeping inference costs proportional to the
+        top-50 futures universe rather than the full pair list.
+
+        Pass an empty list (or call with ``pairs=[]``) to clear the filter
+        and restore inference for all symbols.
+
+        Parameters
+        ----------
+        pairs:
+            Symbols allowed for full inference (case-insensitive normalised
+            to upper-case internally).  An empty list clears the filter.
+        """
+        if pairs:
+            self._allowed_pairs = {s.upper() for s in pairs}
+            log.debug("AI predictor: allowed pairs set to %d symbols", len(self._allowed_pairs))
+        else:
+            self._allowed_pairs = None
+            log.debug("AI predictor: allowed pairs filter cleared")
 
     async def predict(
         self,
@@ -120,8 +146,16 @@ class SignalPredictor:
         Returns
         -------
         SignalPrediction
-            Prediction with direction and probability.
+            Prediction with direction and probability.  Returns a neutral
+            prediction when *symbol* is not in the configured allowed-pairs
+            list (see :meth:`set_allowed_pairs`).
         """
+        # Top-50 futures-only gate (PR3): skip non-allowed symbols to keep
+        # AI inference focused on the active high-quality universe.
+        if self._allowed_pairs is not None and symbol.upper() not in self._allowed_pairs:
+            log.debug("AI predictor: skipping non-allowed symbol %s", symbol)
+            return SignalPrediction(symbol=symbol, direction="NEUTRAL", probability=0.5)
+
         scores = self._extract_scores(features)
         direction, probability = self._combine_scores(scores)
 
@@ -154,8 +188,23 @@ class SignalPredictor:
 
         Returns
         -------
-        Dict mapping symbol → prediction.
+        Dict mapping symbol → prediction.  Non-allowed symbols (when an
+        allowed-pairs filter is active) receive a neutral prediction and are
+        not passed to the inference pipeline.
         """
+        # Filter to allowed pairs before spawning tasks (PR3).
+        if self._allowed_pairs is not None:
+            filtered = {
+                sym: feat for sym, feat in symbols_features.items()
+                if sym.upper() in self._allowed_pairs
+            }
+            skipped = len(symbols_features) - len(filtered)
+            if skipped:
+                log.debug(
+                    "AI predictor batch: skipping %d non-allowed symbols", skipped
+                )
+            symbols_features = filtered
+
         tasks = {
             sym: self.predict(sym, feat)
             for sym, feat in symbols_features.items()

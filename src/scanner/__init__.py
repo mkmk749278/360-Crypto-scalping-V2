@@ -36,6 +36,7 @@ from config import (
     TIER2_SCAN_EVERY_N_CYCLES,
     TIER3_SCAN_EVERY_N_CYCLES,
     TIER3_SCAN_INTERVAL_MINUTES,
+    TOP50_FUTURES_ONLY,
     WS_DEGRADED_CYCLES_ALERT,
     WS_DEGRADED_MAX_PAIRS,
     WS_PARTIAL_HEALTH_THRESHOLD,
@@ -587,6 +588,25 @@ class Scanner:
                     reverse=True,
                 )
 
+                # Top-50 futures-only mode (PR2): restrict universe to the
+                # top-50 USDT-M futures pairs; spot pairs and lower-ranked
+                # futures are excluded entirely from this scan cycle.
+                if TOP50_FUTURES_ONLY:
+                    top50 = self.pair_mgr.get_top50_futures_pairs()
+                    if top50:
+                        top50_set = set(top50)
+                        sorted_pairs = [
+                            (sym, info) for sym, info in sorted_pairs
+                            if info.market == "futures" and sym in top50_set
+                        ]
+                    else:
+                        # Fall back to futures-only scan when cache is not yet
+                        # populated (first cycle before first refresh completes).
+                        sorted_pairs = [
+                            (sym, info) for sym, info in sorted_pairs
+                            if info.market == "futures"
+                        ]
+
                 # Tiered scanning:
                 #   Tier 1 → every cycle (full scan, all channels)
                 #   Tier 2 → every TIER2_SCAN_EVERY_N_CYCLES cycles (SWING+SPOT only)
@@ -605,12 +625,18 @@ class Scanner:
                         "Scan latency circuit breaker: skipping Tier 2 pairs "
                         "(last latency={:.0f}ms)", self.telemetry.scan_latency_ms
                     )
-                pairs_this_cycle = [
-                    (sym, info) for sym, info in sorted_pairs
-                    if info.tier == PairTier.TIER1
-                    or (info.tier == PairTier.TIER2 and scan_tier2 and not skip_tier2_for_latency)
-                    or (info.tier == PairTier.TIER3 and scan_tier3 and not skip_tier2_for_latency)
-                ]
+                # In top-50 futures-only mode all included pairs are treated as
+                # Tier 1 (full scan every cycle); tier filtering still applies
+                # in the normal multi-tier path.
+                if TOP50_FUTURES_ONLY:
+                    pairs_this_cycle = list(sorted_pairs)
+                else:
+                    pairs_this_cycle = [
+                        (sym, info) for sym, info in sorted_pairs
+                        if info.tier == PairTier.TIER1
+                        or (info.tier == PairTier.TIER2 and scan_tier2 and not skip_tier2_for_latency)
+                        or (info.tier == PairTier.TIER3 and scan_tier3 and not skip_tier2_for_latency)
+                    ]
 
                 # Apply cheap in-memory pre-filters to reduce the number of
                 # symbols that reach expensive API calls (order book, klines).
