@@ -38,12 +38,10 @@ TELEGRAM_ADMIN_CHAT_ID: str = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "")
 # If left empty, signals are silently dropped by the signal router.
 TELEGRAM_GEM_CHANNEL_ID: str = os.getenv("TELEGRAM_GEM_CHANNEL_ID", "")
 
-# --- Merged Telegram Channels (recommended for user-facing deployment) ---
-# When set, these OVERRIDE the individual per-channel IDs above.
-# "Active Trading" channel receives: SCALP + SWING signals
-# "Portfolio" channel receives: SPOT + GEM signals
+# --- Merged Telegram Channel (recommended for user-facing deployment) ---
+# When set, this OVERRIDES the individual per-channel IDs above.
+# "Active Trading" channel receives: SCALP + SWING + SPOT + GEM signals
 TELEGRAM_ACTIVE_CHANNEL_ID: str = os.getenv("TELEGRAM_ACTIVE_CHANNEL_ID", "")
-TELEGRAM_PORTFOLIO_CHANNEL_ID: str = os.getenv("TELEGRAM_PORTFOLIO_CHANNEL_ID", "")
 
 # ---------------------------------------------------------------------------
 # AI / Sentiment keys (optional)
@@ -516,15 +514,13 @@ CHANNEL_EMOJIS: Dict[str, str] = {
 def _build_channel_telegram_map() -> Dict[str, str]:
     """Build the channel → Telegram chat-ID mapping.
 
-    If the merged ``TELEGRAM_ACTIVE_CHANNEL_ID`` / ``TELEGRAM_PORTFOLIO_CHANNEL_ID``
-    env vars are set they take precedence over the individual per-channel IDs,
-    routing all SCALP*/SWING signals to the "Active Trading" channel and
-    SPOT/GEM signals to the "Portfolio" channel.  When the merged vars are
-    **not** set the mapping falls back to the individual channel IDs, preserving
-    full backward compatibility.
+    If the merged ``TELEGRAM_ACTIVE_CHANNEL_ID`` env var is set it takes
+    precedence over the individual per-channel IDs, routing all signals to a
+    single "Active Trading" channel.  When the merged var is **not** set the
+    mapping falls back to the individual channel IDs, preserving full backward
+    compatibility.
     """
     active = TELEGRAM_ACTIVE_CHANNEL_ID
-    portfolio = TELEGRAM_PORTFOLIO_CHANNEL_ID
     return {
         "360_SCALP":      active or TELEGRAM_SCALP_CHANNEL_ID,
         "360_SCALP_FVG":  active or TELEGRAM_SCALP_CHANNEL_ID,
@@ -532,18 +528,13 @@ def _build_channel_telegram_map() -> Dict[str, str]:
         "360_SCALP_VWAP": active or TELEGRAM_SCALP_CHANNEL_ID,
         "360_SCALP_OBI":  active or TELEGRAM_SCALP_CHANNEL_ID,
         "360_SWING":      active or TELEGRAM_SWING_CHANNEL_ID,
-        "360_SPOT":       portfolio or TELEGRAM_SPOT_CHANNEL_ID,
-        "360_GEM":        portfolio or TELEGRAM_GEM_CHANNEL_ID,
+        "360_SPOT":       active or TELEGRAM_SPOT_CHANNEL_ID,
+        "360_GEM":        active or TELEGRAM_GEM_CHANNEL_ID,
     }
 
 
 CHANNEL_TELEGRAM_MAP: Dict[str, str] = _build_channel_telegram_map()
 
-# ---------------------------------------------------------------------------
-# Portfolio signal channels – channels that use the enhanced portfolio format
-# (narrative, sector comparison, chart image) instead of the compact scalp format.
-# ---------------------------------------------------------------------------
-PORTFOLIO_CHANNELS: set = {"360_SPOT", "360_GEM"}
 CHART_ENABLED_CHANNELS: set = {"360_SPOT", "360_GEM"}
 
 # ---------------------------------------------------------------------------
@@ -666,9 +657,7 @@ PERFORMANCE_TRACKER_PATH: str = os.getenv(
 # Max concurrent signals per channel.
 #
 # SCALP/SWING: capped for capital protection (leveraged trades).
-# SPOT/GEM:    effectively unlimited (999) — these are portfolio
-#              recommendations with long hold durations (7–30 days).
-#              Capping them silences the Portfolio channel for weeks.
+# SPOT/GEM:    effectively unlimited (999) — long hold durations (7–30 days).
 #              Natural daily throttle comes from GEM_MAX_DAILY_SIGNALS in
 #              the gem scanner, not from a concurrent-position cap.
 # ---------------------------------------------------------------------------
@@ -899,19 +888,6 @@ CONFIDENCE_LOG_PATH: str = os.getenv("CONFIDENCE_LOG_PATH", "data/confidence_log
 MACRO_BLACKOUT_PRE_MINUTES: int = int(os.getenv("MACRO_BLACKOUT_PRE_MINUTES", "30"))
 MACRO_BLACKOUT_POST_MINUTES: int = int(os.getenv("MACRO_BLACKOUT_POST_MINUTES", "60"))
 
-# ---------------------------------------------------------------------------
-# Portfolio Guard — aggregate drawdown protection (PR_13)
-# Tiered circuit breaker across all channels:
-#   YELLOW: drawdown >= YELLOW_PCT → reduce position sizes by YELLOW_SIZE_MULT
-#   RED:    drawdown >= RED_PCT    → halt all signals for RED_HALT_HOURS
-#   BLACK:  drawdown >= BLACK_PCT  → halt all signals for BLACK_HALT_HOURS + admin alert
-# ---------------------------------------------------------------------------
-PORTFOLIO_GUARD_YELLOW_PCT: float = float(os.getenv("PORTFOLIO_GUARD_YELLOW_PCT", "3.0"))
-PORTFOLIO_GUARD_RED_PCT: float = float(os.getenv("PORTFOLIO_GUARD_RED_PCT", "5.0"))
-PORTFOLIO_GUARD_BLACK_PCT: float = float(os.getenv("PORTFOLIO_GUARD_BLACK_PCT", "8.0"))
-PORTFOLIO_GUARD_RED_HALT_HOURS: int = int(os.getenv("PORTFOLIO_GUARD_RED_HALT_HOURS", "4"))
-PORTFOLIO_GUARD_BLACK_HALT_HOURS: int = int(os.getenv("PORTFOLIO_GUARD_BLACK_HALT_HOURS", "24"))
-PORTFOLIO_GUARD_YELLOW_SIZE_MULT: float = float(os.getenv("PORTFOLIO_GUARD_YELLOW_SIZE_MULT", "0.5"))
 
 # ---------------------------------------------------------------------------
 # No-signal watchdog — alert admin when no new signals are generated for an

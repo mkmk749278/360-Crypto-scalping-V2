@@ -234,33 +234,3 @@ async def handle_statstats(args: List[str], ctx: CommandContext) -> None:
     await ctx.reply(ctx.stat_filter.format_statstats())
 
 
-@registry.command(
-    "/portfolio_status",
-    admin=True,
-    group="channels",
-    help_text="Portfolio guard drawdown status: /portfolio_status",
-)
-async def handle_portfolio_status(args: List[str], ctx: CommandContext) -> None:
-    """Show the current portfolio-level drawdown guard status."""
-    if ctx.portfolio_guard is None:
-        await ctx.reply("ℹ️ Portfolio guard is not enabled.")
-        return
-    await ctx.reply(ctx.portfolio_guard.status_text())
-
-
-@registry.command(
-    "/portfolio_reset",
-    admin=True,
-    group="channels",
-    help_text="Reset portfolio guard to NORMAL: /portfolio_reset",
-)
-async def handle_portfolio_reset(args: List[str], ctx: CommandContext) -> None:
-    """Manually reset the portfolio guard, clearing all drawdown state."""
-    if ctx.portfolio_guard is None:
-        await ctx.reply("ℹ️ Portfolio guard is not enabled.")
-        return
-    ctx.portfolio_guard.reset()
-    await ctx.reply(
-        "✅ Portfolio guard reset to NORMAL. "
-        "All drawdown state cleared and signal generation resumed."
-    )

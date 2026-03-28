@@ -27,7 +27,6 @@ from config import (
     CHART_ENABLED_CHANNELS,
     MAX_CONCURRENT_SIGNALS_PER_CHANNEL,
     MAX_SIGNAL_HOLD_SECONDS,
-    PORTFOLIO_CHANNELS,
     TELEGRAM_FREE_CHANNEL_ID,
 )
 from src.channels.base import Signal
@@ -126,18 +125,16 @@ class SignalRouter:
         # Free-channel highlight rate limiting
         self._highlight_count_today: int = 0
         self._highlight_date: Optional[date] = None
-        # Free-signal daily tracking: keyed by user-facing group ("active" or "portfolio")
+        # Free-signal daily tracking: keyed by user-facing group ("active")
         self._free_signals_today: Dict[str, bool] = {}
         self._free_signal_date: Optional[date] = None
         # Detect whether queue.get() supports a timeout keyword argument
         self._queue_has_timeout = "timeout" in inspect.signature(queue.get).parameters
-        # Portfolio enrichment (optional — set after construction)
+        # Signal enrichment (optional — set after construction)
         self.narrative_builder: Optional[Any] = None
         self.sector_comparator: Optional[Any] = None
         # AI Trade Observer (optional — set after construction in main.py)
         self.observer: Optional[Any] = None
-        # Portfolio-level drawdown guard (optional — set after construction in main.py)
-        self.portfolio_guard: Optional[Any] = None
         # AI Engine integration (PR: AI Engine Refactor)
         self._ai_predictor: Optional[SignalPredictor] = None
         self._ai_scorer: Optional[AIConfidenceScorer] = None
@@ -521,33 +518,11 @@ class SignalRouter:
             )
             return
 
-        # Portfolio-level drawdown guard check (additive — fail-open when not wired).
-        _portfolio_size_multiplier: float = 1.0
-        if self.portfolio_guard is not None:
-            pg_allowed, pg_reason, _portfolio_size_multiplier = (
-                self.portfolio_guard.check_signal_allowed()
-            )
-            if not pg_allowed:
-                log.warning(
-                    "Signal {} {} suppressed by portfolio guard: {}",
-                    signal.symbol, signal.channel, pg_reason,
-                )
-                return
-            if _portfolio_size_multiplier < 1.0:
-                # Annotate signal so operators can see the size reduction
-                note = f"[PG: {_portfolio_size_multiplier:.0%} size]"
-                signal.execution_note = (
-                    f"{signal.execution_note} {note}".strip()
-                    if signal.execution_note
-                    else note
-                )
-
         # Risk assessment: use the signal's own volume/spread fields so the risk
         # classifier has accurate data (set by the scanner before enqueuing).
         risk = self._risk_mgr.calculate_risk(
             signal, {}, volume_24h_usd=signal.volume_24h_usd,
             active_signals=self.active_signals,
-            portfolio_size_multiplier=_portfolio_size_multiplier,
         )
         if not risk.allowed:
             log.warning(
@@ -563,36 +538,7 @@ class SignalRouter:
             log.warning("No Telegram channel configured for {}", signal.channel)
             return
 
-        if signal.channel in PORTFOLIO_CHANNELS:
-            # --- Portfolio (SPOT/GEM) enhanced format ---
-            narrative = ""
-            if self.narrative_builder is not None:
-                try:
-                    context = self._build_narrative_context(signal)
-                    narrative = self.narrative_builder.build_narrative(signal, context)
-                except Exception as exc:
-                    log.warning("Narrative build failed for {}: {}", signal.symbol, exc)
-
-            sector_ctx = None
-            if self.sector_comparator is not None:
-                try:
-                    sector_ctx = self.sector_comparator.get_sector_context(signal.symbol)
-                except Exception as exc:
-                    log.warning("Sector context failed for {}: {}", signal.symbol, exc)
-
-            from src.telegram_bot import TelegramBot
-            text = TelegramBot.format_portfolio_signal(signal, narrative, sector_ctx)
-
-            # Send chart image first (if enabled and available)
-            if signal.channel in CHART_ENABLED_CHANNELS:
-                try:
-                    chart_bytes = self._build_portfolio_chart(signal)
-                    if chart_bytes:
-                        await self._send_photo(channel_id, chart_bytes)
-                except Exception as exc:
-                    log.warning("Chart generation failed for {}: {}", signal.symbol, exc)
-        else:
-            text = self._format_signal(signal)
+        text = self._format_signal(signal)
 
         # Append Cornix auto-execution block when enabled
         try:
@@ -702,52 +648,6 @@ class SignalRouter:
         if signal.ai_sentiment_summary:
             context["sentiment_summary"] = signal.ai_sentiment_summary
         return context
-
-    def _build_portfolio_chart(self, signal: Signal) -> Optional[bytes]:
-        """Generate a portfolio chart for a signal using data_store candles.
-
-        Returns None if data is unavailable or chart generation fails.
-        """
-        from src.chart_generator import generate_portfolio_chart
-
-        # Attempt to get candle data from sector_comparator's data_store
-        data_store = None
-        if self.sector_comparator is not None:
-            data_store = getattr(self.sector_comparator, "_data_store", None)
-
-        if data_store is None:
-            return None
-
-        try:
-            timeframe = "4h" if signal.channel == "360_SPOT" else "1d"
-            candles = data_store.get_candles(signal.symbol, timeframe)
-            if candles is None:
-                return None
-
-            closes = [float(v) for v in candles.get("close", [])]
-            highs = [float(v) for v in candles.get("high", [])]
-            lows = [float(v) for v in candles.get("low", [])]
-            volumes = [float(v) for v in candles.get("volume", [])]
-
-            tp_levels = [t for t in [signal.tp1, signal.tp2, signal.tp3] if t is not None]
-
-            from src.telegram_bot import TelegramBot
-            chan_name = TelegramBot._CHANNEL_DISPLAY_NAME.get(signal.channel, "SPOT")
-
-            return generate_portfolio_chart(
-                symbol=signal.symbol,
-                closes=closes,
-                highs=highs,
-                lows=lows,
-                volumes=volumes,
-                entry=signal.entry,
-                sl=signal.stop_loss,
-                tp_levels=tp_levels,
-                channel_name=chan_name,
-            )
-        except Exception as exc:
-            log.warning("_build_portfolio_chart failed for {}: {}", signal.symbol, exc)
-            return None
 
     async def _send_photo(self, channel_id: str, photo_bytes: bytes) -> bool:
         """Send a chart image to *channel_id*.
@@ -868,15 +768,12 @@ class SignalRouter:
     @staticmethod
     def _free_channel_group(channel: str) -> str:
         """Map a signal channel to a user-facing group name for free-signal tracking."""
-        if channel in ("360_SPOT", "360_GEM"):
-            return "portfolio"
         return "active"
 
     async def _maybe_publish_free_signal(self, signal: Signal) -> None:
         """Publish a condensed version of the signal to the free channel.
 
-        Only posts once per user-facing channel group ("active" / "portfolio")
-        per calendar day, and only when confidence >= 75.
+        Only posts once per calendar day, and only when confidence >= 75.
         """
         if not TELEGRAM_FREE_CHANNEL_ID:
             return

@@ -172,7 +172,6 @@ class TradeMonitor:
         circuit_breaker: Optional[Any] = None,
         regime_detector: Optional[Any] = None,
         indicators_fn: Optional[Callable] = None,
-        paper_portfolio: Optional[Any] = None,
         order_manager: Optional[Any] = None,
         stat_filter: Optional[Any] = None,
     ) -> None:
@@ -185,7 +184,6 @@ class TradeMonitor:
         self._circuit_breaker = circuit_breaker
         self._regime_detector = regime_detector
         self._indicators_fn = indicators_fn
-        self._paper_portfolio = paper_portfolio
         # Optional OrderManager for direct exchange execution (V3 groundwork).
         # When provided and auto-execution is enabled, confirmed signals are
         # forwarded to the exchange instead of (or alongside) Telegram.
@@ -279,27 +277,6 @@ class TradeMonitor:
                 hit_sl=hit_sl,
                 pnl_pct=actual_pnl,
                 symbol=sig.symbol,
-            )
-        # Paper portfolio tracking (silent — no Telegram messages)
-        if self._paper_portfolio is not None:
-            tp_prices = []
-            if hasattr(sig, "tp1") and sig.tp1:
-                tp_prices.append(sig.tp1)
-            if hasattr(sig, "tp2") and sig.tp2:
-                tp_prices.append(sig.tp2)
-            if hasattr(sig, "tp3") and sig.tp3:
-                tp_prices.append(sig.tp3)
-            self._paper_portfolio.record_trade(
-                channel=sig.channel,
-                signal_id=sig.signal_id,
-                symbol=sig.symbol,
-                direction=sig.direction.value,
-                entry_price=sig.entry,
-                exit_price=sig.current_price,
-                hit_tp=hit_tp,
-                hit_sl=hit_sl,
-                pnl_pct=actual_pnl,
-                tp_prices=tp_prices if tp_prices else None,
             )
         if hit_sl:
             # Notify the scanner to apply a short per-symbol cooldown so no other

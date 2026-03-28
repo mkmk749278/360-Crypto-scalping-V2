@@ -69,7 +69,6 @@ class RiskManager:
         indicators: Dict[str, Any],
         volume_24h_usd: float,
         active_signals: Optional[Dict[str, Any]] = None,
-        portfolio_size_multiplier: float = 1.0,
     ) -> RiskAssessment:
         """Evaluate risk for *signal* and return a :class:`RiskAssessment`.
 
@@ -84,10 +83,6 @@ class RiskManager:
         active_signals:
             Current active signals dict (signal_id → Signal) for concurrent
             limit checking.  Pass ``None`` or an empty dict to skip.
-        portfolio_size_multiplier:
-            Multiplier applied to the computed position size (from
-            :class:`src.portfolio_guard.PortfolioGuard`).  Defaults to 1.0
-            (no reduction).  Set to 0.5 during YELLOW tier.
         """
         entry: float = float(getattr(signal, "entry", 0.0))
         sl: float = float(getattr(signal, "stop_loss", entry))
@@ -111,11 +106,6 @@ class RiskManager:
             # floored at 50 % to keep minimum exposure meaningful.
             spread_factor = max(0.5, 1.0 - (spread_pct - 0.02) * 5)
             position_size_pct = round(position_size_pct * spread_factor, 2)
-
-        # Portfolio-level drawdown multiplier (from PortfolioGuard).
-        # Applied after spread penalty so both reductions compound correctly.
-        if portfolio_size_multiplier != 1.0:
-            position_size_pct = round(position_size_pct * portfolio_size_multiplier, 2)
 
         # Risk label
         atr_val: Optional[float] = indicators.get("atr_last")
