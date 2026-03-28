@@ -36,6 +36,8 @@ from src.redis_client import RedisClient
 from src.risk import RiskManager
 from src.smc import Direction
 from src.utils import get_logger
+from src.ai_engine.predictor import SignalPredictor, PredictionFeatures
+from src.ai_engine.scorer import AIConfidenceScorer, AIScoreResult
 from src.cornix_formatter import format_cornix_signal
 
 log = get_logger("signal_router")
@@ -136,6 +138,97 @@ class SignalRouter:
         self.observer: Optional[Any] = None
         # Portfolio-level drawdown guard (optional — set after construction in main.py)
         self.portfolio_guard: Optional[Any] = None
+        # AI Engine integration (PR: AI Engine Refactor)
+        self._ai_predictor: Optional[SignalPredictor] = None
+        self._ai_scorer: Optional[AIConfidenceScorer] = None
+
+    # ------------------------------------------------------------------
+    # AI Engine wiring
+    # ------------------------------------------------------------------
+
+    def set_ai_engine(
+        self,
+        predictor: Optional[Any] = None,
+        scorer: Optional[Any] = None,
+    ) -> None:
+        """Configure AI engine components for signal enrichment.
+
+        Parameters
+        ----------
+        predictor:
+            :class:`~src.ai_engine.predictor.SignalPredictor` instance.
+        scorer:
+            :class:`~src.ai_engine.scorer.AIConfidenceScorer` instance.
+        """
+        self._ai_predictor = predictor
+        self._ai_scorer = scorer
+        log.info("AI engine configured: predictor={}, scorer={}",
+                 predictor is not None, scorer is not None)
+
+    async def _enrich_with_ai(self, signal: Signal) -> Signal:
+        """Enrich a signal with AI prediction and confidence scoring.
+
+        When the AI predictor and scorer are configured, this method:
+        1. Runs the predictor to get a probability estimate
+        2. Feeds the probability into the AI scorer for threshold adjustment
+        3. Updates the signal's confidence metadata
+
+        Parameters
+        ----------
+        signal:
+            The signal to enrich.
+
+        Returns
+        -------
+        Signal
+            The signal with updated AI confidence fields.
+        """
+        if self._ai_predictor is None and self._ai_scorer is None:
+            return signal
+
+        updates: Dict[str, Any] = {}
+
+        # Step 1: AI prediction
+        if self._ai_predictor is not None:
+            try:
+                features = PredictionFeatures(
+                    price_features={"momentum": 0.0, "ema_alignment": 0.0},
+                    volume_features={"obv_trend": 0.0},
+                    order_book_features={},
+                    correlation_features={},
+                )
+                prediction = await self._ai_predictor.predict(signal.symbol, features)
+                updates["pre_ai_confidence"] = signal.confidence
+                log.debug(
+                    "AI prediction for {}: dir={} prob={:.3f}",
+                    signal.symbol, prediction.direction, prediction.probability,
+                )
+            except Exception as exc:
+                log.debug("AI prediction failed for {}: {}", signal.symbol, exc)
+
+        # Step 2: AI confidence scoring
+        if self._ai_scorer is not None:
+            try:
+                score_result = self._ai_scorer.score_signal(
+                    symbol=signal.symbol,
+                    base_confidence=signal.confidence,
+                    regime=getattr(signal, "entry_regime", ""),
+                )
+                updates["post_ai_confidence"] = score_result.final_confidence
+                if score_result.ai_adjustment != 0.0:
+                    updates["confidence"] = score_result.final_confidence
+                    log.debug(
+                        "AI scorer adjusted {} confidence: {:.1f} → {:.1f} (adj={:+.1f})",
+                        signal.symbol, signal.confidence,
+                        score_result.final_confidence, score_result.ai_adjustment,
+                    )
+            except Exception as exc:
+                log.debug("AI scoring failed for {}: {}", signal.symbol, exc)
+
+        if updates:
+            signal = dataclasses.replace(signal, **updates)
+
+        return signal
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -412,6 +505,9 @@ class SignalRouter:
                             signal.channel, signal.symbol, cp, signal.stop_loss,
                         )
                         return
+
+        # ── AI enrichment ───────────────────────────────────────────────
+        signal = await self._enrich_with_ai(signal)
 
         # Channel min-confidence filter
         chan_cfg = next(
