@@ -104,6 +104,10 @@ from src.suppression_telemetry import (
     REASON_LIFESPAN,
     REASON_CONFIDENCE,
 )
+from src.scanner.filter_module import get_pair_probability, DEFAULT_PROBABILITY_THRESHOLD
+from src.scanner.regime_manager import RegimeChannelScheduler
+from src.scanner.api_limits import BatchScheduler, log_api_usage
+from src.scanner.scan_logging import log_suppressed_signal
 
 log = get_logger("scanner")
 
@@ -143,6 +147,14 @@ _BOOK_TICKER_CACHE_TTL: float = 20.0
 
 # ADX threshold below which SCALP signals are suppressed during RANGING regime
 _RANGING_ADX_SUPPRESS_THRESHOLD: float = 15.0
+
+# PR01 – High-probability pair filter threshold.
+# When > 0, signals from pairs whose probability score is below this value are
+# suppressed in _should_skip_channel.  Set to 0 to disable the gate entirely
+# (useful for testing or when the filter is not yet calibrated for live data).
+# Configurable via the PROBABILITY_GATE_THRESHOLD environment variable.
+import os as _os
+_PROBABILITY_GATE_THRESHOLD: float = float(_os.getenv("PROBABILITY_GATE_THRESHOLD", "0.0"))
 
 # Confidence boost applied to SCALP RANGE_FADE setup class when regime is RANGING
 _RANGING_RANGE_FADE_CONF_BOOST: float = 5.0
@@ -398,6 +410,11 @@ class Scanner:
         self.confidence_overrides: Dict[str, float] = {}
         self.force_scan: bool = False
 
+        # PR08 — Simulation mode flag: when True, the scanner runs through the
+        # normal signal-evaluation pipeline without delivering to Telegram.
+        # Set externally via Simulator.attach_scanner() before run().
+        self.simulation_mode: bool = False
+
         # WebSocket managers (set after boot)
         self.ws_spot: Optional[Any] = None
         self.ws_futures: Optional[Any] = None
@@ -455,6 +472,13 @@ class Scanner:
         # Suppression tracker — records structured suppression events for
         # Telegram digest and data-driven threshold tuning.
         self.suppression_tracker: SuppressionTracker = SuppressionTracker()
+
+        # Regime-adaptive channel scheduler (PR07)
+        self._regime_scheduler: RegimeChannelScheduler = RegimeChannelScheduler()
+
+        # Batch scheduler for spot pairs (PR04) – distributes spot scans
+        # across an hourly window to stay within Binance API weight limits.
+        self._batch_scheduler: BatchScheduler = BatchScheduler()
 
         # Data fetcher — delegates kline and order-book retrieval
         self._data_fetcher = DataFetcher(
@@ -694,6 +718,26 @@ class Scanner:
                 and (self.ws_futures.is_healthy if self.ws_futures else True)
             )
             self.telemetry.set_ws_health(ws_ok, ws_conns)
+
+            # PR03 – WS telemetry: log detailed WebSocket health every cycle
+            # for latency and reconnection monitoring.
+            if not ws_ok:
+                log.warning(
+                    "WS health degraded [cycle=%d]: spot_healthy=%s futures_healthy=%s "
+                    "spot_ratio=%.0f%% futures_ratio=%.0f%% streams=%d latency=%.0fms",
+                    self._scan_cycle_count,
+                    self.ws_spot.is_healthy if self.ws_spot else True,
+                    self.ws_futures.is_healthy if self.ws_futures else True,
+                    ws_spot_ratio * 100 if 'ws_spot_ratio' in dir() else 100,
+                    ws_futures_ratio * 100 if 'ws_futures_ratio' in dir() else 100,
+                    ws_conns,
+                    elapsed_ms,
+                )
+            else:
+                log.debug(
+                    "WS health OK [cycle=%d]: streams=%d latency=%.0fms",
+                    self._scan_cycle_count, ws_conns, elapsed_ms,
+                )
 
             # Log suppression telemetry summary for this cycle, then reset.
             if self._suppression_counters:
@@ -1239,8 +1283,26 @@ class Scanner:
             )
             self._suppression_counters[f"ranging_low_adx:{chan_name}"] += 1
             return True
-        # Regime-channel compatibility matrix
+        # Regime-channel compatibility matrix (PR07: delegate to RegimeChannelScheduler)
         current_regime = ctx.regime_result.regime.value
+        _regime_sched = getattr(self, '_regime_scheduler', None)
+        if _regime_sched is not None and not _regime_sched.is_channel_allowed(chan_name, current_regime):
+            log.debug(
+                "Suppressing {} signal for {} (regime {} blocked by scheduler)",
+                chan_name,
+                symbol,
+                current_regime,
+            )
+            self._suppression_counters[f"regime:{current_regime}:{chan_name}"] += 1
+            log_suppressed_signal(
+                pair=symbol,
+                channel=chan_name,
+                reason=REASON_QUIET_REGIME,
+                regime=current_regime,
+                tracker=self.suppression_tracker,
+            )
+            return True
+        # Legacy regime-channel compatibility matrix (hard-coded overrides)
         incompatible_regimes = _REGIME_CHANNEL_INCOMPATIBLE.get(chan_name, [])
         if current_regime in incompatible_regimes:
             log.debug(
@@ -1250,13 +1312,57 @@ class Scanner:
                 current_regime,
             )
             self._suppression_counters[f"regime:{current_regime}:{chan_name}"] += 1
-            self.suppression_tracker.record(SuppressionEvent(
-                symbol=symbol,
+            log_suppressed_signal(
+                pair=symbol,
                 channel=chan_name,
                 reason=REASON_QUIET_REGIME,
                 regime=current_regime,
-            ))
+                tracker=self.suppression_tracker,
+            )
             return True
+
+        # High-probability pair filter (PR01): compute pair probability score
+        # and suppress signals below the configured threshold.
+        # Gate is disabled when _PROBABILITY_GATE_THRESHOLD == 0 (default).
+        if _PROBABILITY_GATE_THRESHOLD > 0:
+            _atr_val = ctx.indicators.get("5m", ctx.indicators.get("1m", {})).get("atr_last", 0.0) or 0.0
+            _close = 0.0
+            _cd = ctx.candles.get("5m", ctx.candles.get("1m"))
+            if _cd is not None and _cd.get("close"):
+                try:
+                    _close = float(_cd["close"][-1])
+                except (IndexError, TypeError, ValueError):
+                    _close = 0.0
+            _atr_pct = (_atr_val / _close * 100.0) if _close > 0 else 0.5
+            _pair_info = self.pair_mgr.pairs.get(symbol)
+            try:
+                _vol_usd = float(_pair_info.volume_24h_usd) if _pair_info else 0.0
+            except (TypeError, ValueError):
+                _vol_usd = 0.0
+            _prob_data = {
+                "regime": current_regime,
+                "spread_pct": ctx.spread_pct,
+                "volume_24h_usd": _vol_usd,
+                "atr_pct": _atr_pct,
+                "hit_rate": 0.55,  # Default; feedback_loop could enrich this
+            }
+            _prob_score = get_pair_probability(_prob_data)
+            if _prob_score < _PROBABILITY_GATE_THRESHOLD:
+                log.debug(
+                    "Probability filter suppressed %s %s (score=%.1f < %.1f)",
+                    symbol, chan_name, _prob_score, _PROBABILITY_GATE_THRESHOLD,
+                )
+                self._suppression_counters[f"probability_filter:{chan_name}"] += 1
+                log_suppressed_signal(
+                    pair=symbol,
+                    channel=chan_name,
+                    reason=REASON_CONFIDENCE,
+                    probability_score=_prob_score,
+                    regime=current_regime,
+                    tracker=self.suppression_tracker,
+                )
+                return True
+
         return False
 
     def _evaluate_setup(
