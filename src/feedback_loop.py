@@ -337,3 +337,178 @@ class FeedbackLoop:
             exec_penalty_channels,
             market_boost_channels,
         )
+
+    # ------------------------------------------------------------------
+    # Enhanced feedback methods (PR: Feedback Loop Integration)
+    # ------------------------------------------------------------------
+
+    def reward_signal(
+        self,
+        symbol: str,
+        channel: str,
+        setup_class: str,
+        r_multiple: float = 1.5,
+        outcome: str = "TP1",
+    ) -> None:
+        """Shortcut to record a winning trade outcome.
+
+        Parameters
+        ----------
+        symbol:
+            Trading pair.
+        channel:
+            Channel name.
+        setup_class:
+            Setup class string.
+        r_multiple:
+            Realised R-multiple (positive).
+        outcome:
+            Win outcome label (default ``"TP1"``).
+        """
+        self.record_outcome(TradeOutcome(
+            symbol=symbol,
+            channel=channel,
+            direction="LONG",
+            setup_class=setup_class,
+            market_state="TRENDING",
+            component_scores={},
+            confidence=70.0,
+            r_multiple=abs(r_multiple),
+            outcome=outcome,
+            hold_duration_seconds=0.0,
+        ))
+
+    def punish_signal(
+        self,
+        symbol: str,
+        channel: str,
+        setup_class: str,
+        r_multiple: float = -1.0,
+        outcome: str = "SL",
+    ) -> None:
+        """Shortcut to record a losing trade outcome.
+
+        Parameters
+        ----------
+        symbol:
+            Trading pair.
+        channel:
+            Channel name.
+        setup_class:
+            Setup class string.
+        r_multiple:
+            Realised R-multiple (negative).
+        outcome:
+            Loss outcome label (default ``"SL"``).
+        """
+        self.record_outcome(TradeOutcome(
+            symbol=symbol,
+            channel=channel,
+            direction="LONG",
+            setup_class=setup_class,
+            market_state="TRENDING",
+            component_scores={},
+            confidence=70.0,
+            r_multiple=-abs(r_multiple),
+            outcome=outcome,
+            hold_duration_seconds=0.0,
+        ))
+
+    def get_feedback_metrics(self) -> Dict[str, object]:
+        """Return aggregated feedback metrics for analytics.
+
+        Returns
+        -------
+        Dict
+            Contains overall win rate, per-channel stats, and per-setup
+            stats for dashboard and analytics integration.
+        """
+        total = len(self._outcomes)
+        if total == 0:
+            return {
+                "total_outcomes": 0,
+                "overall_win_rate": 0.0,
+                "avg_r_multiple": 0.0,
+                "per_channel": {},
+                "per_setup": {},
+            }
+
+        wins = sum(1 for o in self._outcomes if o.outcome in _WIN_OUTCOMES)
+        avg_r = sum(o.r_multiple for o in self._outcomes) / total
+
+        # Per-channel metrics
+        per_channel: Dict[str, Dict[str, float]] = {}
+        channel_groups: Dict[str, list[TradeOutcome]] = {}
+        for o in self._outcomes:
+            channel_groups.setdefault(o.channel, []).append(o)
+        for ch, records in channel_groups.items():
+            ch_wins = sum(1 for r in records if r.outcome in _WIN_OUTCOMES)
+            ch_total = len(records)
+            per_channel[ch] = {
+                "total": ch_total,
+                "win_rate": ch_wins / ch_total if ch_total > 0 else 0.0,
+                "avg_r_multiple": sum(r.r_multiple for r in records) / ch_total,
+            }
+
+        # Per-setup metrics
+        per_setup: Dict[str, Dict[str, float]] = {}
+        setup_groups: Dict[str, list[TradeOutcome]] = {}
+        for o in self._outcomes:
+            setup_groups.setdefault(o.setup_class, []).append(o)
+        for setup, records in setup_groups.items():
+            s_wins = sum(1 for r in records if r.outcome in _WIN_OUTCOMES)
+            s_total = len(records)
+            per_setup[setup] = {
+                "total": s_total,
+                "win_rate": s_wins / s_total if s_total > 0 else 0.0,
+                "avg_r_multiple": sum(r.r_multiple for r in records) / s_total,
+            }
+
+        return {
+            "total_outcomes": total,
+            "overall_win_rate": wins / total if total > 0 else 0.0,
+            "avg_r_multiple": avg_r,
+            "per_channel": per_channel,
+            "per_setup": per_setup,
+        }
+
+    def get_retraining_data(self) -> list[Dict]:
+        """Export outcome data for offline retraining.
+
+        Returns
+        -------
+        list[Dict]
+            List of dicts with outcome features suitable for ML training.
+        """
+        data = []
+        for o in self._outcomes:
+            data.append({
+                "symbol": o.symbol,
+                "channel": o.channel,
+                "direction": o.direction,
+                "setup_class": o.setup_class,
+                "market_state": o.market_state,
+                "confidence": o.confidence,
+                "r_multiple": o.r_multiple,
+                "outcome": o.outcome,
+                "hold_duration_seconds": o.hold_duration_seconds,
+                "is_win": o.outcome in _WIN_OUTCOMES,
+                **{f"score_{k}": v for k, v in o.component_scores.items()},
+            })
+        return data
+
+    def should_retrain(self, min_new_outcomes: int = 50) -> bool:
+        """Check whether enough new data has accumulated for retraining.
+
+        Parameters
+        ----------
+        min_new_outcomes:
+            Minimum number of outcomes required to trigger a retrain.
+
+        Returns
+        -------
+        bool
+            ``True`` when the outcome history has at least
+            ``min_new_outcomes`` records.
+        """
+        return len(self._outcomes) >= min_new_outcomes

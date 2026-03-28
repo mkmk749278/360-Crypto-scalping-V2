@@ -126,6 +126,10 @@ class ConfidenceResult:
     capped: bool = False
     blocked: bool = False
     reason: str = ""
+    suppressed: bool = False
+    suppressed_reason: str = ""
+    regime: str = ""
+    adaptive_threshold: float = 65.0
 
 
 def score_smc(
@@ -644,3 +648,129 @@ def compute_confidence(
         blocked=blocked,
         reason=reason,
     )
+
+
+# ---------------------------------------------------------------------------
+# Adaptive threshold computation (PR: Signal Confidence Scoring)
+# ---------------------------------------------------------------------------
+
+# Regime-based threshold offsets — applied to the base minimum confidence.
+_REGIME_THRESHOLD_OFFSETS: Dict[str, float] = {
+    "TRENDING": -3.0,     # Lower bar in strong trends
+    "RANGING": +5.0,      # Higher bar in range-bound markets
+    "VOLATILE": +8.0,     # Much higher bar during extreme volatility
+    "QUIET": 0.0,         # Neutral
+}
+
+
+def compute_adaptive_threshold(
+    base_threshold: float = 65.0,
+    regime: str = "",
+    volatility_percentile: float = 0.5,
+    channel: Optional[str] = None,
+) -> float:
+    """Compute an adaptive minimum confidence threshold.
+
+    The threshold adjusts based on:
+
+    * **Market regime** — trends lower the bar (more signal opportunities),
+      ranging / volatile markets raise it (fewer but higher quality).
+    * **Volatility percentile** — extremely high volatility (>90th pctile)
+      adds an extra buffer.
+
+    Parameters
+    ----------
+    base_threshold:
+        Starting threshold value.
+    regime:
+        Market regime string (``"TRENDING"``, ``"RANGING"``, ``"VOLATILE"``,
+        ``"QUIET"``, or ``""``).
+    volatility_percentile:
+        Current volatility relative to historical distribution (0–1).
+    channel:
+        Optional channel name.  GEM channel gets a lower base threshold.
+
+    Returns
+    -------
+    float
+        Adaptive threshold clamped to ``[50, 90]``.
+    """
+    threshold = base_threshold
+
+    # Channel-specific base
+    if channel == "360_GEM":
+        threshold -= 5.0
+    elif channel and channel.startswith("360_SCALP"):
+        threshold += 2.0
+
+    # Regime adjustment
+    threshold += _REGIME_THRESHOLD_OFFSETS.get(regime, 0.0)
+
+    # Extreme volatility buffer
+    if volatility_percentile > 0.9:
+        threshold += (volatility_percentile - 0.9) * 30.0  # up to +3 at 100th pctile
+
+    return max(50.0, min(90.0, threshold))
+
+
+def compute_per_signal_confidence(
+    inp: ConfidenceInput,
+    session_now: Optional[datetime] = None,
+    channel: Optional[str] = None,
+    signal_id: Optional[str] = None,
+    regime: str = "",
+    volatility_percentile: float = 0.5,
+    cluster_suppressed: bool = False,
+    cluster_reason: str = "",
+) -> ConfidenceResult:
+    """Compute confidence with per-signal metadata and adaptive thresholds.
+
+    This extends :func:`compute_confidence` by adding:
+
+    * Adaptive threshold computation based on regime and volatility.
+    * Cluster suppression status.
+    * Regime context in the result.
+
+    Parameters
+    ----------
+    inp:
+        All sub-score inputs.
+    session_now:
+        Optional UTC datetime for session multiplier.
+    channel:
+        Optional channel name.
+    signal_id:
+        Optional signal identifier for logging.
+    regime:
+        Current market regime string.
+    volatility_percentile:
+        Current volatility percentile (0–1).
+    cluster_suppressed:
+        Whether the signal was suppressed by cluster detection.
+    cluster_reason:
+        Reason string from the cluster suppressor.
+
+    Returns
+    -------
+    ConfidenceResult
+        Result with adaptive threshold, suppression status, and regime.
+    """
+    result = compute_confidence(inp, session_now, channel, signal_id)
+
+    # Compute adaptive threshold
+    threshold = compute_adaptive_threshold(
+        base_threshold=65.0,
+        regime=regime,
+        volatility_percentile=volatility_percentile,
+        channel=channel,
+    )
+    result.adaptive_threshold = threshold
+    result.regime = regime
+
+    # Apply cluster suppression
+    if cluster_suppressed:
+        result.suppressed = True
+        result.suppressed_reason = cluster_reason
+
+    return result
+

@@ -92,6 +92,72 @@ class WalkForwardReport:
 
 
 @dataclass
+class MonteCarloReport:
+    """Monte Carlo simulation results."""
+
+    n_simulations: int
+    avg_total_pnl: float
+    median_total_pnl: float
+    pnl_5th_percentile: float
+    pnl_95th_percentile: float
+    avg_max_drawdown: float
+    worst_drawdown: float
+    avg_win_rate: float
+    ruin_probability: float  # % of simulations with total PnL < 0
+
+    def summary(self) -> str:
+        return (
+            f"Monte Carlo ({self.n_simulations} sims) | "
+            f"Avg PnL: {self.avg_total_pnl:+.2f}% | "
+            f"Median: {self.median_total_pnl:+.2f}% | "
+            f"5th–95th: [{self.pnl_5th_percentile:+.2f}%, {self.pnl_95th_percentile:+.2f}%] | "
+            f"Avg DD: {self.avg_max_drawdown:.2f}% | "
+            f"Worst DD: {self.worst_drawdown:.2f}% | "
+            f"Ruin: {self.ruin_probability:.1%}"
+        )
+
+
+@dataclass
+class RegimeStressReport:
+    """Regime-based stress test results."""
+
+    regime_results: Dict[str, Dict] = field(default_factory=dict)
+
+    def summary(self) -> str:
+        lines = ["Regime Stress Test:"]
+        for regime, stats in self.regime_results.items():
+            lines.append(
+                f"  {regime}: signals={stats.get('total_signals', 0)} "
+                f"WR={stats.get('win_rate', 0):.1f}% "
+                f"PnL={stats.get('total_pnl_pct', 0):+.2f}%"
+            )
+        return "\n".join(lines)
+
+
+@dataclass
+class AnalyticsReport:
+    """Detailed analytics report combining multiple analysis types."""
+
+    backtest_results: List = field(default_factory=list)
+    monte_carlo: Optional['MonteCarloReport'] = None
+    regime_stress: Optional['RegimeStressReport'] = None
+    walk_forward: Optional['WalkForwardReport'] = None
+    per_pair_results: Dict = field(default_factory=dict)
+
+    def summary(self) -> str:
+        lines = ["═══ Analytics Report ═══"]
+        for r in self.backtest_results:
+            lines.append(r.summary())
+        if self.monte_carlo:
+            lines.append(self.monte_carlo.summary())
+        if self.regime_stress:
+            lines.append(self.regime_stress.summary())
+        if self.walk_forward:
+            lines.append(self.walk_forward.summary())
+        return "\n".join(lines)
+
+
+@dataclass
 class BacktestResult:
     """Summary metrics for a single backtest run."""
 
@@ -633,6 +699,172 @@ class Backtester:
             avg_in_sample_winrate=avg_in,
             avg_out_sample_winrate=avg_out,
             overfit_score=overfit,
+        )
+
+    def run_monte_carlo(
+        self,
+        historical_data: Dict,
+        n_simulations: int = 100,
+        config: Optional[BacktestConfig] = None,
+        seed: int = 42,
+    ) -> MonteCarloReport:
+        """Run Monte Carlo simulations by resampling trade outcomes.
+
+        Performs a single backtest to collect trade PnL outcomes, then
+        randomly resamples (with replacement) the PnL sequence *n_simulations*
+        times to estimate the distribution of portfolio outcomes.
+
+        Parameters
+        ----------
+        historical_data:
+            Flat OHLCV dict.
+        n_simulations:
+            Number of Monte Carlo iterations.
+        config:
+            Optional :class:`BacktestConfig` for channel/parameter selection.
+        seed:
+            RNG seed for reproducibility.
+
+        Returns
+        -------
+        :class:`MonteCarloReport`
+        """
+        base_result = self._run_with_flat_data(historical_data, config=config, tag_regimes=True)
+        pnl_list = [d["pnl_pct"] for d in base_result.signal_details]
+
+        if not pnl_list:
+            return MonteCarloReport(
+                n_simulations=n_simulations,
+                avg_total_pnl=0.0,
+                median_total_pnl=0.0,
+                pnl_5th_percentile=0.0,
+                pnl_95th_percentile=0.0,
+                avg_max_drawdown=0.0,
+                worst_drawdown=0.0,
+                avg_win_rate=0.0,
+                ruin_probability=0.0,
+            )
+
+        rng = np.random.default_rng(seed)
+        total_pnls = []
+        max_drawdowns = []
+        win_rates = []
+
+        for _ in range(n_simulations):
+            sampled = rng.choice(pnl_list, size=len(pnl_list), replace=True)
+            total_pnls.append(float(np.sum(sampled)))
+            wins = sum(1 for p in sampled if p > 0)
+            win_rates.append(wins / len(sampled) if len(sampled) > 0 else 0.0)
+
+            # Max drawdown for this simulation
+            cum = 0.0
+            peak = 0.0
+            dd = 0.0
+            for p in sampled:
+                cum += p
+                if cum > peak:
+                    peak = cum
+                drop = peak - cum
+                if drop > dd:
+                    dd = drop
+            max_drawdowns.append(dd)
+
+        total_arr = np.array(total_pnls)
+        ruin_count = sum(1 for p in total_pnls if p < 0)
+
+        return MonteCarloReport(
+            n_simulations=n_simulations,
+            avg_total_pnl=float(np.mean(total_arr)),
+            median_total_pnl=float(np.median(total_arr)),
+            pnl_5th_percentile=float(np.percentile(total_arr, 5)),
+            pnl_95th_percentile=float(np.percentile(total_arr, 95)),
+            avg_max_drawdown=float(np.mean(max_drawdowns)),
+            worst_drawdown=float(max(max_drawdowns)) if max_drawdowns else 0.0,
+            avg_win_rate=float(np.mean(win_rates)),
+            ruin_probability=ruin_count / n_simulations,
+        )
+
+    def run_regime_stress_test(
+        self,
+        historical_data: Dict,
+        config: Optional[BacktestConfig] = None,
+    ) -> RegimeStressReport:
+        """Run regime-based stress test.
+
+        Backtests the historical data with regime tagging, then groups
+        signal outcomes by their regime at entry.
+
+        Parameters
+        ----------
+        historical_data:
+            Flat OHLCV dict.
+        config:
+            Optional :class:`BacktestConfig`.
+
+        Returns
+        -------
+        :class:`RegimeStressReport`
+        """
+        result = self._run_with_flat_data(historical_data, config=config, tag_regimes=True)
+
+        regime_groups: Dict[str, List[Dict]] = {}
+        for detail in result.signal_details:
+            regime = detail.get("regime", "UNKNOWN") or "UNKNOWN"
+            regime_groups.setdefault(regime, []).append(detail)
+
+        regime_results: Dict[str, Dict] = {}
+        for regime, details in regime_groups.items():
+            total = len(details)
+            wins = sum(1 for d in details if d.get("won", False))
+            total_pnl = sum(d.get("pnl_pct", 0.0) for d in details)
+            regime_results[regime] = {
+                "total_signals": total,
+                "wins": wins,
+                "losses": total - wins,
+                "win_rate": wins / total * 100.0 if total > 0 else 0.0,
+                "total_pnl_pct": total_pnl,
+                "avg_pnl_pct": total_pnl / total if total > 0 else 0.0,
+            }
+
+        return RegimeStressReport(regime_results=regime_results)
+
+    def generate_analytics_report(
+        self,
+        historical_data: Dict,
+        config: Optional[BacktestConfig] = None,
+        monte_carlo_sims: int = 100,
+        walk_forward_folds: int = 3,
+    ) -> AnalyticsReport:
+        """Generate a comprehensive analytics report.
+
+        Combines backtest, Monte Carlo, regime stress test, and
+        walk-forward validation into a single report.
+
+        Parameters
+        ----------
+        historical_data:
+            Flat OHLCV dict.
+        config:
+            Optional :class:`BacktestConfig`.
+        monte_carlo_sims:
+            Number of Monte Carlo simulations.
+        walk_forward_folds:
+            Number of walk-forward folds.
+
+        Returns
+        -------
+        :class:`AnalyticsReport`
+        """
+        bt_results = [self._run_with_flat_data(historical_data, config=config, tag_regimes=True)]
+        mc_report = self.run_monte_carlo(historical_data, n_simulations=monte_carlo_sims, config=config)
+        regime_report = self.run_regime_stress_test(historical_data, config=config)
+        wf_report = self.walk_forward_validate(historical_data, n_folds=walk_forward_folds, config=config)
+
+        return AnalyticsReport(
+            backtest_results=bt_results,
+            monte_carlo=mc_report,
+            regime_stress=regime_report,
+            walk_forward=wf_report,
         )
 
     def _backtest_channel(

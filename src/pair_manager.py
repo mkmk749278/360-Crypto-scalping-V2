@@ -88,6 +88,9 @@ class PairInfo:
     is_new: bool = True
     candle_counts: Dict[str, int] = field(default_factory=dict)
     tier: PairTier = PairTier.TIER1
+    volatility_24h: float = 0.0       # 24h price change % (absolute)
+    spread_avg: float = 0.0           # Average bid-ask spread %
+    rank_score: float = 0.0           # Composite ranking score
 
 
 class PairManager:
@@ -99,6 +102,8 @@ class PairManager:
         self._futures_client = BinanceClient("futures")
         # Previous 24h volume per symbol — used for Tier 3 volume surge detection.
         self._prev_volumes: Dict[str, float] = {}
+        # Historical pair metrics for analytics.
+        self._pair_metrics_history: Dict[str, List[Dict]] = {}
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -472,6 +477,154 @@ class PairManager:
         while True:
             await self.refresh_pairs()
             await asyncio.sleep(PAIR_FETCH_INTERVAL_HOURS * 3600)
+
+    # ------------------------------------------------------------------
+    # Dynamic pair ranking and scoring
+    # ------------------------------------------------------------------
+
+    def rank_pairs(
+        self,
+        volume_weight: float = 0.5,
+        volatility_weight: float = 0.3,
+        liquidity_weight: float = 0.2,
+    ) -> List[str]:
+        """Rank all active pairs by a composite score of volume, volatility, and liquidity.
+
+        Higher scores indicate pairs that are more suitable for scalping:
+        high volume (tight spreads), moderate volatility (tradeable moves),
+        and good liquidity (execution quality).
+
+        Parameters
+        ----------
+        volume_weight:
+            Weight for the volume component (0–1).
+        volatility_weight:
+            Weight for the volatility component (0–1).
+        liquidity_weight:
+            Weight for the liquidity / spread component (0–1).
+
+        Returns
+        -------
+        List[str]
+            Symbols sorted by rank score (best first).
+        """
+        if not self.pairs:
+            return []
+
+        max_vol = max((p.volume_24h_usd for p in self.pairs.values()), default=1.0)
+        max_vol = max(max_vol, 1.0)
+        max_volatility = max(
+            (p.volatility_24h for p in self.pairs.values()), default=1.0
+        )
+        max_volatility = max(max_volatility, 0.01)
+
+        for info in self.pairs.values():
+            vol_score = info.volume_24h_usd / max_vol
+            # Moderate volatility is best: penalise both extremes
+            if max_volatility > 0:
+                vol_norm = info.volatility_24h / max_volatility
+                volatility_score = 1.0 - abs(vol_norm - 0.5) * 2.0
+            else:
+                volatility_score = 0.5
+            # Lower spread = better liquidity
+            liq_score = max(0.0, 1.0 - info.spread_avg * 100.0) if info.spread_avg > 0 else 0.5
+
+            info.rank_score = (
+                vol_score * volume_weight
+                + volatility_score * volatility_weight
+                + liq_score * liquidity_weight
+            )
+
+        ranked = sorted(self.pairs.keys(), key=lambda s: self.pairs[s].rank_score, reverse=True)
+        return ranked
+
+    def get_top_ranked_pairs(self, n: int = 20) -> List[str]:
+        """Return the top *n* pairs by composite rank score.
+
+        Calls :meth:`rank_pairs` internally to recompute scores.
+        """
+        ranked = self.rank_pairs()
+        return ranked[:n]
+
+    def update_pair_volatility(self, symbol: str, volatility_24h: float) -> None:
+        """Update the 24h volatility for a specific pair.
+
+        Parameters
+        ----------
+        symbol:
+            Trading pair.
+        volatility_24h:
+            Absolute 24h price change percentage.
+        """
+        if symbol in self.pairs:
+            self.pairs[symbol].volatility_24h = volatility_24h
+
+    def update_pair_spread(self, symbol: str, spread_avg: float) -> None:
+        """Update the average spread for a specific pair.
+
+        Parameters
+        ----------
+        symbol:
+            Trading pair.
+        spread_avg:
+            Average bid-ask spread as a decimal (e.g. 0.001 = 0.1%).
+        """
+        if symbol in self.pairs:
+            self.pairs[symbol].spread_avg = spread_avg
+
+    def record_pair_metrics(self, symbol: str) -> None:
+        """Snapshot current metrics for a pair into the history store.
+
+        Used for analytics and historical analysis of pair behaviour.
+        """
+        info = self.pairs.get(symbol)
+        if info is None:
+            return
+        import time as _time
+        snapshot = {
+            "timestamp": _time.time(),
+            "volume_24h_usd": info.volume_24h_usd,
+            "volatility_24h": info.volatility_24h,
+            "spread_avg": info.spread_avg,
+            "tier": info.tier.value,
+            "rank_score": info.rank_score,
+        }
+        self._pair_metrics_history.setdefault(symbol, []).append(snapshot)
+        # Cap history at 500 entries per pair
+        if len(self._pair_metrics_history[symbol]) > 500:
+            self._pair_metrics_history[symbol] = self._pair_metrics_history[symbol][-500:]
+
+    def get_pair_metrics_history(self, symbol: str) -> List[Dict]:
+        """Return the stored metric snapshots for a pair."""
+        return list(self._pair_metrics_history.get(symbol, []))
+
+    def detect_volume_spikes(self, multiplier: float = 3.0) -> List[str]:
+        """Detect pairs with sudden volume spikes.
+
+        A pair is flagged when its current 24h volume exceeds
+        *multiplier* × its previous recorded volume.
+
+        Parameters
+        ----------
+        multiplier:
+            Volume increase factor to trigger a spike detection.
+
+        Returns
+        -------
+        List[str]
+            Symbols with detected volume spikes.
+        """
+        spiked: List[str] = []
+        for sym, info in self.pairs.items():
+            prev = self._prev_volumes.get(sym, 0.0)
+            if prev > 0 and info.volume_24h_usd >= prev * multiplier:
+                spiked.append(sym)
+                log.info(
+                    "Volume spike detected: %s ($%,.0f → $%,.0f, ×%.1f)",
+                    sym, prev, info.volume_24h_usd,
+                    info.volume_24h_usd / prev,
+                )
+        return spiked
 
     async def close(self) -> None:
         await self._spot_client.close()
