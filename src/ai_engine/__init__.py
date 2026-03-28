@@ -1,12 +1,17 @@
 """AI & Predictive modules – sentiment, whale detection, optional LSTM/Transformer.
 
-This module provides *async* helpers that can be wired into the confidence
+This package provides *async* helpers that can be wired into the confidence
 scorer. All external API calls are optional and degrade gracefully.
 
 Real API integrations:
 - CryptoPanic (https://cryptopanic.com/api/v1/) — news sentiment (free tier)
 - LunarCrush (https://lunarcrush.com/api4/) — social sentiment (free tier)
 - Alternative.me Fear & Greed Index (https://api.alternative.me/fng/) — free, no key
+
+Sub-modules:
+- ``predictor`` — async multi-factor signal prediction pipeline
+- ``scorer`` — per-pair dynamic AI confidence scoring
+- ``feedback`` — AI prediction tracking and feedback integration
 """
 
 from __future__ import annotations
@@ -406,3 +411,33 @@ async def get_ai_insight(
         sources=news.sources + social.sources,
         fear_greed_value=int(fg_value),
     )
+
+
+# ---------------------------------------------------------------------------
+# Sub-module re-exports for convenience
+# ---------------------------------------------------------------------------
+
+from src.ai_engine.predictor import PredictionFeatures, SignalPrediction, SignalPredictor
+from src.ai_engine.scorer import AIConfidenceScorer, AIScoreResult
+from src.ai_engine.feedback import AIFeedbackAdapter, PredictionRecord
+
+__all__ = [
+    # Original exports
+    "SentimentResult",
+    "WhaleAlert",
+    "close_shared_session",
+    "detect_volume_delta_spike",
+    "detect_whale_trade",
+    "fetch_fear_greed_index",
+    "fetch_news_sentiment",
+    "fetch_social_sentiment",
+    "get_ai_insight",
+    # New sub-module exports
+    "AIConfidenceScorer",
+    "AIFeedbackAdapter",
+    "AIScoreResult",
+    "PredictionFeatures",
+    "PredictionRecord",
+    "SignalPrediction",
+    "SignalPredictor",
+]
