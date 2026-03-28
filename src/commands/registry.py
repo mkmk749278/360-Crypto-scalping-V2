@@ -38,7 +38,7 @@ class CommandEntry:
     admin: bool
     aliases: List[str]
     help_text: str
-    group: str  # "signals", "portfolio", "engine", "channels", "deploy", "backtest"
+    group: str  # "signals", "engine", "channels", "deploy", "backtest"
 
 
 @dataclass
@@ -63,7 +63,6 @@ class CommandContext:
     performance_tracker: Optional[Any] = None
     circuit_breaker: Optional[Any] = None
     gem_scanner: Optional[Any] = None
-    paper_portfolio: Optional[Any] = None
     ws_spot: Optional[Any] = None
     ws_futures: Optional[Any] = None
     restart_callback: Optional[Callable] = None
@@ -73,7 +72,6 @@ class CommandContext:
     trade_observer: Optional[Any] = None
     alert_subscribers: Set[str] = field(default_factory=set)
     stat_filter: Optional[Any] = None
-    portfolio_guard: Optional[Any] = None
     # Backtest config (mutable, shared via context)
     bt_fee_pct: float = 0.08
     bt_slippage_pct: float = 0.02
@@ -150,7 +148,6 @@ class CommandRegistry:
 
         _GROUP_LABELS = {
             "signals": "📡 Signals",
-            "portfolio": "💼 Portfolio",
             "engine": "🔧 Engine (Admin)",
             "channels": "📢 Channels (Admin)",
             "deploy": "🚀 Deploy (Admin)",
@@ -159,7 +156,7 @@ class CommandRegistry:
         }
 
         lines = ["*Available Commands:*\n"]
-        for group_key in ["general", "signals", "portfolio", "engine", "channels", "deploy", "backtest"]:
+        for group_key in ["general", "signals", "engine", "channels", "deploy", "backtest"]:
             entries = groups.get(group_key, [])
             if not entries:
                 continue

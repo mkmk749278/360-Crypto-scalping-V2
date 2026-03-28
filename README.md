@@ -39,8 +39,8 @@ Binance WS ──► WebSocketManager (multi-conn, heartbeat, auto-reconnect)
            (TP/SL · Trailing · Updates)
                        │
            ┌───────────┼───────────────┐
-     PaperPortfolio  PerformanceTracker  CircuitBreaker
-     (virtual PnL)   (real stats)       (auto-pause)
+     PerformanceTracker          CircuitBreaker
+     (real stats)                (auto-pause)
                        │
                  SelectModeFilter
            (premium 360_SELECT channel)
@@ -60,7 +60,6 @@ Binance WS ──► WebSocketManager (multi-conn, heartbeat, auto-reconnect)
 | **Free/Premium** | `src/signal_router.py` | Top 1–2 daily signals to free channel |
 | **Telemetry** | `src/telemetry.py` | CPU, memory, WS health, scan latency, API usage |
 | **Admin Commands** | `src/commands.py` | Full suite of admin and user Telegram commands |
-| **Paper Trading** | `src/paper_portfolio.py` | Per-user, per-channel virtual portfolios with PnL tracking, leverage (1-20×), risk controls, leaderboard, and liquidation simulation. Storage: `data/paper_portfolios.json`. See [Paper Trading](#paper-trading) for full details. |
 | **Performance Tracker** | `src/performance_tracker.py` | Tracks real signal outcomes per channel — win rates, TP hit rates, signal quality scoring. Provides `/stats`, `/signal_stats`, `/tp_stats` commands. |
 | **Backtester** | `src/backtester.py` | Full backtesting engine that runs channel strategies against historical candle data. Configurable fee, slippage, lookahead candles, min window. Supports single-symbol and multi-symbol aggregate backtests. |
 | **Circuit Breaker** | `src/circuit_breaker.py` | Auto-pauses signal generation after consecutive losses (rolling window). Prevents compounding drawdowns. Admin can check status and manually reset. |
@@ -72,7 +71,7 @@ Binance WS ──► WebSocketManager (multi-conn, heartbeat, auto-reconnect)
 | **Market Regime Detection** | `src/regime.py` | Classifies current market regime (trending, ranging, volatile) to adapt strategy behavior. |
 | **Cross-Pair Correlation** | `src/correlation.py` | Analyzes correlation between pairs to avoid overexposure and improve diversification. |
 | **DCA Engine** | `src/dca.py` | Dollar-cost averaging module for SPOT and SWING channel DCA entries. |
-| **Performance Metrics** | `src/performance_metrics.py` | Sharpe ratio, Sortino ratio, and other quantitative portfolio metrics. |
+| **Performance Metrics** | `src/performance_metrics.py` | Sharpe ratio, Sortino ratio, and other quantitative metrics. |
 | **Exchange Abstraction** | `src/exchange.py` | Unified exchange interface abstracting Binance-specific API calls. |
 | **Redis Caching** | `src/redis_client.py` | Optional Redis-backed caching layer for signal state and AI results. |
 | **State Cache** | `src/state_cache.py` | In-memory state caching for scanner loop efficiency. |
@@ -103,29 +102,6 @@ Binance WS ──► WebSocketManager (multi-conn, heartbeat, auto-reconnect)
 - **Filters**: ATH drawdown analysis, accumulation base detection, volume surge
 - **Risk**: SL 10–30%, TP1 2R, TP2 5R, TP3 10R, Trailing 3×ATR
 - **Target**: Previous ATH region — potential x10+ returns
-
-## Paper Trading
-
-The paper trading module gives every Telegram user a **virtual $1,000 USDT portfolio per channel**, letting them track signal performance without real funds.
-
-- **Starting balance**: $1,000 USDT per channel
-- **Fees**: 0.1% per side (open and close)
-- **Leverage**: 1–20× configurable per channel (`/set_leverage`)
-- **Risk per trade**: 0.5–10% of balance (`/set_risk`)
-- **Partial TP scaling**: 30% at TP1, 30% at TP2, 40% at TP3
-- **Tracked metrics**: PnL, win/loss/breakeven counts, peak balance, max drawdown, win streak, loss streak
-- **Liquidation simulation**: position wiped if loss exceeds margin
-- **Global leaderboard**: ranked by total PnL or ROI (`/leaderboard`)
-- **Storage**: `data/paper_portfolios.json`
-
-| Command | Description |
-|---|---|
-| `/portfolio [channel]` | View portfolio summary or per-channel detail |
-| `/reset_portfolio [channel]` | Reset one or all channel portfolios |
-| `/set_leverage <channel> <1-20>` | Set leverage |
-| `/set_risk <channel> <0.5-10>` | Set risk % per trade |
-| `/trade_history [channel]` | View recent paper trades |
-| `/leaderboard [pnl/roi]` | Global leaderboard |
 
 ## Telegram Commands Reference
 
@@ -174,12 +150,6 @@ The paper trading module gives every Telegram user a **virtual $1,000 USDT portf
 | `/signal_history` | Show last 10 completed signals |
 | `/signal_stats [channel]` | Show signal quality stats per channel |
 | `/tp_stats [channel]` | Show TP hit rates per channel |
-| `/portfolio [channel]` | Show paper portfolio summary or channel detail |
-| `/reset_portfolio [channel]` | Reset paper portfolio (all channels or one) |
-| `/set_leverage <channel> <1-20>` | Set paper trading leverage |
-| `/set_risk <channel> <0.5-10>` | Set risk per trade percentage |
-| `/trade_history [channel]` | Show recent paper trades |
-| `/leaderboard [pnl/roi]` | Show global paper trading leaderboard |
 
 ## AI Sentiment APIs
 
@@ -302,7 +272,6 @@ src/
   binance.py           # Binance REST/WS API client
   logger.py            # Centralised logging configuration
   utils.py             # Logging, formatting helpers
-  paper_portfolio.py   # Per-user virtual portfolio & leaderboard
   performance_tracker.py # Real signal outcome tracking per channel
   performance_metrics.py # Sharpe/Sortino ratio and quantitative metrics
   backtester.py        # Historical backtest engine

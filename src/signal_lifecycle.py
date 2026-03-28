@@ -613,10 +613,10 @@ class SignalLifecycleMonitor:
         signal: Signal,
         candles: Optional[Any],
     ) -> None:
-        """Generate and post a portfolio chart image for *signal* (feature 4).
+        """Generate and post a chart image for *signal*.
 
-        Uses :func:`~src.chart_generator.generate_portfolio_chart` to produce
-        a PNG with entry/SL/TP overlays, then sends it via the ``_send_photo``
+        Uses :func:`~src.chart_generator.generate_gem_chart` to produce
+        a PNG with overlays, then sends it via the ``_send_photo``
         callback.  Silently skips when candle data is insufficient or chart
         generation fails.
         """
@@ -631,7 +631,7 @@ class SignalLifecycleMonitor:
             return
 
         try:
-            from src.chart_generator import generate_portfolio_chart  # local import to avoid circular
+            from src.chart_generator import generate_gem_chart  # local import to avoid circular
 
             closes = [float(v) for v in candles.get("close", [])]
             highs = [float(v) for v in candles.get("high", [])]
@@ -640,17 +640,23 @@ class SignalLifecycleMonitor:
 
             tp_levels = [t for t in [signal.tp1, signal.tp2, signal.tp3] if t]
 
-            chart_bytes = generate_portfolio_chart(
-                symbol=signal.symbol,
-                closes=closes,
-                highs=highs,
-                lows=lows,
-                volumes=volumes,
-                entry=signal.entry,
-                sl=signal.stop_loss,
-                tp_levels=tp_levels,
-                channel_name=signal.channel,
-            )
+            # Use generate_gem_chart for GEM signals, skip chart for others
+            if signal.channel == "360_GEM":
+                ema_20 = []  # EMA data not in candles dict; chart renders without EMA overlay
+                ema_50 = []
+                current_price = closes[-1] if closes else signal.entry
+                ath = max(highs) if highs else current_price
+                chart_bytes = generate_gem_chart(
+                    symbol=signal.symbol,
+                    daily_candles=candles,
+                    ath=ath,
+                    current_price=current_price,
+                    ema_20=ema_20,
+                    ema_50=ema_50,
+                )
+            else:
+                return  # No chart generation for non-GEM channels
+
             if chart_bytes:
                 await self._send_photo(chat_id, chart_bytes)
                 log.debug(

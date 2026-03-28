@@ -11,7 +11,6 @@ Internally every command is a thin async function decorated with
 ``@registry.command(...)`` and stored in one of the sub-modules:
 
 - ``signals``   — /signals, /history, /info, ...
-- ``portfolio`` — /portfolio, /trades, /leaderboard, /leverage, /risk
 - ``engine``    — /status, /dashboard, /scan, /pairs, /logs
 - ``channels``  — /pause, /resume, /confidence, /breaker, /stats, /gem
 - ``deploy``    — /deploy, /restart, /rollback
@@ -32,7 +31,6 @@ from src.commands import backtest as _bt_mod
 from src.commands import channels as _ch_mod
 from src.commands import deploy as _deploy_mod
 from src.commands import engine as _engine_mod
-from src.commands import portfolio as _portfolio_mod
 from src.commands import signals as _signals_mod
 
 log = get_logger("commands")
@@ -61,18 +59,14 @@ _WELCOME_MESSAGE: str = (
     "✅ Real-time AI-scored signals with entry, SL, TP1–TP3\n"
     "✅ Live trade updates & trailing stop adjustments\n"
     "✅ AI sentiment analysis (news + social + whale)\n"
-    "✅ Paper trading portfolio to track performance\n"
     "✅ Confidence-based risk management\n\n"
     "━━━━━━━━━━━━━━━━━━━━\n\n"
     "🤖 *Bot Commands*\n"
-    "/portfolio — View your paper trading portfolio\n"
     "/history — Recent trade history\n"
-    "/leaderboard — Top performers\n"
     "/signals — View active signals\n"
     "/help — Show this message\n\n"
     "━━━━━━━━━━━━━━━━━━━━\n\n"
-    "💎 *Start trading smarter, not harder.*\n"
-    "Type /portfolio to begin your paper trading journey!"
+    "💎 *Start trading smarter, not harder.*"
 )
 
 
@@ -81,7 +75,6 @@ def _build_global_registry() -> CommandRegistry:
     global_registry = CommandRegistry()
     for sub_registry in (
         _signals_mod.registry,
-        _portfolio_mod.registry,
         _engine_mod.registry,
         _ch_mod.registry,
         _deploy_mod.registry,
@@ -127,10 +120,8 @@ class CommandHandler:
         performance_tracker: Optional[Any] = None,
         circuit_breaker: Optional[Any] = None,
         gem_scanner: Optional[Any] = None,
-        paper_portfolio: Optional[Any] = None,
         trade_observer: Optional[Any] = None,
         stat_filter: Optional[Any] = None,
-        portfolio_guard: Optional[Any] = None,
     ) -> None:
         self._telegram = telegram
         self._telemetry = telemetry
@@ -154,10 +145,8 @@ class CommandHandler:
         self._performance_tracker = performance_tracker
         self._circuit_breaker = circuit_breaker
         self._gem_scanner = gem_scanner
-        self._paper_portfolio = paper_portfolio
         self._trade_observer = trade_observer
         self._stat_filter = stat_filter
-        self._portfolio_guard = portfolio_guard
         # Mutable backtest config shared via CommandContext
         self._bt_fee_pct: float = 0.08
         self._bt_slippage_pct: float = 0.02
@@ -207,11 +196,6 @@ class CommandHandler:
 
         # /start and /help are handled here (not in registry) for simplicity
         if cmd in ("/start", "/help"):
-            if self._paper_portfolio is not None:
-                try:
-                    self._paper_portfolio.ensure_user(chat_id)
-                except Exception as exc:
-                    log.debug("Failed to register user %s for paper portfolio: %s", chat_id, exc)
             await self._telegram.send_message(chat_id, _WELCOME_MESSAGE)
             return
 
@@ -252,7 +236,6 @@ class CommandHandler:
             performance_tracker=self._performance_tracker,
             circuit_breaker=self._circuit_breaker,
             gem_scanner=self._gem_scanner,
-            paper_portfolio=self._paper_portfolio,
             ws_spot=self.ws_spot,
             ws_futures=self.ws_futures,
             restart_callback=self._restart_callback,
@@ -262,7 +245,6 @@ class CommandHandler:
             trade_observer=self._trade_observer,
             alert_subscribers=self._alert_subscribers,
             stat_filter=self._stat_filter,
-            portfolio_guard=self._portfolio_guard,
             bt_fee_pct=self._bt_fee_pct,
             bt_slippage_pct=self._bt_slippage_pct,
             bt_lookahead=self._bt_lookahead,

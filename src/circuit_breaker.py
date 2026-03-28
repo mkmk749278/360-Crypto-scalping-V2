@@ -86,12 +86,6 @@ class CircuitBreaker:
         self._per_symbol_consecutive_sl: Dict[str, int] = {}
         self._per_symbol_tripped_until: Dict[str, float] = {}
 
-        # Optional portfolio-level guard — set externally after construction.
-        # When set, realized P&L from each outcome is forwarded to the guard.
-        self.portfolio_guard: Optional[Any] = None
-        # Optional channel name used when forwarding P&L to the portfolio guard.
-        # Set externally if this CircuitBreaker is scoped to a specific channel.
-        self._channel_name: str = "unknown"
 
     # ------------------------------------------------------------------
     # Public API
@@ -159,19 +153,6 @@ class CircuitBreaker:
 
         self._refresh_state()
         self._evaluate()
-
-        # Forward realized P&L to the portfolio-level guard (if wired up).
-        if self.portfolio_guard is not None:
-            try:
-                self.portfolio_guard.record_pnl(
-                    signal_id=signal_id,
-                    channel=self._channel_name,
-                    symbol=symbol or "unknown",
-                    pnl_pct=normalized_pnl,
-                    is_realized=True,
-                )
-            except Exception as exc:
-                log.warning("Failed to forward P&L to portfolio guard: %s", exc)
 
     def is_tripped(self) -> bool:
         """Return ``True`` when the circuit breaker is active."""

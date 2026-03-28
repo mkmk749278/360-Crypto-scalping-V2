@@ -423,7 +423,7 @@ class TestCheckSignal:
         # Patch CHANNEL_TELEGRAM_MAP so a message can be "sent"
         import src.signal_lifecycle as lc_module
         orig_map = lc_module.CHANNEL_TELEGRAM_MAP
-        lc_module.CHANNEL_TELEGRAM_MAP = {"360_SPOT": "portfolio-chat-id"}
+        lc_module.CHANNEL_TELEGRAM_MAP = {"360_SPOT": "spot-chat-id"}
         try:
             await monitor._check_signal(sig)
         finally:
