@@ -120,14 +120,15 @@ class BatchScheduler:
 
         # Slice the pairs list into n_buckets and return the current bucket.
         bucket_size = math.ceil(n / self._n_buckets)
-        start = (self._bucket_index % self._n_buckets) * bucket_size
+        current_bucket = self._bucket_index % self._n_buckets
+        start = current_bucket * bucket_size
         batch = list(pairs[start: start + bucket_size])
         self._bucket_index = (self._bucket_index + 1) % self._n_buckets
 
         log.debug(
             "BatchScheduler: cycle %d → bucket %d/%d (%d pairs)",
             self._total_cycles,
-            self._bucket_index,  # already incremented
+            current_bucket + 1,  # 1-based for readability
             self._n_buckets,
             len(batch),
         )

@@ -728,8 +728,8 @@ class Scanner:
                     self._scan_cycle_count,
                     self.ws_spot.is_healthy if self.ws_spot else True,
                     self.ws_futures.is_healthy if self.ws_futures else True,
-                    ws_spot_ratio * 100 if 'ws_spot_ratio' in dir() else 100,
-                    ws_futures_ratio * 100 if 'ws_futures_ratio' in dir() else 100,
+                    ws_spot_ratio * 100,
+                    ws_futures_ratio * 100,
                     ws_conns,
                     elapsed_ms,
                 )
