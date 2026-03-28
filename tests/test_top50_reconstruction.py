@@ -175,6 +175,20 @@ class TestSignalPredictorAllowedPairs:
         predictor.set_allowed_pairs([])
         assert predictor._allowed_pairs is None
 
+    def test_set_allowed_pairs_stores_upper_case(self):
+        predictor = SignalPredictor()
+        predictor.set_allowed_pairs(["btcusdt", "EthUSDT"])
+        assert "BTCUSDT" in predictor._allowed_pairs
+        assert "ETHUSDT" in predictor._allowed_pairs
+        assert "btcusdt" not in predictor._allowed_pairs
+
+    def test_set_allowed_pairs_multiple_sets_replaces(self):
+        predictor = SignalPredictor()
+        predictor.set_allowed_pairs(["BTCUSDT"])
+        predictor.set_allowed_pairs(["ETHUSDT", "SOLUSDT"])
+        assert predictor._allowed_pairs == {"ETHUSDT", "SOLUSDT"}
+        assert "BTCUSDT" not in predictor._allowed_pairs
+
     async def test_predict_case_insensitive(self):
         predictor = SignalPredictor()
         predictor.set_allowed_pairs(["btcusdt"])  # lowercase

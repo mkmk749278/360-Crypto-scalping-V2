@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
-import time as _time
+import time
 
 from config import (
     GEM_MIN_VOLUME_USD,
@@ -587,9 +587,8 @@ class PairManager:
         info = self.pairs.get(symbol)
         if info is None:
             return
-        import time as _time
         snapshot = {
-            "timestamp": _time.time(),
+            "timestamp": time.time(),
             "volume_24h_usd": info.volume_24h_usd,
             "volatility_24h": info.volatility_24h,
             "spread_avg": info.spread_avg,
@@ -830,7 +829,7 @@ class PairManager:
             descending.
         """
         count = count or TOP50_FUTURES_COUNT
-        now = _time.monotonic()
+        now = time.monotonic()
         if not force and (now - self._top50_last_refresh) < TOP50_UPDATE_INTERVAL_SECONDS:
             log.debug(
                 "refresh_top50_futures: interval not elapsed (%.0fs < %ds), "
@@ -843,7 +842,7 @@ class PairManager:
 
         futures_pairs = await self.fetch_top_futures_pairs(limit=count)
         self._top50_futures_cache = [p.symbol for p in futures_pairs[:count]]
-        self._top50_last_refresh = _time.monotonic()
+        self._top50_last_refresh = time.monotonic()
         log.info(
             "Top-50 futures refreshed: %d pairs (requested=%d)",
             len(self._top50_futures_cache), count,

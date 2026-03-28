@@ -27,6 +27,8 @@ INSTALL_DIR="/opt/360-crypto-scalping-v2"
 PYTHON_MIN="3.10"
 LOG_DIR="/var/log/${SERVICE_NAME}"
 VENV_DIR="${INSTALL_DIR}/.venv"
+SERVICE_USER="360scalp"
+SERVICE_GROUP="360scalp"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -40,12 +42,13 @@ require_root() {
 }
 
 check_python() {
-    local py
+    local py ver major minor
     for py in python3.12 python3.11 python3.10 python3; do
         if command -v "$py" &>/dev/null; then
-            local ver
-            ver=$("$py" -c "import sys; print('%d.%d' % sys.version_info[:2])")
-            if python3 -c "import sys; sys.exit(0 if tuple(map(int,'${ver}'.split('.'))) >= tuple(map(int,'${PYTHON_MIN}'.split('.'))) else 1)" 2>/dev/null; then
+            ver=$("$py" -c "import sys; print('%d %d' % sys.version_info[:2])" 2>/dev/null) || continue
+            major=${ver%% *}
+            minor=${ver##* }
+            if [[ "$major" -gt 3 ]] || [[ "$major" -eq 3 && "$minor" -ge 10 ]]; then
                 echo "$py"
                 return 0
             fi
@@ -162,7 +165,13 @@ fi
 # Step 6 — Log directory
 # ---------------------------------------------------------------------------
 mkdir -p "${LOG_DIR}"
-chown -R nobody:nogroup "${LOG_DIR}" 2>/dev/null || true
+# Create a dedicated system user for the service if it doesn't exist
+if ! id -u "${SERVICE_USER}" &>/dev/null; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin "${SERVICE_USER}" 2>/dev/null || true
+    info "Created system user: ${SERVICE_USER}"
+fi
+chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${LOG_DIR}" 2>/dev/null || true
+chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_DIR}" 2>/dev/null || true
 info "Log directory: ${LOG_DIR}"
 
 # ---------------------------------------------------------------------------
@@ -194,6 +203,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_GROUP}
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=${ENV_FILE}
 ExecStart=${VENV_DIR}/bin/python -m src.main
