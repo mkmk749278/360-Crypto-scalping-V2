@@ -91,21 +91,6 @@ class TestWelcomeCommands:
         args = handler._telegram.send_message.call_args[0]
         assert "restricted" not in args[1].lower()
 
-    @pytest.mark.asyncio
-    async def test_start_registers_paper_portfolio_user(self):
-        """On /start the user should be registered with paper_portfolio."""
-        paper = MagicMock()
-        handler = _make_handler(paper_portfolio=paper)
-        await handler._handle_command("/start", USER_CHAT_ID)
-        paper.ensure_user.assert_called_once_with(USER_CHAT_ID)
-
-    @pytest.mark.asyncio
-    async def test_start_works_without_paper_portfolio(self):
-        """/start must not raise when paper_portfolio is None."""
-        handler = _make_handler(paper_portfolio=None)
-        await handler._handle_command("/start", USER_CHAT_ID)
-        handler._telegram.send_message.assert_called_once()
-
     def test_get_welcome_message_returns_string(self):
         handler = _make_handler()
         msg = handler.get_welcome_message()

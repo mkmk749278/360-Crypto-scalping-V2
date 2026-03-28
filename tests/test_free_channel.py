@@ -53,7 +53,7 @@ class TestMaybePublishFreeSignal:
         assert router._free_signals_today.get("active") is True
 
     @pytest.mark.asyncio
-    async def test_posts_first_portfolio_signal_today(self, monkeypatch):
+    async def test_posts_first_spot_signal_today(self, monkeypatch):
         """First high-confidence SPOT/GEM signal of the day is posted to free channel."""
         monkeypatch.setattr("src.signal_router.TELEGRAM_FREE_CHANNEL_ID", "free_id")
         router = _make_router()
@@ -62,7 +62,7 @@ class TestMaybePublishFreeSignal:
         await router._maybe_publish_free_signal(sig)
 
         router._send_telegram.assert_called_once()
-        assert router._free_signals_today.get("portfolio") is True
+        assert router._free_signals_today.get("active") is True
 
     @pytest.mark.asyncio
     async def test_does_not_post_second_active_signal_same_day(self, monkeypatch):
@@ -82,18 +82,19 @@ class TestMaybePublishFreeSignal:
         router._send_telegram.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_active_and_portfolio_groups_independent(self, monkeypatch):
-        """Active group and portfolio group are tracked independently."""
+    async def test_active_and_spot_share_same_group(self, monkeypatch):
+        """Active and SPOT/GEM signals share the same group, so only first is posted."""
         monkeypatch.setattr("src.signal_router.TELEGRAM_FREE_CHANNEL_ID", "free_id")
         router = _make_router()
 
         sig_active = _make_signal(channel="360_SCALP", confidence=80.0)
-        sig_portfolio = _make_signal(channel="360_SPOT", confidence=80.0)
+        sig_spot = _make_signal(channel="360_SPOT", confidence=80.0)
 
         await router._maybe_publish_free_signal(sig_active)
-        await router._maybe_publish_free_signal(sig_portfolio)
+        await router._maybe_publish_free_signal(sig_spot)
 
-        assert router._send_telegram.call_count == 2
+        # Both map to "active" group, so only first should be posted
+        assert router._send_telegram.call_count == 1
 
     @pytest.mark.asyncio
     async def test_low_confidence_signal_not_posted(self, monkeypatch):
@@ -142,9 +143,9 @@ class TestFreeChannelGroup:
         for ch in ("360_SCALP", "360_SCALP_FVG", "360_SCALP_CVD", "360_SCALP_VWAP", "360_SCALP_OBI", "360_SWING"):
             assert SignalRouter._free_channel_group(ch) == "active"
 
-    def test_spot_gem_are_portfolio_group(self):
+    def test_spot_gem_are_active_group(self):
         for ch in ("360_SPOT", "360_GEM"):
-            assert SignalRouter._free_channel_group(ch) == "portfolio"
+            assert SignalRouter._free_channel_group(ch) == "active"
 
 
 class TestFormatCondensedFree:

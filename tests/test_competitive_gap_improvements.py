@@ -376,17 +376,17 @@ class TestLifecycleChartImages:
         chart_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
 
         with patch(
-            "src.chart_generator.generate_portfolio_chart",
+            "src.chart_generator.generate_gem_chart",
             return_value=chart_bytes,
         ):
-            sig = _make_signal()
+            sig = _make_signal(channel="360_GEM")
             sig.last_lifecycle_check = None
             sig.lifecycle_alert_level = "GREEN"
             sig.pre_ai_confidence = 70.0
             sig.confidence = 70.0
             sig.best_tp_hit = 0
 
-            with patch("src.signal_lifecycle.CHANNEL_TELEGRAM_MAP", {"360_SPOT": "-100TESTCHAN"}):
+            with patch("src.signal_lifecycle.CHANNEL_TELEGRAM_MAP", {"360_GEM": "-100TESTCHAN"}):
                 await monitor._post_chart(sig, candles)
 
         send_photo.assert_called_once()
