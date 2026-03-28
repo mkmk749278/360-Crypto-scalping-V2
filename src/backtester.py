@@ -502,6 +502,22 @@ class Backtester:
         self._slippage_pct = slippage_pct
         self._funding_rate_per_8h = funding_rate_per_8h
         self._max_concurrent_positions = max_concurrent_positions
+        # AI confidence suppression threshold — signals below this are skipped.
+        # Default 0.0 disables suppression (backward compatible).
+        self._min_confidence_threshold: float = 0.0
+
+    def set_confidence_threshold(self, threshold: float) -> None:
+        """Set minimum confidence threshold for AI suppression.
+
+        Signals with confidence below this threshold are suppressed
+        during backtesting.  Set to 0.0 to disable (default).
+
+        Parameters
+        ----------
+        threshold:
+            Minimum confidence (0–100).  Signals below this are skipped.
+        """
+        self._min_confidence_threshold = threshold
 
     def run(
         self,
@@ -860,11 +876,39 @@ class Backtester:
         regime_report = self.run_regime_stress_test(historical_data, config=config)
         wf_report = self.walk_forward_validate(historical_data, n_folds=walk_forward_folds, config=config)
 
+        # Populate per-pair results from signal details
+        per_pair: Dict = {}
+        for bt in bt_results:
+            for detail in bt.signal_details:
+                pair = detail.get("pair", config.pair if config else "UNKNOWN") or "UNKNOWN"
+                if pair not in per_pair:
+                    per_pair[pair] = {
+                        "total_signals": 0,
+                        "wins": 0,
+                        "losses": 0,
+                        "total_pnl_pct": 0.0,
+                        "win_rate": 0.0,
+                        "details": [],
+                    }
+                per_pair[pair]["total_signals"] += 1
+                if detail.get("won", False):
+                    per_pair[pair]["wins"] += 1
+                else:
+                    per_pair[pair]["losses"] += 1
+                per_pair[pair]["total_pnl_pct"] += detail.get("pnl_pct", 0.0)
+                per_pair[pair]["details"].append(detail)
+
+        for pair_data in per_pair.values():
+            total = pair_data["total_signals"]
+            if total > 0:
+                pair_data["win_rate"] = pair_data["wins"] / total * 100.0
+
         return AnalyticsReport(
             backtest_results=bt_results,
             monte_carlo=mc_report,
             regime_stress=regime_report,
             walk_forward=wf_report,
+            per_pair_results=per_pair,
         )
 
     def _backtest_channel(
@@ -957,6 +1001,14 @@ class Backtester:
                 continue
 
             if sig is None:
+                continue
+
+            # AI confidence suppression: skip signals below threshold
+            if self._min_confidence_threshold > 0 and sig.confidence < self._min_confidence_threshold:
+                log.debug(
+                    "Backtest: suppressed %s signal at candle %d (confidence %.1f < %.1f)",
+                    symbol, i, sig.confidence, self._min_confidence_threshold,
+                )
                 continue
 
             # Detect market regime at signal bar when requested

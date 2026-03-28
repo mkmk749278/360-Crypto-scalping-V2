@@ -52,7 +52,10 @@ import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict
+import asyncio as _asyncio
+import json as _json
+import os as _os
+from typing import Dict, Optional
 
 from src.utils import get_logger
 
@@ -512,3 +515,152 @@ class FeedbackLoop:
             ``min_new_outcomes`` records.
         """
         return len(self._outcomes) >= min_new_outcomes
+
+    # ------------------------------------------------------------------
+    # Persistent storage (PR: Feedback Loop Integration)
+    # ------------------------------------------------------------------
+
+    _FEEDBACK_DATA_PATH: str = "data/feedback_outcomes.json"
+
+    def save_outcomes(self, path: Optional[str] = None) -> None:
+        """Persist all recorded outcomes to a JSON file.
+
+        Parameters
+        ----------
+        path:
+            File path to write.  Defaults to ``data/feedback_outcomes.json``.
+        """
+        path = path or self._FEEDBACK_DATA_PATH
+        data = self.get_retraining_data()
+        try:
+            dir_name = _os.path.dirname(path)
+            if dir_name:
+                _os.makedirs(dir_name, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                _json.dump(data, fh, indent=2, default=str)
+            log.info("Saved {} feedback outcomes to {}", len(data), path)
+        except OSError as exc:
+            log.warning("Failed to save feedback outcomes: {}", exc)
+
+    def load_outcomes(self, path: Optional[str] = None) -> int:
+        """Load previously saved outcomes from a JSON file.
+
+        Loaded outcomes are appended via :meth:`record_outcome` so that
+        weight adjustments are recomputed automatically.
+
+        Parameters
+        ----------
+        path:
+            File path to read.  Defaults to ``data/feedback_outcomes.json``.
+
+        Returns
+        -------
+        int
+            Number of outcomes loaded.
+        """
+        path = path or self._FEEDBACK_DATA_PATH
+        if not _os.path.isfile(path):
+            log.debug("No feedback file at {} – skipping load", path)
+            return 0
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = _json.load(fh)
+            if not isinstance(data, list):
+                log.warning("Feedback file {} has unexpected format", path)
+                return 0
+            count = 0
+            for record in data:
+                try:
+                    outcome = TradeOutcome(
+                        symbol=record.get("symbol", ""),
+                        channel=record.get("channel", ""),
+                        direction=record.get("direction", "LONG"),
+                        setup_class=record.get("setup_class", ""),
+                        market_state=record.get("market_state", ""),
+                        component_scores={
+                            k.replace("score_", ""): v
+                            for k, v in record.items()
+                            if k.startswith("score_")
+                        },
+                        confidence=float(record.get("confidence", 70.0)),
+                        r_multiple=float(record.get("r_multiple", 0.0)),
+                        outcome=record.get("outcome", "SL"),
+                        hold_duration_seconds=float(
+                            record.get("hold_duration_seconds", 0.0)
+                        ),
+                    )
+                    self._outcomes.append(outcome)
+                    count += 1
+                except (TypeError, ValueError, KeyError) as exc:
+                    log.debug("Skipping malformed feedback record: {}", exc)
+            if count > 0:
+                self._recompute_weights()
+            log.info("Loaded {} feedback outcomes from {}", count, path)
+            return count
+        except (OSError, _json.JSONDecodeError) as exc:
+            log.warning("Failed to load feedback outcomes: {}", exc)
+            return 0
+
+    # ------------------------------------------------------------------
+    # Online learning / periodic retraining (PR: Feedback Loop Integration)
+    # ------------------------------------------------------------------
+
+    def apply_online_update(self) -> Dict[str, float]:
+        """Apply an online learning update based on recent outcomes.
+
+        Recomputes weight adjustments from the current outcome history
+        and returns the updated adjustment map.  This is a lightweight
+        alternative to full model retraining — it simply re-analyses the
+        outcome deque and refreshes the internal weight tables.
+
+        Returns
+        -------
+        Dict[str, float]
+            Mapping of ``"channel|setup_class"`` → adjustment value.
+        """
+        self._recompute_weights()
+        result: Dict[str, float] = {}
+        for (channel, setup_class), adj in self._weight_adjustments.items():
+            result[f"{channel}|{setup_class}"] = adj
+        log.info(
+            "Online update applied: {} weight adjustments",
+            len(result),
+        )
+        return result
+
+    async def run_periodic_retraining(
+        self,
+        interval_seconds: float = 3600.0,
+        min_outcomes: int = 50,
+        save_path: Optional[str] = None,
+    ) -> None:
+        """Async loop that periodically retrains and persists outcomes.
+
+        Runs indefinitely, checking every *interval_seconds* whether
+        enough new outcomes have accumulated for a retraining pass.
+        When triggered, recomputes weights and saves the outcome history
+        to disk.
+
+        Parameters
+        ----------
+        interval_seconds:
+            Seconds between retraining checks.
+        min_outcomes:
+            Minimum outcomes required to trigger a retrain.
+        save_path:
+            Optional file path for persistence.
+        """
+        while True:
+            await _asyncio.sleep(interval_seconds)
+            if self.should_retrain(min_new_outcomes=min_outcomes):
+                log.info(
+                    "Periodic retraining triggered ({} outcomes)",
+                    len(self._outcomes),
+                )
+                self.apply_online_update()
+                self.save_outcomes(path=save_path)
+            else:
+                log.debug(
+                    "Periodic retraining skipped ({} < {} outcomes)",
+                    len(self._outcomes), min_outcomes,
+                )
