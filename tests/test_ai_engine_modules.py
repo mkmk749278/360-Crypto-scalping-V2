@@ -25,32 +25,26 @@ from src.ai_engine.feedback import (
 
 
 class TestSignalPredictor:
-    def test_predict_returns_prediction(self):
+    async def test_predict_returns_prediction(self):
         predictor = SignalPredictor()
         features = PredictionFeatures(
             price_features={"ema_alignment": 0.8, "momentum": 0.5, "adx": 30.0},
             volume_features={"obv_trend": 0.6, "volume_spike": 0.3},
         )
-        import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
-            predictor.predict("BTCUSDT", features)
-        )
+        result = await predictor.predict("BTCUSDT", features)
         assert isinstance(result, SignalPrediction)
         assert result.symbol == "BTCUSDT"
         assert result.direction in ("LONG", "SHORT", "NEUTRAL")
         assert 0.0 <= result.probability <= 1.0
 
-    def test_predict_neutral_with_empty_features(self):
+    async def test_predict_neutral_with_empty_features(self):
         predictor = SignalPredictor()
         features = PredictionFeatures()
-        import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
-            predictor.predict("ETHUSDT", features)
-        )
+        result = await predictor.predict("ETHUSDT", features)
         assert result.direction == "NEUTRAL"
         assert result.probability == pytest.approx(0.5, abs=0.1)
 
-    def test_predict_bullish_with_strong_signals(self):
+    async def test_predict_bullish_with_strong_signals(self):
         predictor = SignalPredictor(min_probability=0.55)
         features = PredictionFeatures(
             price_features={"ema_alignment": 1.0, "momentum": 1.0, "adx": 40.0},
@@ -58,14 +52,11 @@ class TestSignalPredictor:
             order_book_features={"bid_ask_imbalance": 0.8, "depth_ratio": 1.5},
             correlation_features={"btc_correlation": 0.5, "sector_direction": 0.5},
         )
-        import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
-            predictor.predict("SOLUSDT", features)
-        )
+        result = await predictor.predict("SOLUSDT", features)
         assert result.direction == "LONG"
         assert result.probability > 0.55
 
-    def test_predict_batch(self):
+    async def test_predict_batch(self):
         predictor = SignalPredictor()
         features_map = {
             "BTCUSDT": PredictionFeatures(
@@ -75,22 +66,18 @@ class TestSignalPredictor:
                 price_features={"ema_alignment": -0.5, "momentum": -0.3, "adx": 20.0}
             ),
         }
-        import asyncio
-        results = asyncio.get_event_loop().run_until_complete(
-            predictor.predict_batch(features_map)
-        )
+        results = await predictor.predict_batch(features_map)
         assert "BTCUSDT" in results
         assert "ETHUSDT" in results
         assert isinstance(results["BTCUSDT"], SignalPrediction)
 
-    def test_prediction_count_increments(self):
+    async def test_prediction_count_increments(self):
         predictor = SignalPredictor()
         assert predictor.prediction_count == 0
         features = PredictionFeatures()
-        import asyncio
-        asyncio.get_event_loop().run_until_complete(predictor.predict("BTC", features))
+        await predictor.predict("BTC", features)
         assert predictor.prediction_count == 1
-        asyncio.get_event_loop().run_until_complete(predictor.predict("ETH", features))
+        await predictor.predict("ETH", features)
         assert predictor.prediction_count == 2
 
 

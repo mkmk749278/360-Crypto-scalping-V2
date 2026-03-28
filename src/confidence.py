@@ -708,7 +708,7 @@ def compute_adaptive_threshold(
 
     # Extreme volatility buffer
     if volatility_percentile > 0.9:
-        threshold += (volatility_percentile - 0.9) * 30.0  # up to +3
+        threshold += (volatility_percentile - 0.9) * 30.0  # up to +3 at 100th pctile
 
     return max(50.0, min(90.0, threshold))
 

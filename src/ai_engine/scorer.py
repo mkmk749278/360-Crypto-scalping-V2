@@ -199,7 +199,7 @@ class AIConfidenceScorer:
 
         # Volatility penalty: extreme volatility reduces confidence
         if volatility_percentile > 0.9:
-            adj -= (volatility_percentile - 0.9) * 30.0  # up to -3.0
+            adj -= (volatility_percentile - 0.9) * 30.0  # up to -3.0 at 100th pctile
 
         # Consistency bonus: if recent scores are consistently high, small boost
         avg = self.get_pair_avg_confidence(symbol)
