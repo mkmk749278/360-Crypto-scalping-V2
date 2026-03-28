@@ -161,6 +161,22 @@ NEW_PAIR_MIN_CONFIDENCE: float = 50.0  # lower cap until enough data
 SCAN_MIN_VOLUME_USD: float = float(os.getenv("SCAN_MIN_VOLUME_USD", "500000"))
 
 # ---------------------------------------------------------------------------
+# Top-50 futures-only mode (PR1–PR5)
+# ---------------------------------------------------------------------------
+# When enabled, the engine restricts scanning, WS streams, and AI inference
+# exclusively to the top-50 USDT-M futures pairs by 24h volume.  Spot pairs
+# and all lower-ranked futures pairs are excluded.  This reduces API weight
+# consumption and scan latency significantly.
+TOP50_FUTURES_ONLY: bool = os.getenv("TOP50_FUTURES_ONLY", "false").lower() in (
+    "true", "1", "yes"
+)
+# Number of top futures pairs to maintain in top-50 mode.
+TOP50_FUTURES_COUNT: int = int(os.getenv("TOP50_FUTURES_COUNT", "50"))
+# Minimum seconds between consecutive top-50 refresh calls (rate-limiting
+# guard to prevent excessive Binance REST weight consumption).
+TOP50_UPDATE_INTERVAL_SECONDS: int = int(os.getenv("TOP50_UPDATE_INTERVAL_SECONDS", "90"))
+
+# ---------------------------------------------------------------------------
 # Tiered pair universe
 # ---------------------------------------------------------------------------
 # Tier 1 — Core: top pairs by 24h volume.  Full scan every cycle, all channels,

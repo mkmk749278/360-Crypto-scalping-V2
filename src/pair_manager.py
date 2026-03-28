@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
+import time as _time
+
 from config import (
     GEM_MIN_VOLUME_USD,
     GEM_PAIRS_COUNT,
@@ -34,6 +36,8 @@ from config import (
     TIER2_PAIR_COUNT,
     TIER3_VOLUME_SURGE_MULTIPLIER,
     TOP_PAIRS_COUNT,
+    TOP50_FUTURES_COUNT,
+    TOP50_UPDATE_INTERVAL_SECONDS,
 )
 from src.binance import BinanceClient
 from src.utils import get_logger
@@ -104,6 +108,9 @@ class PairManager:
         self._prev_volumes: Dict[str, float] = {}
         # Historical pair metrics for analytics.
         self._pair_metrics_history: Dict[str, List[Dict]] = {}
+        # Top-50 futures cache (PR1): cached list + last refresh timestamp.
+        self._top50_futures_cache: List[str] = []
+        self._top50_last_refresh: float = 0.0
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -776,6 +783,93 @@ class PairManager:
             "top_5_by_volume": top_5,
             "avg_volume_usd": avg_vol,
         }
+
+    # ------------------------------------------------------------------
+    # Top-50 futures-only API (PR1)
+    # ------------------------------------------------------------------
+
+    def is_top50_futures(self, symbol: str) -> bool:
+        """Return True when *symbol* is in the current top-50 futures list.
+
+        Uses the most recent result of :meth:`get_top50_futures_pairs` (or the
+        cached snapshot if the refresh interval has not elapsed).  Returns
+        ``False`` when the cache is empty (not yet populated).
+        """
+        return symbol in self._top50_futures_cache
+
+    def get_top50_futures_pairs(self) -> List[str]:
+        """Return the cached list of top-50 futures pairs (does not refresh).
+
+        Call :meth:`refresh_top50_futures` to populate / update the cache.
+        """
+        return list(self._top50_futures_cache)
+
+    async def refresh_top50_futures(
+        self,
+        count: Optional[int] = None,
+        force: bool = False,
+    ) -> List[str]:
+        """Refresh and return the top-*count* USDT-M futures pairs by volume.
+
+        The result is cached and the method is rate-limited to at most one
+        real fetch per ``TOP50_UPDATE_INTERVAL_SECONDS`` seconds (default 90s).
+        Pass ``force=True`` to bypass the interval guard.
+
+        Parameters
+        ----------
+        count:
+            Number of top futures pairs to keep.  Defaults to
+            ``TOP50_FUTURES_COUNT`` (env ``TOP50_FUTURES_COUNT``, default 50).
+        force:
+            Skip the minimum-interval guard and always fetch.
+
+        Returns
+        -------
+        List[str]
+            Symbols of the top-*count* futures pairs, ordered by 24h volume
+            descending.
+        """
+        count = count or TOP50_FUTURES_COUNT
+        now = _time.monotonic()
+        if not force and (now - self._top50_last_refresh) < TOP50_UPDATE_INTERVAL_SECONDS:
+            log.debug(
+                "refresh_top50_futures: interval not elapsed (%.0fs < %ds), "
+                "returning cached list of %d pairs",
+                now - self._top50_last_refresh,
+                TOP50_UPDATE_INTERVAL_SECONDS,
+                len(self._top50_futures_cache),
+            )
+            return list(self._top50_futures_cache)
+
+        futures_pairs = await self.fetch_top_futures_pairs(limit=count)
+        self._top50_futures_cache = [p.symbol for p in futures_pairs[:count]]
+        self._top50_last_refresh = _time.monotonic()
+        log.info(
+            "Top-50 futures refreshed: %d pairs (requested=%d)",
+            len(self._top50_futures_cache), count,
+        )
+        # Ensure all top-50 futures are registered in self.pairs so the
+        # scanner and AI engine can look them up by symbol.
+        for p in futures_pairs[:count]:
+            if p.symbol not in self.pairs:
+                p.tier = PairTier.TIER1
+                self.pairs[p.symbol] = p
+            else:
+                self._prev_volumes[p.symbol] = self.pairs[p.symbol].volume_24h_usd
+                self.pairs[p.symbol].volume_24h_usd = p.volume_24h_usd
+                self.pairs[p.symbol].tier = PairTier.TIER1
+        return list(self._top50_futures_cache)
+
+    async def run_periodic_top50_refresh(self) -> None:
+        """Infinite loop that refreshes the top-50 futures list at the
+        configured minimum interval (``TOP50_UPDATE_INTERVAL_SECONDS``).
+        """
+        while True:
+            try:
+                await self.refresh_top50_futures(force=True)
+            except Exception as exc:
+                log.warning("run_periodic_top50_refresh error: %s", exc)
+            await asyncio.sleep(TOP50_UPDATE_INTERVAL_SECONDS)
 
     async def close(self) -> None:
         await self._spot_client.close()
