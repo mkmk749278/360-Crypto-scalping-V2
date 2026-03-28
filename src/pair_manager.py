@@ -626,6 +626,157 @@ class PairManager:
                 )
         return spiked
 
+    # ------------------------------------------------------------------
+    # Integrated watchlist management (PR: Dynamic Pair Selection)
+    # ------------------------------------------------------------------
+
+    def update_watchlist(
+        self,
+        top_n: int = 50,
+        volume_spike_multiplier: float = 3.0,
+    ) -> Dict[str, List[str]]:
+        """Update the active watchlist by combining ranking and volume spikes.
+
+        This method integrates multiple pair selection signals:
+        1. Top N pairs by composite rank score (volume + volatility + liquidity)
+        2. Pairs with sudden volume spikes (regardless of rank)
+        3. De-duplicated combined list
+
+        Parameters
+        ----------
+        top_n:
+            Number of top-ranked pairs to include.
+        volume_spike_multiplier:
+            Volume surge factor for spike detection.
+
+        Returns
+        -------
+        Dict with keys:
+            ``"top_ranked"``: Top N pairs by score.
+            ``"volume_spikes"``: Pairs with volume spikes.
+            ``"watchlist"``: Combined de-duplicated watchlist.
+        """
+        top_ranked = self.get_top_ranked_pairs(n=top_n)
+        spiked = self.detect_volume_spikes(multiplier=volume_spike_multiplier)
+
+        # Combine and de-duplicate: ranked pairs first, then spike additions
+        seen = set(top_ranked)
+        combined = list(top_ranked)
+        for sym in spiked:
+            if sym not in seen:
+                combined.append(sym)
+                seen.add(sym)
+
+        log.info(
+            "Watchlist updated: %d top-ranked + %d volume spikes = %d total",
+            len(top_ranked), len(spiked), len(combined),
+        )
+
+        return {
+            "top_ranked": top_ranked,
+            "volume_spikes": spiked,
+            "watchlist": combined,
+        }
+
+    def suppress_low_quality_signals(
+        self,
+        symbol: str,
+        confidence: float = 0.0,
+        min_volume_usd: float = 1_000_000.0,
+        min_confidence: float = 55.0,
+        min_rank_score: float = 0.1,
+    ) -> Tuple[bool, str]:
+        """Check whether a signal on a pair should be suppressed.
+
+        A signal is suppressed when the pair fails quality checks:
+        - Volume below minimum threshold
+        - Confidence below minimum threshold
+        - Rank score below minimum (pair not in active watchlist)
+
+        Parameters
+        ----------
+        symbol:
+            Trading pair to check.
+        confidence:
+            Signal confidence score (0–100).
+        min_volume_usd:
+            Minimum 24h volume threshold in USD.
+        min_confidence:
+            Minimum confidence threshold.
+        min_rank_score:
+            Minimum composite rank score.
+
+        Returns
+        -------
+        Tuple[bool, str]
+            ``(suppressed, reason)`` where suppressed is True when the
+            signal should be dropped, and reason explains why.
+        """
+        info = self.pairs.get(symbol)
+
+        if info is None:
+            return True, f"Pair {symbol} not in active universe"
+
+        if info.volume_24h_usd < min_volume_usd:
+            return True, (
+                f"Low volume: ${info.volume_24h_usd:,.0f} < "
+                f"${min_volume_usd:,.0f}"
+            )
+
+        if confidence < min_confidence:
+            return True, (
+                f"Low confidence: {confidence:.1f} < {min_confidence:.1f}"
+            )
+
+        if info.rank_score > 0 and info.rank_score < min_rank_score:
+            return True, (
+                f"Low rank score: {info.rank_score:.3f} < {min_rank_score:.3f}"
+            )
+
+        return False, ""
+
+    def get_watchlist_summary(self) -> Dict[str, object]:
+        """Return a summary of the current pair universe for analytics.
+
+        Returns
+        -------
+        Dict
+            Contains tier counts, top pairs, volume stats.
+        """
+        if not self.pairs:
+            return {
+                "total_pairs": 0,
+                "tier_counts": {},
+                "top_5_by_volume": [],
+                "avg_volume_usd": 0.0,
+            }
+
+        tier_counts: Dict[str, int] = {}
+        for p in self.pairs.values():
+            tier_counts[p.tier.value] = tier_counts.get(p.tier.value, 0) + 1
+
+        sorted_by_vol = sorted(
+            self.pairs.values(),
+            key=lambda p: p.volume_24h_usd,
+            reverse=True,
+        )
+        top_5 = [
+            {"symbol": p.symbol, "volume_24h_usd": p.volume_24h_usd, "tier": p.tier.value}
+            for p in sorted_by_vol[:5]
+        ]
+        avg_vol = (
+            sum(p.volume_24h_usd for p in self.pairs.values()) / len(self.pairs)
+            if self.pairs
+            else 0.0
+        )
+
+        return {
+            "total_pairs": len(self.pairs),
+            "tier_counts": tier_counts,
+            "top_5_by_volume": top_5,
+            "avg_volume_usd": avg_vol,
+        }
+
     async def close(self) -> None:
         await self._spot_client.close()
         await self._futures_client.close()
