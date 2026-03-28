@@ -642,7 +642,7 @@ class SignalLifecycleMonitor:
 
             # Use generate_gem_chart for GEM signals, skip chart for others
             if signal.channel == "360_GEM":
-                ema_20 = []  # EMA data not available from candles dict
+                ema_20 = []  # EMA data not in candles dict; chart renders without EMA overlay
                 ema_50 = []
                 current_price = closes[-1] if closes else signal.entry
                 ath = max(highs) if highs else current_price
