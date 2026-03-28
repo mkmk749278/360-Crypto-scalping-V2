@@ -774,3 +774,115 @@ def compute_per_signal_confidence(
 
     return result
 
+
+@dataclass
+class ConfidenceMetadata:
+    """Unified confidence metadata for a single signal.
+
+    Consolidates regime context, adaptive thresholds, suppression status,
+    and AI scoring results into a single structure that can be passed
+    alongside signal data through the processing pipeline.
+
+    Attributes
+    ----------
+    base_confidence:
+        Raw confidence before any adjustments.
+    final_confidence:
+        Adjusted confidence after all processing.
+    adaptive_threshold:
+        Dynamic minimum threshold for this signal's context.
+    regime:
+        Market regime at signal creation.
+    volatility_percentile:
+        Current volatility relative to history (0–1).
+    cluster_suppressed:
+        Whether the signal was suppressed by cluster detection.
+    cluster_reason:
+        Reason string from the cluster suppressor.
+    ai_adjustment:
+        AI-derived confidence adjustment.
+    is_high_confidence:
+        Whether the signal exceeds its adaptive threshold.
+    """
+
+    base_confidence: float = 0.0
+    final_confidence: float = 0.0
+    adaptive_threshold: float = 65.0
+    regime: str = ""
+    volatility_percentile: float = 0.5
+    cluster_suppressed: bool = False
+    cluster_reason: str = ""
+    ai_adjustment: float = 0.0
+    is_high_confidence: bool = False
+
+
+def build_confidence_metadata(
+    inp: ConfidenceInput,
+    session_now: Optional[datetime] = None,
+    channel: Optional[str] = None,
+    signal_id: Optional[str] = None,
+    regime: str = "",
+    volatility_percentile: float = 0.5,
+    cluster_suppressed: bool = False,
+    cluster_reason: str = "",
+    ai_adjustment: float = 0.0,
+) -> ConfidenceMetadata:
+    """Build unified confidence metadata for a signal.
+
+    Combines the results of :func:`compute_per_signal_confidence` with
+    AI scoring adjustments into a single :class:`ConfidenceMetadata`
+    instance.
+
+    Parameters
+    ----------
+    inp:
+        All sub-score inputs.
+    session_now:
+        Optional UTC datetime for session multiplier.
+    channel:
+        Optional channel name.
+    signal_id:
+        Optional signal identifier for logging.
+    regime:
+        Current market regime string.
+    volatility_percentile:
+        Current volatility percentile (0–1).
+    cluster_suppressed:
+        Whether the signal was suppressed by cluster detection.
+    cluster_reason:
+        Reason string from the cluster suppressor.
+    ai_adjustment:
+        AI-derived confidence adjustment to apply.
+
+    Returns
+    -------
+    ConfidenceMetadata
+        Unified metadata with all confidence-related information.
+    """
+    result = compute_per_signal_confidence(
+        inp=inp,
+        session_now=session_now,
+        channel=channel,
+        signal_id=signal_id,
+        regime=regime,
+        volatility_percentile=volatility_percentile,
+        cluster_suppressed=cluster_suppressed,
+        cluster_reason=cluster_reason,
+    )
+
+    base = result.total
+    final = max(0.0, min(100.0, base + ai_adjustment))
+    threshold = result.adaptive_threshold
+
+    return ConfidenceMetadata(
+        base_confidence=base,
+        final_confidence=final,
+        adaptive_threshold=threshold,
+        regime=regime,
+        volatility_percentile=volatility_percentile,
+        cluster_suppressed=cluster_suppressed,
+        cluster_reason=cluster_reason,
+        ai_adjustment=ai_adjustment,
+        is_high_confidence=final >= threshold,
+    )
+
